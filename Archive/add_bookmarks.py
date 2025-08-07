@@ -2,8 +2,8 @@ from ToolFunc.fetchor import add_bookmark
 import os
 
 
-input_folder = r"/Users/xuweining/Desktop/1"
-output_folder = r"/Users/xuweining/Desktop/Done"
+input_folder = r""
+output_folder = r""
 
 
 files = os.scandir(input_folder)
