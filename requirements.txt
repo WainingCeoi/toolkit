@@ -1,5 +1,0 @@
-pillow
-requests
-bs4
-beautifulsoup4
-more-itertools
