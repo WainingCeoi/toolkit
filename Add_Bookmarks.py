@@ -5,8 +5,8 @@ import os
 import fitz
 
 
-input_folder = r"/Users/xuweining/Desktop/安装图集/PD"
-output_folder = r"/Users/xuweining/Desktop/Done/PD"
+input_folder = r""
+output_folder = r""
 
 files = os.scandir(input_folder)
 
