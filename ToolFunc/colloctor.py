@@ -1,46 +1,39 @@
 import os
-import threading
 from concurrent.futures import ThreadPoolExecutor
 from multiprocessing import cpu_count
 
 
-def collect_target_files(input_folder, ext, include_subfolder=True):
-    # Collect all specified required files
-    exts = {e.lower() for e in ext}
+def collect_target_files(input_folder, file_types, include_subfolder=True):
+    # Collect files with given extensions from a folder.
+    file_types = {e.lower() for e in file_types}
     input_folder = os.path.abspath(input_folder)
+    max_workers = max(2, cpu_count()-1)
+
+
+    def filter_files(input_files):
+        filtered = []
+        for filtering_file in input_files:
+            name = os.path.basename(filtering_file)
+            file_type = os.path.splitext(name)[1].lower()
+            if not os.path.basename(filtering_file).startswith("~$") and file_type in file_types:
+                filtered.append(filtering_file)
+        return filtered
+
+
+    # Walk directory once and build file list
+    all_files = []
+    for root, dirs, files in os.walk(input_folder):
+        for file in files:
+            all_files.append(os.path.join(root, file))
+        if not include_subfolder:
+            break
+
+
+    # Threaded Filtering
     collected_files = []
-    dirs_line = [input_folder]
-    lock = threading.Lock()
-    max_cpu = max(2, cpu_count()-1)
-
-
-    def process_dir(dir_path):
-    # Inspect each file if it satisfies the requirement.
-        local_files = []
-        try:
-            with os.scandir(dir_path) as entries:
-                for entry in entries:
-                    if entry.name.startswith("~$"):
-                        continue
-                    if entry.is_file():
-                        suffix = os.path.splitext(entry.name)[1].lower()
-                        if suffix in exts:
-                            local_files.append(entry.path)
-                    # Recursive call the function if subfolders are included.
-                    elif include_subfolder and entry.is_dir():
-                        with lock:
-                            dirs_line.append(entry.path)
-        except Exception:
-            pass
-
-        return local_files
-
-
-    with ThreadPoolExecutor(max_workers=max_cpu) as executor:
-        while dirs_line:
-            batch = dirs_line[:]
-            dirs_line.clear()
-            for files in executor.map(process_dir, batch):
-                collected_files.extend(files)
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        results = executor.map(filter_files, (all_files[idx::max_workers] for idx in range(max_workers)))
+        for chunk_files in results:
+            collected_files.extend(chunk_files)
 
     return collected_files
