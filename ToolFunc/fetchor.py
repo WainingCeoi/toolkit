@@ -2,15 +2,17 @@ import requests
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
-
 from bs4 import BeautifulSoup
+
 import json
 import fitz
 from PIL import Image
 from io import BytesIO
+import os
 
 
-def add_bookmark (pdf_url, input_pdf, output_pdf):
+
+def add_bookmark (pdf_url, input_pdf, output_pdf=None):
     try:
         html_content = requests.get(pdf_url, timeout=5).text
         soup = BeautifulSoup(html_content, "html.parser")
@@ -25,17 +27,17 @@ def add_bookmark (pdf_url, input_pdf, output_pdf):
 
         doc = fitz.open(input_pdf)
         doc.set_toc(toc)
-        doc.save(output_pdf)
+        if output_pdf:
+            doc.save(output_pdf)
+        else:
+            doc.save(input_pdf, incremental=True)
 
     except Exception as e:
         print(e)
         pass
 
 
-def fetch_pdf(pdf_url, file_name):
-    # Set up Chrome options
-    # chrome_options = Options()
-    # chrome_options.add_argument("--window-size=1920,1080")
+def fetch_pdf(pdf_url, output_folder):
     # Set up the ChromeDriver service
     service = Service(ChromeDriverManager().install())
 
@@ -50,6 +52,7 @@ def fetch_pdf(pdf_url, file_name):
     driver.quit()
 
     soup = BeautifulSoup(html_content, features="html.parser")
+    pdf_name = f"{soup.find("title").text}.pdf"
     img_urls = soup.select("img[class*=bi]")
     images = []
 
@@ -59,4 +62,7 @@ def fetch_pdf(pdf_url, file_name):
         img = Image.open(BytesIO(img))
         images.append(img)
 
-    images[0].save(file_name, save_all=True, append_images=images[1:])
+    pdf_path = os.path.join(output_folder, pdf_name)
+    images[0].save(pdf_path, save_all=True, append_images=images[1:])
+
+    add_bookmark(pdf_url, pdf_path)
