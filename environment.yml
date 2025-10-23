@@ -1,0 +1,11 @@
+name: miscellaneous
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - bs4
+  - jupyterlab
+  - notebook
+  - python
+  - seaborn
+  - requests
