@@ -7,5 +7,4 @@ dependencies:
   - jupyterlab
   - notebook
   - python
-  - seaborn
   - requests
