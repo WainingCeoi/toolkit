@@ -21,7 +21,7 @@ def make_request(url, headers = None):
 
 # --- Configuration and Initialization ---
 # **IMPORTANT: Replace this with your actual Simkl client_id**
-client_id = ""
+client_id = "730a36bfb95db4cdc89acc0d67aaf2da8665f04a4b918de5bb376378e3a440e6"
 
 
 # --- Step 1: Get the User Code for OAuth Authentication (PIN flow) ---
@@ -52,9 +52,10 @@ type_dict = {"movies": "movie", "anime": "show", "shows": "show"}
 
 for video_type in video_types:
     sub_cat = type_dict[video_type]
-    get_movies_list_url = f"https://api.simkl.com/sync/all-items/{video_type}/completed"
+    get_videos_list_url = f"https://api.simkl.com/sync/all-items/{video_type}/completed"
 
-    raw_data = make_request(get_movies_list_url, {'Authorization': f"Bearer {access_token}", "simkl-api-key": client_id})
+    raw_data = make_request(get_videos_list_url,
+                            {'Authorization': f"Bearer {access_token}", "simkl-api-key": client_id})
     data = raw_data[video_type]
 
     videos_data  = pd.DataFrame(video_data[sub_cat] for video_data in data)
@@ -66,5 +67,25 @@ for video_type in video_types:
     df["name"] = videos_data["title"]
     watched_time = [time_at["last_watched_at"] for time_at in data]
     df["watched_at"] = watched_time
+
+    if video_type == "shows":
+        watching_shows_list_url = f"https://api.simkl.com/sync/all-items/{video_type}/watching"
+
+        raw_data = make_request(get_videos_list_url,
+                                {'Authorization': f"Bearer {access_token}", "simkl-api-key": client_id})
+        data = raw_data[video_type]
+
+        videos_data = pd.DataFrame(video_data[sub_cat] for video_data in data)
+        all_ids = [id[sub_cat]["ids"] for id in data]
+
+        df2 = pd.DataFrame(all_ids)
+        df2 = df2.add_suffix("_id")
+
+        df2["name"] = videos_data["title"]
+        watched_time = [time_at["last_watched_at"] for time_at in data]
+        df2["watched_at"] = watched_time
+
+        df = pd.concat([df, df2], axis=0)
+
 
     df.to_csv(f"{video_type}_data.csv", index=False)
