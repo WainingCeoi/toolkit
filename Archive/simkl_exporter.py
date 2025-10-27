@@ -21,7 +21,7 @@ def make_request(url, headers = None):
 
 # --- Configuration and Initialization ---
 # **IMPORTANT: Replace this with your actual Simkl client_id**
-client_id = "730a36bfb95db4cdc89acc0d67aaf2da8665f04a4b918de5bb376378e3a440e6"
+client_id = ""
 
 
 # --- Step 1: Get the User Code for OAuth Authentication (PIN flow) ---
