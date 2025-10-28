@@ -48,44 +48,22 @@ while not is_user_authenticated:
 
 # --- Step 3: Fetch and Export Watched Videos ---
 video_types = ["movies", "anime", "shows"]
-type_dict = {"movies": "movie", "anime": "show", "shows": "show"}
+get_videos_list_url = f"https://api.simkl.com/sync/all-items/"
+raw_data = make_request(get_videos_list_url,
+                            {'Authorization': f"Bearer {access_token}", "simkl-api-key": client_id})
 
 for video_type in video_types:
-    sub_cat = type_dict[video_type]
-    get_videos_list_url = f"https://api.simkl.com/sync/all-items/{video_type}/completed"
+    data_tag = "movie" if video_type == "movies" else "show"
 
-    raw_data = make_request(get_videos_list_url,
-                            {'Authorization': f"Bearer {access_token}", "simkl-api-key": client_id})
-    data = raw_data[video_type]
+    # Initial and normalize a dataframe
+    df = pd.DataFrame(raw_data[video_type])
+    video_data = pd.json_normalize(df[data_tag], max_level=0)
 
-    videos_data  = pd.DataFrame(video_data[sub_cat] for video_data in data)
-    all_ids = [id[sub_cat]["ids"] for id in data]
+    # Obtain targeted data
+    video_ids = pd.json_normalize(video_data["ids"]).add_suffix("_id")
+    video_names = video_data["title"]
+    watched_time = df["last_watched_at"]
 
-    df = pd.DataFrame(all_ids)
-    df = df.add_suffix("_id")
-
-    df["name"] = videos_data["title"]
-    watched_time = [time_at["last_watched_at"] for time_at in data]
-    df["watched_at"] = watched_time
-
-    if video_type == "shows":
-        watching_shows_list_url = f"https://api.simkl.com/sync/all-items/{video_type}/watching"
-
-        raw_data = make_request(get_videos_list_url,
-                                {'Authorization': f"Bearer {access_token}", "simkl-api-key": client_id})
-        data = raw_data[video_type]
-
-        videos_data = pd.DataFrame(video_data[sub_cat] for video_data in data)
-        all_ids = [id[sub_cat]["ids"] for id in data]
-
-        df2 = pd.DataFrame(all_ids)
-        df2 = df2.add_suffix("_id")
-
-        df2["name"] = videos_data["title"]
-        watched_time = [time_at["last_watched_at"] for time_at in data]
-        df2["watched_at"] = watched_time
-
-        df = pd.concat([df, df2], axis=0)
-
-
+    # Finalize and save data as csv file
+    df = pd.concat((video_ids, video_names, watched_time), axis=1)
     df.to_csv(f"{video_type}_data.csv", index=False)
