@@ -50,7 +50,7 @@ while not is_user_authenticated:
 video_types = ["movies", "anime", "shows"]
 get_videos_list_url = f"https://api.simkl.com/sync/all-items/"
 raw_data = make_request(get_videos_list_url,
-                            {'Authorization': f"Bearer {access_token}", "simkl-api-key": client_id})
+                        {'Authorization': f"Bearer {access_token}", "simkl-api-key": client_id})
 
 for video_type in video_types:
     data_tag = "movie" if video_type == "movies" else "show"
