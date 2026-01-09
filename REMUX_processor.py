@@ -46,8 +46,8 @@ if __name__ == "__main__":
     # --- 1. Configuration ---
     se = 2
     ep_num = 6
-    in_path = "/Users/xuweining/Desktop/🎬/Peaky Blinders/"
-    out_path = "/Users/xuweining/Desktop/"
+    in_path = "/Users/"
+    out_path = "/Users/"
     track_settings = {"video": 0, "audio": 0, "subtitle": 0}
     extra_sub = False
     max_worker = 5
@@ -56,9 +56,9 @@ if __name__ == "__main__":
     tasks = []
     for ep in range(ep_num):
         ep += 1
-        in_v_name = f"Peaky Blinders.se{se}.ep{ep}.mkv"
+        in_v_name = f"Samples.S{se:02}.E{ep:02}.mkv"
         in_s_name = f""
-        out_file_name = f"Peaky Blinders.se{se}.ep{ep}.mkv"
+        out_file_name = f"Samples.se{se}.ep{ep}.mkv"
         video_in = os.path.join(in_path, in_v_name)
         sub_in = os.path.join(in_path, in_s_name)
         video_out = os.path.join(out_path, out_file_name)
