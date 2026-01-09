@@ -44,8 +44,8 @@ def run_ffmpeg_task(video_in, sub_in, video_out, track_idx):
 
 if __name__ == "__main__":
     # --- 1. Configuration ---
-    se = 2
-    ep_num = 6
+    se = 1
+    ep_num = 10
     in_path = "/Users/"
     out_path = "/Users/"
     track_settings = {"video": 0, "audio": 0, "subtitle": 0}
