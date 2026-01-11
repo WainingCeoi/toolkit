@@ -51,7 +51,8 @@ def get_files():
 
 if __name__ == "__main__":
     # --- 1. Configuration ---
-    out_path = "/Users"
+    out_path = os.path.expanduser("~/Desktop/🎬")
+    os.makedirs(out_path, exist_ok=True)
     track_settings = {"video": 0, "audio": 0, "subtitle": 0}
     extra_sub = False
 
