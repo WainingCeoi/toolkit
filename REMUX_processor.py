@@ -2,7 +2,7 @@ import ffmpeg
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 import os
-from tkinter import filedialog
+from tkinter.filedialog import askopenfilenames as get_files
 
 
 def run_ffmpeg_task(input_video, input_subtitle, output_video, track_idx):
@@ -40,13 +40,6 @@ def run_ffmpeg_task(input_video, input_subtitle, output_video, track_idx):
         return f"✅ Success: {stream_title}"
     except Exception as e:
         return f"❌ Failed: {stream_title} | Error: {e}"
-
-
-def get_files():
-    file_paths = filedialog.askopenfilenames(
-        title = "Please select the raw video files",
-    )
-    return file_paths
 
 
 if __name__ == "__main__":
