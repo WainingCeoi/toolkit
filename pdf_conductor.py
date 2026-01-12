@@ -3,12 +3,12 @@ from PIL import Image
 from ToolFunc.colloctor import collect_target_files
 
 # Config parameters
-input_path = r"/Users/xuweining/Desktop/raw"
-output_path = r"/Users/xuweining/Desktop"
-extention = ['.png', '.jpg', '.jpeg', '.bmp', '.gif', '.tiff']
+input_path = os.path.expanduser("~/Desktop/raw")
+output_path = os.path.expanduser("~/Desktop")
+extension = [".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tiff"]
 
 # Collect all image files
-image_files = collect_target_files(input_path, ext=extention, include_subfolder=False)
+image_files = collect_target_files(input_path, ext=extension, include_subfolder=False)
 
 
 if image_files:
