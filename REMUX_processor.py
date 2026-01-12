@@ -15,7 +15,7 @@ def run_ffmpeg_task(input_video, input_subtitle, output_video, track_idx):
 
         # Determine subtitle source
         if input_subtitle:
-            subtitle = ffmpeg.input(input_subtitle).subtitle
+            subtitle = ffmpeg.input(input_subtitle)["s:0"]
         else:
             subtitle = steam[f"s:{track_idx["subtitle"]}"]
 
@@ -53,8 +53,8 @@ if __name__ == "__main__":
     # --- 2. Build the Task List ---
     # This is where you handle the varying filenames by manually defining different patterns for different episodes
     tasks = []
-    raw_video_files = get_files()
-    raw_subtitle_files = get_files() if extra_sub else None
+    raw_video_files = get_files(title="Please Select Video(s)")
+    raw_subtitle_files = get_files(title="Please Select Subtitle(s)") if extra_sub else None
     tasks_num = len(raw_video_files)
     assert tasks_num > 0, "❌ No file(s) selected."
 
@@ -73,7 +73,7 @@ if __name__ == "__main__":
 
 
     # --- 3. Execute Simultaneously ---
-    print(f"Starting parallel processing for {tasks_num} files...")
+    print(f"Starting processing for {tasks_num} files...")
 
     with ProcessPoolExecutor(max_workers=tasks_num) as executor:
         # We use a dictionary unpacking (**) to pass the task info to the function
