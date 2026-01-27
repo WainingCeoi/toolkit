@@ -81,3 +81,7 @@ if __name__ == "__main__":
 
         for future in futures:
             print(future.result())
+
+
+print("Done!")
+os.system("afplay /System/Library/Sounds/Hero.aiff")
