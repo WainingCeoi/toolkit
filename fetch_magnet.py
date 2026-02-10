@@ -1,8 +1,9 @@
 import requests
 from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor
+import os
 
-"""Jan. 7, 2026"""
+"""Last Fetching Date:"""
 
 raw = """
 
@@ -35,3 +36,4 @@ if __name__ == "__main__":
         print(f"{idx+1}. {magnet}")
 
     print(f"\n{len(urls)} file(s) in total.")
+    os.system("afplay /System/Library/Sounds/Hero.aiff")
