@@ -3,7 +3,7 @@ from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor
 import os
 
-"""Last Fetching Date:"""
+"""Last Fetching Date: , v_idx"""
 
 raw = """
 
@@ -16,7 +16,7 @@ def get_magnet_link(url):
         html_content = requests.get(url, timeout=5)
 
         # Parse the HTML content
-        soup = BeautifulSoup(html_content.text, 'html.parser')
+        soup = BeautifulSoup(html_content.text, "html.parser")
 
         magnets = soup.find_all("a", href=lambda href: href and href.startswith("magnet"))
         for magnet in magnets:
