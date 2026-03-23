@@ -4,6 +4,7 @@ import os
 
 source_folder = os.path.expanduser("~/Desktop/1")
 target_folder = os.path.expanduser("~/Desktop/2")
+os.makedirs(target_folder, exist_ok=True)
 
 v_types = [".mp4", ".mov", ".ts", ".flv", ".avi"]
 files = collect_target_files(input_folder=source_folder, file_types=v_types, include_subfolder=True)
