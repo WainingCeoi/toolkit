@@ -27,3 +27,5 @@ for file in files:
         os.rename(file, target_path)
     except Exception as e:
         print(f"Error moving {file}: {e}")
+
+os.system("afplay /System/Library/Sounds/Hero.aiff")
