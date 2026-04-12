@@ -1,4 +1,4 @@
-from ToolFunc.fetchor import fetch_pdf
+from toolkit.ToolFunc.fetchor import fetch_pdf
 
 
 url = ""
