@@ -1,6 +1,6 @@
 import os
 from PIL import Image
-from ToolFunc.colloctor import collect_target_files
+from toolkit.ToolFunc.colloctor import collect_target_files
 
 # Config parameters
 input_path = os.path.expanduser("~/Desktop/raw")
