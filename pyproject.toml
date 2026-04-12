@@ -3,11 +3,10 @@ name = "toolkit"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.14"
 dependencies = [
     "beautifulsoup4>=4.14.3",
     "ffmpeg-python>=0.2.0",
-    "jupyterlab>=4.5.6",
     "notebook>=7.5.5",
     "requests>=2.33.1",
     "seaborn>=0.13.2",
