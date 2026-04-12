@@ -1,5 +1,5 @@
-from ToolFunc.colloctor import collect_target_files
-from ToolFunc.convertor import convert_md_to_word_and_pdf
+from toolkit.ToolFunc.colloctor import collect_target_files
+from toolkit.ToolFunc.convertor import convert_md_to_word_and_pdf
 from multiprocessing import Pool, cpu_count
 import os
 
