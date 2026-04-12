@@ -1,4 +1,4 @@
-from ToolFunc.colloctor import collect_target_files
+from toolkit.ToolFunc.colloctor import collect_target_files
 import os
 
 
