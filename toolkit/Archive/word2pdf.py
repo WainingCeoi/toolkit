@@ -1,6 +1,6 @@
 from multiprocessing import Pool, cpu_count
-from ToolFunc.colloctor import collect_target_files
-from ToolFunc.convertor import convert_word_to_pdf
+from toolkit.ToolFunc.colloctor import collect_target_files
+from toolkit.ToolFunc.convertor import convert_word_to_pdf
 import os
 
 # Config Input and Output Path, and specify file type
