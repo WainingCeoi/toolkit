@@ -1,6 +1,6 @@
 import os
 from concurrent.futures import ThreadPoolExecutor
-from ToolFunc.colloctor import collect_target_files
+from toolkit.ToolFunc.colloctor import collect_target_files
 
 
 # Config parameters
