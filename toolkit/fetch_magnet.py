@@ -3,7 +3,6 @@ from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor
 import os
 
-"""Last Fetching Date: , v_idx"""
 
 raw = """
 
