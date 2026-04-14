@@ -2,6 +2,7 @@ import ffmpeg
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 import os
+import subprocess
 from tkinter.filedialog import askopenfilenames as get_files
 
 
@@ -82,5 +83,5 @@ if __name__ == "__main__":
         for future in futures:
             print(future.result())
 
-        print("Done!")
-        os.system("afplay /System/Library/Sounds/Hero.aiff")
+    print("Done!")
+    subprocess.run(["afplay", "/System/Library/Sounds/Hero.aiff"])
