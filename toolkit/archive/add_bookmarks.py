@@ -1,4 +1,4 @@
-from toolkit.ToolFunc.fetchor import add_bookmark
+from toolkit.tool_function.fetchor import add_bookmark
 import os
 
 
