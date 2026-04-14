@@ -1,7 +1,9 @@
 import requests
 from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor
-import os
+import subprocess
+from datetime import datetime
+from dotenv import set_key
 
 
 raw = """
@@ -34,5 +36,9 @@ if __name__ == "__main__":
     for idx, magnet in enumerate(all_magnets):
         print(f"{idx+1}. {magnet}")
 
+    env_path = "../.env"
+    current_date = datetime.now().strftime("%Y-%m-%d")
+    set_key(env_path, "LAST_FETCHED_DATE", current_date)
+
     print(f"\n{len(urls)} file(s) in total.")
-    os.system("afplay /System/Library/Sounds/Hero.aiff")
+    subprocess.run(["afplay", "/System/Library/Sounds/Hero.aiff"])
