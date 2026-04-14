@@ -1,6 +1,6 @@
-from toolkit.ToolFunc.colloctor import collect_target_files
-from toolkit.ToolFunc.convertor import convert_md_to_word_and_pdf
+from toolkit.tool_function.convertor import convert_md_to_word_and_pdf
 from multiprocessing import Pool, cpu_count
+from tkinter.filedialog import askopenfilenames as get_files
 import os
 
 
@@ -18,13 +18,14 @@ if __name__ == "__main__":
     os.makedirs(pdf_folder, exist_ok=True)
 
     # Collected all to be converted markdown files.
-    md_files = collect_target_files(md_folder, extensions, sub_folder)
+    md_files = get_files(title="Please select Markdown file(s)")
+
     print(f"Found {len(md_files)} MarkDown Files.")
     # Config task parameters
     chunk_size = 3 # If encounter any unexpected crash event or error, please priority lower this valve.
     max_cpu = max(2, cpu_count()-2)
 
-    # Passing 5 (chunk size) markdown files for simultaneously converting process each time.
+    # Passing 5 (chunk size) Markdown files for simultaneously converting process each time.
     for i in range(0, len(md_files), chunk_size):
         sub_md_files = md_files[i:i+chunk_size]
         args = [(md_file, word_folder, pdf_folder, bookmarks) for md_file in sub_md_files]

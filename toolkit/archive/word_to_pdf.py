@@ -1,20 +1,19 @@
 from multiprocessing import Pool, cpu_count
-from toolkit.ToolFunc.colloctor import collect_target_files
-from toolkit.ToolFunc.convertor import convert_word_to_pdf
+from toolkit.tool_function.convertor import convert_word_to_pdf
+from tkinter.filedialog import askopenfilenames as get_files
 import os
 
 # Config Input and Output Path, and specify file type
 word_folder = r"C:\Users\wei-ning.xu\OneDrive - Arup\Project\深圳魏桥\隔油设备"
 sub_folder = False
 pdf_folder = r"C:\Users\wei-ning.xu\Desktop\PDF"
-extensions = [".docx", ".doc"]
 bookmarks = 0
 
 
 if __name__ == "__main__":
     os.makedirs(pdf_folder, exist_ok=True)
     # Collect all Word file
-    word_files = collect_target_files(word_folder, extensions, sub_folder)
+    word_files = get_files(title="Please select Word file(s)")
     print(f"Found {len(word_files)} Word Files.")
     '''
     Due to MS API and memery limitation, we can't process files simultaneously on different thread.
