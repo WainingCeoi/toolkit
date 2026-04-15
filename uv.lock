@@ -1395,6 +1395,27 @@ wheels = [
 ]
 
 [[package]]
+name = "scandir-rs"
+version = "2.9.5"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/3b/6a/215741d08a8a44c49eb174c0024c55eecac5f8ec74530aa4fece9c028d80/scandir_rs-2.9.5-cp314-cp314-macosx_10_12_x86_64.whl", hash = "sha256:9e91be0411b0ad8987b587d86c9be90aabc370b7f6ba537e12a282142eb184c4", size = 479060, upload-time = "2025-11-24T10:19:29.464Z" },
+    { url = "https://files.pythonhosted.org/packages/e1/dc/7b3f52d409630c579f1082f7334192abc3a87604dc22c6eaf8bc6c88bfda/scandir_rs-2.9.5-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:83a0e45aa94b6522195754f40765609d24ceb28c9db0f5f81248c9311935ea99", size = 456820, upload-time = "2025-11-24T10:19:31.391Z" },
+    { url = "https://files.pythonhosted.org/packages/69/c5/097f89efeec9573efae13ac8b76b4b9ce487e02e2e511a4def4f1c360de8/scandir_rs-2.9.5-cp314-cp314-manylinux_2_34_aarch64.whl", hash = "sha256:9afc7ca021d2accdbc9d1e8e73b5e662cdfcef4bf4ceabc72a78ef3265db4412", size = 496572, upload-time = "2025-11-24T10:19:33.304Z" },
+    { url = "https://files.pythonhosted.org/packages/fa/7d/429b0a0c17f117d3782b66c365299c01d9088fdaa5772ace1dbd67390065/scandir_rs-2.9.5-cp314-cp314-manylinux_2_34_armv7l.whl", hash = "sha256:63d2ffbd2b339f72bae46a23a4d257ac437111cc29c27a1f729660f357852d77", size = 501535, upload-time = "2025-11-24T10:19:35.63Z" },
+    { url = "https://files.pythonhosted.org/packages/b9/e8/3aca9329df745e5a214a897c7d796ac28c7d14dcdec7d1bef66d9755f2f1/scandir_rs-2.9.5-cp314-cp314-manylinux_2_34_i686.whl", hash = "sha256:39e55dfd0ca27368dc18df9bc1b220a0bf83d5aef4a0031f8863f82669861aa3", size = 544914, upload-time = "2025-11-24T10:19:37.736Z" },
+    { url = "https://files.pythonhosted.org/packages/7e/2b/647932b10571bfdb0e1d1851ca449e9cba051530f39db8743be35951359b/scandir_rs-2.9.5-cp314-cp314-manylinux_2_34_ppc64le.whl", hash = "sha256:ee96dced673a1c929a5960c58a0c93017e9f7810ca467d11e8ea67b492d496fa", size = 552117, upload-time = "2025-11-24T10:19:39.469Z" },
+    { url = "https://files.pythonhosted.org/packages/53/42/0772b671f5236c4c9ec0140c017eedb9b44fbc0e15b731ae3349a0b19a9d/scandir_rs-2.9.5-cp314-cp314-manylinux_2_34_s390x.whl", hash = "sha256:8a23f0b1132c132e17b65004585706a85c5bd06cee36bbfdfa5e10af9e5fba2b", size = 549417, upload-time = "2025-11-24T10:19:41.058Z" },
+    { url = "https://files.pythonhosted.org/packages/ad/56/c2754b12c04d5edb5bb63749cdb3eba1bc20ffac4dad3cbe0c0af30444cf/scandir_rs-2.9.5-cp314-cp314-manylinux_2_34_x86_64.whl", hash = "sha256:f76391156ce2a354df92dc70278672fdff863b9966d28621a77437c1c38fe2fb", size = 504346, upload-time = "2025-11-24T10:19:43.333Z" },
+    { url = "https://files.pythonhosted.org/packages/24/18/e10714376f858085e6eb034d7fdd01d4519335e025c3ce9107a687d57557/scandir_rs-2.9.5-cp314-cp314-musllinux_1_2_aarch64.whl", hash = "sha256:d29d809399ba776e3b9e6d326f7f89331f9f1383a6c496242270a95baf39618b", size = 667414, upload-time = "2025-11-24T10:19:45.316Z" },
+    { url = "https://files.pythonhosted.org/packages/51/20/5d43d417a36b9ba494b96cedcb36bf41ae1569bf6b8bc47f5507f9c6ecb9/scandir_rs-2.9.5-cp314-cp314-musllinux_1_2_armv7l.whl", hash = "sha256:96809c0a4e61ec97eec62d2f47164adb8accbae450e986f57cd788644b600b35", size = 770274, upload-time = "2025-11-24T10:19:47.541Z" },
+    { url = "https://files.pythonhosted.org/packages/52/5f/c6ed193c2664b75c4a9c4bce20293302430ec45c16ce71011f59f9930e05/scandir_rs-2.9.5-cp314-cp314-musllinux_1_2_i686.whl", hash = "sha256:2be0537b6a3fd0f7c45f8b9da8e8a30ccad9cd6df3fa03728458f6c308cf83be", size = 717209, upload-time = "2025-11-24T10:19:49.753Z" },
+    { url = "https://files.pythonhosted.org/packages/fa/86/1d575143f99940207b64510a44f033f9aa94b342c73d8d030c61650d4f0b/scandir_rs-2.9.5-cp314-cp314-musllinux_1_2_x86_64.whl", hash = "sha256:14329b02174f572a05b1db992250a29bbe7935e9b26f98ea390b615136edd094", size = 681573, upload-time = "2025-11-24T10:19:52.034Z" },
+    { url = "https://files.pythonhosted.org/packages/be/26/fe1e7d66f9ec12f5d8380eafc28590b6ea0d707ee191601e3234d809e727/scandir_rs-2.9.5-cp314-cp314-win32.whl", hash = "sha256:e2f6f723da61edd4d1e469f889861e8b32baa26b95eaacef23b2115a3ba5d193", size = 405552, upload-time = "2025-11-24T10:19:53.749Z" },
+    { url = "https://files.pythonhosted.org/packages/e8/8b/4b6ba07e63e84e57bdbaf83e7b07ebf24c5f236745daea9f4a8221b505d6/scandir_rs-2.9.5-cp314-cp314-win_amd64.whl", hash = "sha256:618b28f018bb327c3f34d0ad8cf7a070b24771440540e2dae2c28a1e3f663f62", size = 434585, upload-time = "2025-11-24T10:19:55.183Z" },
+]
+
+[[package]]
 name = "seaborn"
 version = "0.13.2"
 source = { registry = "https://pypi.org/simple" }
@@ -1494,6 +1515,7 @@ dependencies = [
     { name = "notebook" },
     { name = "python-dotenv" },
     { name = "requests" },
+    { name = "scandir-rs" },
     { name = "seaborn" },
 ]
 
@@ -1504,6 +1526,7 @@ requires-dist = [
     { name = "notebook", specifier = ">=7.5.5" },
     { name = "python-dotenv", specifier = ">=1.2.2" },
     { name = "requests", specifier = ">=2.33.1" },
+    { name = "scandir-rs", specifier = ">=2.9.5" },
     { name = "seaborn", specifier = ">=0.13.2" },
 ]
 

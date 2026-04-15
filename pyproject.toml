@@ -10,5 +10,6 @@ dependencies = [
     "notebook>=7.5.5",
     "python-dotenv>=1.2.2",
     "requests>=2.33.1",
+    "scandir-rs>=2.9.5",
     "seaborn>=0.13.2",
 ]
