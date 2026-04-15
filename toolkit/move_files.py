@@ -1,5 +1,6 @@
 from toolkit.tool_function.colloctor import collect_target_files
 import os
+import subprocess
 
 
 source_folder = os.path.expanduser("~/Desktop/1")
@@ -28,4 +29,4 @@ for file in files:
     except Exception as e:
         print(f"Error moving {file}: {e}")
 
-os.system("afplay /System/Library/Sounds/Hero.aiff")
+subprocess.run(["afplay", "/System/Library/Sounds/Hero.aiff"])
