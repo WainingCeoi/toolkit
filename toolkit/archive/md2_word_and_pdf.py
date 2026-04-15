@@ -5,11 +5,8 @@ import os
 
 
 # Config input and output
-md_folder = r"C:\Users\wei-ning.xu\OneDrive - Arup\Project\深圳魏桥\隔油设备"
-sub_folder = True
 word_folder = r"C:\Users\wei-ning.xu\Desktop"
 pdf_folder = r"C:\Users\wei-ning.xu\Desktop"
-extensions = [".md"]
 bookmarks = 1
 
 
@@ -17,7 +14,7 @@ if __name__ == "__main__":
     os.makedirs(word_folder, exist_ok=True)
     os.makedirs(pdf_folder, exist_ok=True)
 
-    # Collected all to be converted markdown files.
+    # Collected all to be converted Markdown files.
     md_files = get_files(title="Please select Markdown file(s)")
 
     print(f"Found {len(md_files)} MarkDown Files.")
