@@ -6,10 +6,9 @@ readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
     "beautifulsoup4>=4.14.3",
+    "dotenv>=0.9.9",
     "ffmpeg-python>=0.2.0",
-    "notebook>=7.5.5",
-    "python-dotenv>=1.2.2",
+    "pillow>=12.2.0",
     "requests>=2.33.1",
     "scandir-rs>=2.9.5",
-    "seaborn>=0.13.2",
 ]
