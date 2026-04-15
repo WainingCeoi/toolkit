@@ -1,31 +1,36 @@
 import os
 from concurrent.futures import ThreadPoolExecutor
-from toolkit.ToolFunc.colloctor import collect_target_files
+from scandir_rs import Scandir
 
 
 # Config parameters
 folder_to_purge = r""
-extensions = [".dwl", ".dwl2", ".bak", ".log", ".db", ".tmp", ".err"]
-min_workers = 200
+cache_types = ["*.dwl", "*.dwl2", "*.bak", "*.log", "*.db", "*.tmp", "*.err"]
 
 
-def delete_file(files):
+def delete_file(file_path):
     try:
-        for file in files:
-            os.remove(file)
+        os.remove(file_path)
     except Exception as e:
         print(e)
 
 
 if __name__ == "__main__":
     # get the target to delete files
-    files_to_delete = collect_target_files(input_folder=folder_to_purge, file_types=extensions, include_subfolder=True)
+    scaner, errors = Scandir(folder_to_purge, file_include=cache_types).collect()
+    files_to_delete = []
+    for file in scaner:
+        if file.is_file:
+            files_to_delete.append(os.path.join(folder_to_purge, file.path))
+    if errors:
+        for error in errors:
+            print(error)
+
     total_files = len(files_to_delete)
     print(f"Found {total_files} files.")
 
 
-    dynamic_workers = max(min_workers, total_files)
-    with ThreadPoolExecutor(max_workers=dynamic_workers) as executor:
-        executor.map(delete_file, (files_to_delete[idx::dynamic_workers] for idx in range(dynamic_workers)))
+    with ThreadPoolExecutor() as executor:
+        executor.map(delete_file, files_to_delete)
 
     print("Purge Done!")
