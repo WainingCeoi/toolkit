@@ -57,7 +57,10 @@ if __name__ == "__main__":
     raw_video_files = get_files(title="Please Select Video(s)")
     raw_subtitle_files = get_files(title="Please Select Subtitle(s)") if extra_sub else None
     tasks_num = len(raw_video_files)
-    assert tasks_num > 0, "❌ No file(s) selected."
+
+    if not raw_subtitle_files:
+        print("❌ No video selected.")
+        exit()
 
     for idx in range(tasks_num):
         in_video = raw_video_files[idx]
