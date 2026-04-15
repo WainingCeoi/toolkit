@@ -1,5 +1,5 @@
 """
-A simple python script to export all watched videos (movies, anime, shows) history from SIMKL to csv files.
+A simple Python script to export all watched videos (movies, anime, shows) history from SIMKL to csv files.
 
 Simkl API Setup:
 1. Go to "https://simkl.com/settings/developer/" and create a new app.
