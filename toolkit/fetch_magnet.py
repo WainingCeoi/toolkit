@@ -1,44 +1,90 @@
 import requests
 from bs4 import BeautifulSoup
-from concurrent.futures import InterpreterPoolExecutor
+from concurrent.futures import ProcessPoolExecutor
 import subprocess
-from datetime import datetime
-from dotenv import set_key
+from dotenv import set_key, load_dotenv
+import os
 
 
+# For manual input
 raw = """
 
 """
 
 
+# Return on page magnet by giving an url
 def get_magnet_link(url):
     try:
-        # Send HTTP GET request
-        html_content = requests.get(url, timeout=5)
-
-        # Parse the HTML content
+        html_content = requests.get(url, timeout=10)
         soup = BeautifulSoup(html_content.text, "html.parser")
-
-        magnets = soup.find_all("a", href=lambda href: href and href.startswith("magnet"))
-        for magnet in magnets:
-            return magnet.get("href")
+        magnet = soup.select_one('a[href^="magnet"]')
+        
+        return {"success": True, "result": magnet.get("href")}
 
     except Exception as e:
-        print(e)
+        return {"success": False, "url": url}
 
 
 if __name__ == "__main__":
-    urls = raw.strip().splitlines()
+    Auto = False
+    env_path = "./.env"
+    
+    if Auto:
+        # Get unwatched videos automatically
+        
+        # Get last run info.
+        load_dotenv()
+        cutoff_video_url = os.getenv("CUTOFF_VIDEO")
+        source_website = os.getenv("WEBSITE_URL")
+        
+        # Initial parameters
+        unwatched_video_urls = []
+        page_idx = 1
+        found = False
 
-    # run them in parallel
-    with InterpreterPoolExecutor() as executor:
-        all_magnets = executor.map(get_magnet_link, urls)
-    for idx, magnet in enumerate(all_magnets):
-        print(f"{idx+1}. {magnet}")
+        # Get unwatched videos
+        while not found:
+            page_url = f"{source_website}/page/{page_idx}/"
+            
+            content = requests.get(url=page_url, timeout=10)
+            soup = BeautifulSoup(content.text, "html.parser")
+            on_page_links = soup.find_all("a", rel="bookmark")
+            urls = [link.get("href") for link in on_page_links if link.get("href")]
+            
+            unwatched_video_urls += urls
+            page_idx += 1
+            
+            if cutoff_video_url in urls:
+                found = True
+        
+        # Remove watched videos urls
+        cutoff_idx = unwatched_video_urls.index(cutoff_video_url)
+        unwatched_video_urls = unwatched_video_urls[:cutoff_idx]
+        
+        # Save latest video info.
+        set_key(env_path, "CUTOFF_VIDEO", unwatched_video_urls[0])
+    
+    else:
+        # Input unwatched video urls manually
+        unwatched_video_urls = raw.strip().splitlines()
+    
+    
+    # Fetch magnets simultaneously
+    with ProcessPoolExecutor() as executor:
+        results = list( executor.map(get_magnet_link, unwatched_video_urls))
+    
+    
+    # Retrive and print results
+    successful = [r for r in results if r["success"]]
+    failed = [r for r in results if not r["success"]]
 
-    env_path = "../.env"
-    current_date = datetime.now().strftime("%Y-%m-%d")
-    set_key(env_path, "LAST_FETCHED_DATE", current_date)
+    for item in successful:
+        print(item["result"])
 
-    print(f"\n{len(urls)} file(s) in total.")
+    if failed:
+        print("\n--- Failed URLs ---")
+        for item in failed:
+            print(item["url"])
+    
+    print(f"\n{len(unwatched_video_urls)} in total. {len(successful)} ✅, {len(failed)} ❌")
     subprocess.run(["afplay", "/System/Library/Sounds/Hero.aiff"])
