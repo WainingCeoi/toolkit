@@ -1,5 +1,5 @@
 import ffmpeg
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import InterpreterPoolExecutor
 from pathlib import Path
 import os
 import subprocess
@@ -79,7 +79,7 @@ if __name__ == "__main__":
     # --- 3. Execute Simultaneously ---
     print(f"Starting processing for {tasks_num} files...")
 
-    with ProcessPoolExecutor() as executor:
+    with InterpreterPoolExecutor() as executor:
         # We use a dictionary unpacking (**) to pass the task info to the function
         futures = [executor.submit(run_ffmpeg_task, **task) for task in tasks]
 

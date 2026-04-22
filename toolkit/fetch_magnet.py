@@ -1,6 +1,6 @@
 import requests
 from bs4 import BeautifulSoup
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import InterpreterPoolExecutor
 import subprocess
 from datetime import datetime
 from dotenv import set_key
@@ -31,7 +31,7 @@ if __name__ == "__main__":
     urls = raw.strip().splitlines()
 
     # run them in parallel
-    with ThreadPoolExecutor() as executor:
+    with InterpreterPoolExecutor() as executor:
         all_magnets = executor.map(get_magnet_link, urls)
     for idx, magnet in enumerate(all_magnets):
         print(f"{idx+1}. {magnet}")
