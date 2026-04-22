@@ -1,5 +1,5 @@
 import ffmpeg
-from concurrent.futures import InterpreterPoolExecutor
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 import os
 import subprocess
@@ -58,7 +58,7 @@ if __name__ == "__main__":
     raw_subtitle_files = get_files(title="Please Select Subtitle(s)") if extra_sub else None
     tasks_num = len(raw_video_files)
 
-    if not raw_subtitle_files:
+    if not raw_video_files:
         print("❌ No video selected.")
         exit()
 
@@ -79,12 +79,12 @@ if __name__ == "__main__":
     # --- 3. Execute Simultaneously ---
     print(f"Starting processing for {tasks_num} files...")
 
-    with InterpreterPoolExecutor() as executor:
+    with ProcessPoolExecutor() as executor:
         # We use a dictionary unpacking (**) to pass the task info to the function
-        futures = [executor.submit(run_ffmpeg_task, **task) for task in tasks]
+        results = list(executor.submit(run_ffmpeg_task, **task) for task in tasks)
 
-        for future in futures:
-            print(future.result())
+        for r in results:
+            print(r.result())
 
     print("Done!")
     subprocess.run(["afplay", "/System/Library/Sounds/Hero.aiff"])
