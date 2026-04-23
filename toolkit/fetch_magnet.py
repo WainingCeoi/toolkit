@@ -17,16 +17,17 @@ def get_magnet_link(url):
     try:
         html_content = requests.get(url, timeout=10)
         soup = BeautifulSoup(html_content.text, "html.parser")
-        magnet = soup.select_one('a[href^="magnet"]')
+        magnet = soup.find("a", string="Magnet")
+        magnet = magnet.get("href")
         
-        return {"success": True, "result": magnet.get("href")}
+        return {"success": True, "result": magnet}
 
     except Exception as e:
         return {"success": False, "url": url}
 
 
 if __name__ == "__main__":
-    Auto = False
+    Auto = True
     env_path = "./.env"
     
     if Auto:
@@ -88,3 +89,5 @@ if __name__ == "__main__":
     
     print(f"\n{len(unwatched_video_urls)} in total. {len(successful)} ✅, {len(failed)} ❌")
     subprocess.run(["afplay", "/System/Library/Sounds/Hero.aiff"])
+
+
