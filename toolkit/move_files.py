@@ -14,7 +14,7 @@ scaner, errors = Scandir(source_folder, file_include=v_types).collect()
 files = []
 for file in scaner:
     if file.is_file:
-        files.append(file.path)
+        files.append(os.path.join(source_folder, file.path))
 
 if errors:
     for error in errors:
