@@ -45,18 +45,27 @@ if __name__ == "__main__":
 
         # Get unwatched videos
         while not found:
-            page_url = f"{source_website}/page/{page_idx}/"
+            try:
+                page_url = f"{source_website}/page/{page_idx}/"
+                content = requests.get(url=page_url, timeout=10)
+                soup = BeautifulSoup(content.text, "html.parser")
+                on_page_links = soup.find_all("a", rel="bookmark")
+                
+                urls = [link.get("href") for link in on_page_links if link.get("href")]
+                unwatched_video_urls += urls
+                
+                if cutoff_video_url in urls:
+                    found = True
+                else:
+                    page_idx += 1
             
-            content = requests.get(url=page_url, timeout=10)
-            soup = BeautifulSoup(content.text, "html.parser")
-            on_page_links = soup.find_all("a", rel="bookmark")
-            urls = [link.get("href") for link in on_page_links if link.get("href")]
-            
-            unwatched_video_urls += urls
-            page_idx += 1
-            
-            if cutoff_video_url in urls:
-                found = True
+            except Exception as e:
+                print(e)
+                print(f"Urls collected so far:\n")
+                for url in urls:
+                    print(url)
+                print(f"Stoped at Page {idx}")
+                break
         
         # Remove watched videos urls
         cutoff_idx = unwatched_video_urls.index(cutoff_video_url)
