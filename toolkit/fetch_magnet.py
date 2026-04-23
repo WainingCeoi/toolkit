@@ -1,9 +1,10 @@
+import os
+import subprocess
+from concurrent.futures import ThreadPoolExecutor
+
 import requests
 from bs4 import BeautifulSoup
-from concurrent.futures import ThreadPoolExecutor
-import subprocess
-from dotenv import set_key, load_dotenv
-import os
+from dotenv import load_dotenv, set_key
 
 
 # For manual input
@@ -63,7 +64,7 @@ if __name__ == "__main__":
                 print("Urls collected so far:\n")
                 for url in unwatched_video_urls:
                     print(url)
-                print(f"Stoped at Page {page_idx}")
+                print(f"Stopped at Page {page_idx}")
                 break
         
         # Remove watched videos urls

@@ -1,9 +1,10 @@
-import ffmpeg
-from concurrent.futures import ProcessPoolExecutor
-from pathlib import Path
 import os
 import subprocess
+from concurrent.futures import ProcessPoolExecutor
+from pathlib import Path
 from tkinter.filedialog import askopenfilenames as get_files
+
+import ffmpeg
 
 
 def run_ffmpeg_task(input_video, input_subtitle, output_video, track_idx):

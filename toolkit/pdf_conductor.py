@@ -1,7 +1,7 @@
 import os
-from PIL import Image
 from tkinter.filedialog import askopenfilenames as get_files
 
+from PIL import Image
 
 # Config parameter
 output_path = os.path.expanduser("~/Desktop")

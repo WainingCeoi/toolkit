@@ -1,8 +1,8 @@
-import subprocess
-from scandir_rs import Scandir
-from pathlib import Path
 import shutil
+import subprocess
+from pathlib import Path
 
+from scandir_rs import Scandir
 
 # Configuration
 source_folder = Path("~/Desktop/1").expanduser()
