@@ -84,7 +84,7 @@ if __name__ == "__main__":
         results = list( executor.map(get_magnet_link, unwatched_video_urls))
     
     
-    # Retrive and print results
+    # Retrieve and print results
     successful = [r for r in results if r["success"]]
     failed = [r for r in results if not r["success"]]
 
