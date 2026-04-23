@@ -1,6 +1,6 @@
 import requests
 from bs4 import BeautifulSoup
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ThreadPoolExecutor
 import subprocess
 from dotenv import set_key, load_dotenv
 import os
@@ -80,7 +80,7 @@ if __name__ == "__main__":
     
     
     # Fetch magnets simultaneously
-    with ProcessPoolExecutor() as executor:
+    with ThreadPoolExecutor() as executor:
         results = list( executor.map(get_magnet_link, unwatched_video_urls))
     
     
