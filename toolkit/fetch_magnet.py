@@ -17,12 +17,11 @@ def get_magnet_link(url):
     try:
         html_content = requests.get(url, timeout=10)
         soup = BeautifulSoup(html_content.text, "html.parser")
-        magnet = soup.find("a", string="Magnet")
-        magnet = magnet.get("href")
+        magnet = soup.find("a", string="Magnet").get("href")
         
         return {"success": True, "result": magnet}
 
-    except Exception as e:
+    except Exception:
         return {"success": False, "url": url}
 
 
@@ -61,10 +60,10 @@ if __name__ == "__main__":
             
             except Exception as e:
                 print(e)
-                print(f"Urls collected so far:\n")
-                for url in urls:
+                print("Urls collected so far:\n")
+                for url in unwatched_video_urls:
                     print(url)
-                print(f"Stoped at Page {idx}")
+                print(f"Stoped at Page {page_idx}")
                 break
         
         # Remove watched videos urls
