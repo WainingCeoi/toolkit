@@ -98,5 +98,3 @@ if __name__ == "__main__":
     
     print(f"\n{len(unwatched_video_urls)} in total. {len(successful)} ✅, {len(failed)} ❌")
     subprocess.run(["afplay", "/System/Library/Sounds/Hero.aiff"])
-
-
