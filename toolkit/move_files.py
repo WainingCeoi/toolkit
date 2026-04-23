@@ -11,9 +11,9 @@ v_types = ["*.mkv", "*.mp4", "*.mov", "*.ts", "*.flv", "*.avi"]
 
 # Collect targeted files path
 target_folder.mkdir(parents=True, exist_ok=True)
-scaner, errors = Scandir(str(source_folder), file_include=v_types).collect()
+scanner, errors = Scandir(str(source_folder), file_include=v_types).collect()
 files = []
-for file in scaner:
+for file in scanner:
     if file.is_file:
         files.append(source_folder / file.path)
 
