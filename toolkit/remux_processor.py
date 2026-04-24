@@ -1,4 +1,3 @@
-import os
 import subprocess
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
@@ -46,8 +45,8 @@ def run_ffmpeg_task(input_video, input_subtitle, output_video, track_idx):
 
 if __name__ == "__main__":
     # --- 1. Configuration ---
-    out_path = os.path.expanduser("~/Desktop/🎬")
-    os.makedirs(out_path, exist_ok=True)
+    out_path = Path("~/Desktop/🎬").expanduser()
+    out_path.mkdir(exist_ok=True)
     track_settings = {"video": 0, "audio": 0, "subtitle": 0}
     extra_sub = False
 
@@ -66,8 +65,8 @@ if __name__ == "__main__":
     for idx in range(tasks_num):
         in_video = raw_video_files[idx]
         in_subtitle = raw_subtitle_files[idx] if extra_sub else None
-        streams_title = os.path.basename(in_video)
-        out_video = os.path.join(out_path, streams_title)
+        stream_title = Path(in_video).name
+        out_video = str(out_path / stream_title)
 
         tasks.append({
             "input_video": in_video,
