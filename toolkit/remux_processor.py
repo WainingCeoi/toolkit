@@ -4,25 +4,27 @@ from pathlib import Path
 from tkinter.filedialog import askopenfilenames as get_files
 
 import ffmpeg
+from ffmpeg_progress_yield import FfmpegProgress
+from tqdm import tqdm
 
 
-def run_ffmpeg_task(input_video, input_subtitle, output_video, track_idx):
-    # A pure worker function. It doesn't care about season or episode numbers, it just takes paths and executes them.
+def run_ffmpeg_task(task_id, input_video, input_subtitle, output_video, track_configs):
     try:
-        steam = ffmpeg.input(input_video)
-        video = steam[f"v:{track_idx["video"]}"]
-        audio = steam[f"a:{track_idx["audio"]}"]
         stream_title = Path(input_video).stem
-
+        
+        # Build stream
+        steam = ffmpeg.input(input_video)
+        video = steam[f"v:{track_configs["video"]}"]
+        audio = steam[f"a:{track_configs["audio"]}"]
+        
         # Determine subtitle source
         if input_subtitle:
             subtitle = ffmpeg.input(input_subtitle)["s:0"]
         else:
-            subtitle = steam[f"s:{track_idx["subtitle"]}"]
+            subtitle = steam[f"s:{track_configs["subtitle"]}"]
 
+        # Config processing parameters
         streams = [video, audio, subtitle]
-
-        # Use the unique key strategy
         out_config = {
             "c": "copy",
             "metadata:s:s:0": "language=chi",
@@ -30,36 +32,40 @@ def run_ffmpeg_task(input_video, input_subtitle, output_video, track_idx):
             "disposition:s:0": "default",
             "metadata:g": f"title={stream_title}"
         }
+        stream = ffmpeg.output(*streams, output_video, **out_config).overwrite_output()
+        
+        cmd = ["ffmpeg"] + stream.get_args()
+        ff = FfmpegProgress(cmd)
 
-        (
-            ffmpeg
-            .output(*streams, output_video, **out_config)
-            .overwrite_output()
-            .run(capture_stdout=True, capture_stderr=True)
-        )
-
-        return f"✅ Success: {stream_title}"
+            
+        # 4. Track progress
+        # Using tqdm to keep the bars organized if you run this in a terminal
+        with tqdm(total=100, position=task_id, leave=True, desc=f"🟡 Working on: {stream_title}") as pbar:
+            for progress in ff.run_command_with_progress():
+                pbar.update(progress - pbar.n)
+                
+                
+        return f"🟢 Success: {stream_title}"
     except Exception as e:
-        return f"❌ Failed: {stream_title} | Error: {e}"
+        return f"🔴 Failed: {stream_title} | Error: {e}"
 
 
 if __name__ == "__main__":
-    # --- 1. Configuration ---
+    # Setup
     out_path = Path("~/Desktop/🎬").expanduser()
     out_path.mkdir(exist_ok=True)
-    track_settings = {"video": 0, "audio": 0, "subtitle": 0}
+    track_configs = {"video": 0, "audio": 0, "subtitle": 0}
     extra_sub = False
 
-
-    # --- 2. Build the Task List ---
-    # This is where you handle the varying filenames by manually defining different patterns for different episodes
+    # Select files
     tasks = []
     raw_video_files = get_files(title="Please Select Video(s)")
     raw_subtitle_files = get_files(title="Please Select Subtitle(s)") if extra_sub else None
     tasks_num = len(raw_video_files)
-
+    
+    # Build task configs
     if not raw_video_files:
-        print("❌ No video selected.")
+        print("🔴 No video selected.")
         exit()
 
     for idx in range(tasks_num):
@@ -69,22 +75,24 @@ if __name__ == "__main__":
         out_video = str(out_path / stream_title)
 
         tasks.append({
+            "task_id": idx,
             "input_video": in_video,
             "input_subtitle": in_subtitle,
             "output_video": out_video,
-            "track_idx": track_settings,
+            "track_configs": track_configs,
         })
 
 
-    # --- 3. Execute Simultaneously ---
+    # Execute Simultaneously
     print(f"Starting processing for {tasks_num} files...")
 
     with ProcessPoolExecutor() as executor:
         # We use a dictionary unpacking (**) to pass the task info to the function
         results = list(executor.submit(run_ffmpeg_task, **task) for task in tasks)
-
-        for r in results:
-            print(r.result())
+    
+    print("\n")
+    for r in results:
+        print(r.result())
 
     print("Done!")
     subprocess.run(["afplay", "/System/Library/Sounds/Hero.aiff"])
