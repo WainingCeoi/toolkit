@@ -26,10 +26,9 @@ def get_magnet_link(url):
 
 
 if __name__ == "__main__":
-    Auto = True
     env_path = "./.env"
     
-    if Auto:
+    if not raw:
         # Get unwatched videos automatically
         
         # Get last run info.
