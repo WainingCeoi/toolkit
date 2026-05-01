@@ -19,23 +19,30 @@ def run_ffmpeg_task(task_id, input_video, input_subtitle, output_video, track_co
         stream_title = Path(input_video).stem
         
         # Build stream
-        stream = ffmpeg.input(input_video)
+        source = ffmpeg.input(input_video)
         streams = []
         
+        # Video process session
         if track_configs["video"] is not None:
-            video = stream[f"v:{track_configs['video']}"]
+            video = source[f"v:{track_configs['video']}"]
             streams.append(video)
         
+        # Audio process session
         if track_configs["audio"] is not None:
-            audio = stream[f"a:{track_configs['audio']}"]
-            streams.append(audio)
+            if isinstance(track_configs["audio"], list):
+                for a_idx in track_configs["audio"]:
+                    audio = source[f"a:{a_idx}"]
+                    streams.append(audio)
+            else:
+                audio = source[f"a:{track_configs['audio']}"]
+                streams.append(audio)
         
-        # Determine subtitle source
+        # Subtitle process session
         if input_subtitle:
             subtitle = ffmpeg.input(input_subtitle)["s:0"]
             streams.append(subtitle)
         elif track_configs["subtitle"] is not None:
-            subtitle = stream[f"s:{track_configs['subtitle']}"]
+            subtitle = source[f"s:{track_configs['subtitle']}"]
             streams.append(subtitle)
 
         # Config processing parameters
