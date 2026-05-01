@@ -19,22 +19,30 @@ def run_ffmpeg_task(task_id, input_video, input_subtitle, output_video, track_co
         stream_title = Path(input_video).stem
         
         # Build stream
-        steam = ffmpeg.input(input_video)
-        video = steam[f"v:{track_configs['video']}"]
-        audio = steam[f"a:{track_configs['audio']}"]
+        stream = ffmpeg.input(input_video)
+        streams = []
+        
+        if track_configs["video"] is not None:
+            video = stream[f"v:{track_configs['video']}"]
+            streams.append(video)
+        
+        if track_configs["audio"] is not None:
+            audio = stream[f"a:{track_configs['audio']}"]
+            streams.append(audio)
         
         # Determine subtitle source
         if input_subtitle:
             subtitle = ffmpeg.input(input_subtitle)["s:0"]
-        else:
-            subtitle = steam[f"s:{track_configs['subtitle']}"]
+            streams.append(subtitle)
+        elif track_configs["subtitle"] is not None:
+            subtitle = stream[f"s:{track_configs['subtitle']}"]
+            streams.append(subtitle)
 
         # Config processing parameters
-        streams = [video, audio, subtitle]
         out_config = {
             "c": "copy",
             "metadata:s:s:0": "language=chi",
-            "metadata:s:s:0": "title=简英",
+            "metadata:s:s:0": "title=Chs&Eng",
             "disposition:s:0": "default",
             "metadata:g": f"title={stream_title}"
         }
