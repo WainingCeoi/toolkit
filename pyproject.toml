@@ -12,5 +12,4 @@ dependencies = [
     "pillow>=12.2.0",
     "requests>=2.33.1",
     "scandir-rs>=2.9.5",
-    "tqdm>=4.67.3",
 ]

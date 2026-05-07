@@ -226,7 +226,6 @@ dependencies = [
     { name = "pillow" },
     { name = "requests" },
     { name = "scandir-rs" },
-    { name = "tqdm" },
 ]
 
 [package.metadata]
@@ -238,7 +237,6 @@ requires-dist = [
     { name = "pillow", specifier = ">=12.2.0" },
     { name = "requests", specifier = ">=2.33.1" },
     { name = "scandir-rs", specifier = ">=2.9.5" },
-    { name = "tqdm", specifier = ">=4.67.3" },
 ]
 
 [[package]]
