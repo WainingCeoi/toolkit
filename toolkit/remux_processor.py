@@ -137,7 +137,7 @@ if __name__ == "__main__":
 
 
     # ProcessPoolExecutor manages the workers; they receive the queue to send updates back
-    with ProcessPoolExecutor() as executor:
+    with ProcessPoolExecutor(max_workers=4) as executor:
         results = list(executor.submit(run_ffmpeg_task, **task) for task in tasks)
     
     # Wait for the listener thread to clean up all bars
