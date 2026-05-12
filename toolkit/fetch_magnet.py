@@ -10,7 +10,7 @@ from dotenv import load_dotenv, set_key
 raw = """
 
 """
-
+start_page = 1
 
 # Return on page magnet by giving an url
 def get_magnet_link(url):
@@ -38,7 +38,7 @@ if __name__ == "__main__":
         
         # Initial parameters
         unwatched_video_urls = []
-        page_idx = 1
+        page_idx = start_page
         found = False
 
         # Get unwatched videos
