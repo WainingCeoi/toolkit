@@ -59,10 +59,7 @@ if __name__ == "__main__":
             
             except Exception as e:
                 print(e)
-                print("Urls collected so far:\n")
-                for url in unwatched_video_urls:
-                    print(url)
-                print(f"Stopped at Page {page_idx}")
+                print(f"\nStopped at Page {page_idx}")
                 break
         
         # Remove watched videos urls
