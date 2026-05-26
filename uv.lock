@@ -237,7 +237,7 @@ requires-dist = [
     { name = "ffmpeg-python", specifier = ">=0.2.0" },
     { name = "pillow", specifier = ">=12.2.0" },
     { name = "requests", specifier = ">=2.34.2" },
-    { name = "scandir-rs", specifier = ">=2.9.5" },
+    { name = "scandir-rs", specifier = ">=2.9.8" },
 ]
 
 [[package]]
