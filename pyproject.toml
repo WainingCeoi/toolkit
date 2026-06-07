@@ -11,5 +11,6 @@ dependencies = [
     "ffmpeg-python>=0.2.0",
     "pillow>=12.2.0",
     "requests>=2.34.2",
-    "scandir-rs>=2.9.8",
+    "scandir-rs>=2.9.9",
+    "streamlit>=1.58.0",
 ]
