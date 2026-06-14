@@ -742,6 +742,7 @@ dependencies = [
     { name = "requests" },
     { name = "scandir-rs" },
     { name = "streamlit" },
+    { name = "watchdog" },
 ]
 
 [package.metadata]
@@ -754,6 +755,7 @@ requires-dist = [
     { name = "requests", specifier = ">=2.34.2" },
     { name = "scandir-rs", specifier = ">=2.9.9" },
     { name = "streamlit", specifier = ">=1.58.0" },
+    { name = "watchdog", specifier = ">=6.0.0" },
 ]
 
 [[package]]
