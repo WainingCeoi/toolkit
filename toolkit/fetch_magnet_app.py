@@ -31,7 +31,8 @@ st.write("Scrape your unwatched video links automatically or manually.")
 
 option_map = {
     "auto": "Automatic Mode",
-    "manual": "Manual Mode"
+    "manual": "Manual Mode",
+    "cleanup": "Remove Duplicated"
 }
 
 mode = st.segmented_control(
@@ -105,6 +106,22 @@ if mode == "manual":
             run_scraper = True
         else:
             st.warning("Please enter at least one URL")
+            
+
+# --- OPTION 3: REMOVE DUPLICATED ---
+if mode == "cleanup":
+    st.write("## Paste Raw Magnet")
+    raw_input =st.text_area(
+        "Paste all your magnet links here (one per line):"
+    )
+    if st.button("Remove Duplicated", type="primary"):
+        if raw_input.strip():
+            raw_input = raw_input.strip().splitlines()
+            unique_magnet = set(raw_input)
+            pure_magnet = "\n".join([magnet for magnet in unique_magnet])
+            st.code(pure_magnet, language="text")
+        else:
+            st.warning("Please enter at least one magnet link")
 
 
 # ==========================================
