@@ -140,8 +140,8 @@ if run_scraper:
     # Show Failed URLs
     if failed:
         st.write("## ⚠️ Failed URLs")
-        for item in failed:
-            st.error(item["url"])
+        failed_url = "\n".join([item["url"] for item in failed])
+        st.code(failed_url, language="text")
     
     # Play notification sound
     subprocess.run(["afplay", "/System/Library/Sounds/Hero.aiff"])
