@@ -119,6 +119,7 @@ if mode == "cleanup":
             raw_input = raw_input.strip().splitlines()
             unique_magnet = set(raw_input)
             pure_magnet = "\n".join([magnet for magnet in unique_magnet])
+            st.write(f"Found {len(unique_magnet)} Unique Links")
             st.code(pure_magnet, language="text")
         else:
             st.warning("Please enter at least one magnet link")
