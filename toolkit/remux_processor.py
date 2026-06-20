@@ -10,10 +10,12 @@ from ffmpeg_progress_yield import FfmpegProgress
 from tqdm import tqdm
 
 
-def run_ffmpeg_task(task_id, input_video, input_subtitle, output_video, track_configs, queue):
+def run_ffmpeg_task(
+    task_id, input_video, input_subtitle,output_video, track_configs, queue
+):
     """
     Worker function executed in a separate process.
-    Sends progress updates to the main process via a queue instead of printing to stdout.
+    Sends progress updates to the main process via a queue
     """
     try:
         stream_title = Path(input_video).stem
@@ -49,7 +51,6 @@ def run_ffmpeg_task(task_id, input_video, input_subtitle, output_video, track_co
         out_config = {
             "c": "copy",
             "metadata:s:s:0": "language=chi",
-            "metadata:s:s:0": "title=Chs&Eng",
             "disposition:s:0": "default",
             "metadata:g": f"title={stream_title}"
         }
@@ -75,8 +76,12 @@ def progress_listener(queue, total_tasks, task_titles):
     Background thread function that manages tqdm progress bars.
     It reads from the queue and updates bars based on the task_id.
     """
-    # Create tqdm bars. 'position' is critical here to ensure bars stack without overlapping.
-    bars = [tqdm(total=100, position=i, desc=f"🟡 {task_titles[i]}", leave=True) for i in range(total_tasks)]
+    # Create tqdm bars. 
+    # 'position' is critical here to ensure bars stack without overlapping.
+    bars = [
+        tqdm(total=100, position=i, desc=f"🟡 {task_titles[i]}", leave=True)
+        for i in range(total_tasks)
+    ]
     
     completed = 0
     # Keep listening until all tasks report completion
@@ -100,8 +105,8 @@ if __name__ == "__main__":
     extra_sub = False
 
     # Select files
-    raw_video_files = get_files(title="Please Select Video(s)")
-    raw_subtitle_files = get_files(title="Please Select Subtitle(s)") if extra_sub else None
+    raw_video_files = get_files(title="Select Video(s)")
+    raw_subtitle_files = get_files(title="Select Subtitle(s)") if extra_sub else None
     tasks_num = len(raw_video_files)
     
     if not raw_video_files:
@@ -110,13 +115,17 @@ if __name__ == "__main__":
 
     print(f"Starting processing for {tasks_num} files...")
     
-    # Manager provides a shared Queue which is a "shared mailbox" allowing all spawned processes "post" info. into it.
+    # Manager provides a shared Queue which is a "shared mailbox"
+    # Allowing all spawned processes "post" info. into it.
     manager = multiprocessing.Manager()
     queue = manager.Queue()
     task_titles = [Path(f).name for f in raw_video_files]
     
     # Initialize and start the background listener thread BEFORE running tasks
-    listener = threading.Thread(target=progress_listener, args=(queue, tasks_num, task_titles))
+    listener = threading.Thread(
+        target=progress_listener,
+        args=(queue, tasks_num, task_titles)
+    )
     listener.start()
 
     tasks = []
@@ -136,7 +145,8 @@ if __name__ == "__main__":
         })
 
 
-    # ProcessPoolExecutor manages the workers; they receive the queue to send updates back
+    # ProcessPoolExecutor manages the workers.
+    # They receive the queue to send updates back
     with ProcessPoolExecutor(max_workers=4) as executor:
         results = list(executor.submit(run_ffmpeg_task, **task) for task in tasks)
     

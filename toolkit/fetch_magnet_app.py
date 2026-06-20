@@ -70,7 +70,9 @@ if mode == "auto":
                     soup = BeautifulSoup(content.text, "html.parser")
                     on_page_links = soup.find_all("a", rel="bookmark")
                     
-                    urls = [link.get("href") for link in on_page_links if link.get("href")]
+                    urls = [
+                        link.get("href") for link in on_page_links if link.get("href")
+                    ]
                     unwatched_video_urls += urls
                     
                     if cutoff_video_url in urls:
@@ -134,7 +136,7 @@ if run_scraper:
         st.info("No new unwatched video found.")
     else:
         # Fetch magnets simultaneously
-        with st.status("Fetching magnet links concurrently...", expanded=True) as status:
+        with st.status("Fetching magnet links concurrently.", expanded=True) as status:
             with ThreadPoolExecutor() as executor:
                 results = list(executor.map(get_magnet_link, unwatched_video_urls))
             status.update(label="Scraping complete!", state="complete", expanded=False)

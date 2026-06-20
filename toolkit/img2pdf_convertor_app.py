@@ -3,10 +3,8 @@ import os
 import streamlit as st
 from PIL import Image
 
-
 # Set up the title of your web page
 st.title("🖼️ Image to PDF Converter")
-st.write("Upload your images, name your file, and convert them instantly over the local network.")
 
 # 1. UI Input: Text box for the PDF name
 pdf_name = st.text_input("Enter the output PDF file name:", "PDF Name")
