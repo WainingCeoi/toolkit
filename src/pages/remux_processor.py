@@ -1,4 +1,5 @@
 import re
+import shutil
 import subprocess
 import threading
 import time
@@ -24,6 +25,7 @@ VIDEO_EXTENSIONS = {
     ".m4v",
 }
 SUBTITLE_EXTENSIONS = {".srt", ".ass", ".ssa", ".sub", ".vtt"}
+COMPLETION_SOUND = "/System/Library/Sounds/Hero.aiff"
 
 
 def natural_sort_key(name):
@@ -198,13 +200,9 @@ col1, col2, col3 = st.columns(3)
 
 with col1:
     include_video = st.checkbox("Include video", value=True)
-    video_idx = st.number_input(
-        "Video track index",
-        min_value=0,
-        value=0,
-        step=1,
-        disabled=not include_video,
-    )
+    video_idx = 0
+    if include_video:
+        video_idx = st.number_input("Video track index", min_value=0, value=0, step=1)
 with col2:
     multi_audio = st.checkbox("Multiple audio tracks", value=False)
     if multi_audio:
@@ -222,13 +220,11 @@ with col2:
         )
 with col3:
     include_subtitle = st.checkbox("Include embedded subtitle", value=True)
-    subtitle_idx = st.number_input(
-        "Subtitle track index",
-        min_value=0,
-        value=0,
-        step=1,
-        disabled=not include_subtitle,
-    )
+    subtitle_idx = 0
+    if include_subtitle:
+        subtitle_idx = st.number_input(
+            "Subtitle track index", min_value=0, value=0, step=1
+        )
 
 sub_lang = st.text_input("Subtitle language tag", value="chi")
 
@@ -312,19 +308,38 @@ max_workers = st.slider("Parallel workers", min_value=1, max_value=8, value=4)
 if st.button("🚀 Start Remuxing", type="primary"):
     if not selected:
         st.error("❌ Please select at least one video.")
+    elif shutil.which("ffmpeg") is None:
+        st.error(
+            "❌ ffmpeg not found on PATH. Install it (e.g. `brew install ffmpeg`)."
+        )
     else:
         # Single picker -> one track; multi mode -> parse comma-separated list
-        if multi_audio:
-            audio_indices = [
-                int(x) for x in audio_value.replace(" ", "").split(",") if x != ""
-            ]
-        else:
-            audio_indices = [int(audio_value)]
+        try:
+            if multi_audio:
+                audio_indices = [
+                    int(x) for x in audio_value.replace(" ", "").split(",") if x != ""
+                ]
+            else:
+                audio_indices = [int(audio_value)]
+        except ValueError:
+            st.error("❌ Audio track indices must be integers, e.g. 0,1")
+            st.stop()
+
         track_configs = {
             "video": int(video_idx) if include_video else None,
             "audio": audio_indices,
             "subtitle": int(subtitle_idx) if include_subtitle else None,
         }
+
+        # Refuse an all-empty stream map (ffmpeg would reject it with no -map)
+        if (
+            track_configs["video"] is None
+            and not track_configs["audio"]
+            and track_configs["subtitle"] is None
+            and not use_external_sub
+        ):
+            st.error("❌ Select at least one video, audio, or subtitle track.")
+            st.stop()
 
         out_path = Path(out_folder).expanduser()
         out_path.mkdir(parents=True, exist_ok=True)
@@ -346,6 +361,7 @@ if st.button("🚀 Start Remuxing", type="primary"):
 
         # One progress bar per file
         st.write("## ⏳ Progress")
+        st.caption("The page stays busy until all files finish.")
         bars = [st.progress(0, text=f"🟡 {Path(t['input_video']).name}") for t in tasks]
 
         # Shared progress dict updated by worker threads, polled by main thread
@@ -395,4 +411,4 @@ if st.button("🚀 Start Remuxing", type="primary"):
         st.success(f"Done! Output saved to: {out_path}")
 
         # Play notification sound
-        subprocess.run(["afplay", "/System/Library/Sounds/Hero.aiff"])
+        subprocess.run(["afplay", COMPLETION_SOUND])
