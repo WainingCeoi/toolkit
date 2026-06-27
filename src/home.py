@@ -28,6 +28,12 @@ TOOLS = [
         "🖼️ Image to PDF",
         "Combine selected images into a single PDF on your Desktop.",
     ),
+    (
+        "pages/optimized_ip_generator.py",
+        "🛰️ Optimized-IP Subscription",
+        "Rewrite vmess/vless/trojan nodes with optimized Cloudflare IPs and "
+        "serve Shadowrocket / Clash / Surge subscriptions over your LAN.",
+    ),
 ]
 
 cols = st.columns(2)

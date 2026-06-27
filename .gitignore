@@ -19,6 +19,9 @@ venv/
 .env.*
 !.env.example
 
+# Local data (Optimized-IP Subscription SQLite store)
+data/
+
 # macOS
 .DS_Store
 

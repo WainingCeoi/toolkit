@@ -102,15 +102,15 @@ def folder_selector(label, state_key, default, button_key):
         st.session_state[state_key] = default
 
     st.caption(label)
-    field_col, button_col = st.columns([5.5, 1])
-    with button_col:
-        if st.button("📂 Browse…", key=button_key):
-            picked = pick_folder(st.session_state[state_key])
-            if picked:
-                st.session_state[state_key] = picked
+
     value = st.session_state[state_key]
-    with field_col:
-        st.text_input(label, value=value, disabled=True, label_visibility="collapsed")
+    st.text_input(label, value=value, disabled=True, label_visibility="collapsed")
+    if st.button("📂 Browse…", key=button_key):
+        picked = pick_folder(st.session_state[state_key])
+        if picked:
+            st.session_state[state_key] = picked
+            st.rerun()
+
     return value
 
 

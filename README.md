@@ -20,6 +20,7 @@ media & file utilities into one multipage interface.
 | 🖼️  | **Image to PDF**    | Combine selected images into a single PDF.                                           |
 | 🎬  | **Remux Processor** | Parallel, lossless remuxing (stream-copy) of videos with configurable tracks.       |
 | 📦  | **File Gatherer**   | Recursively gather files by type from a folder and move them into one target.       |
+| 🛰️  | **Optimized-IP Subscription** | Rewrite nodes with optimized Cloudflare IPs and serve LAN subscriptions (Shadowrocket / Clash / Surge). |
 
 ## Requirements
 
@@ -102,6 +103,43 @@ Recursively collect files by type and move them into a single folder:
   auto-numbered (`name_1.ext`), and the target is refused if it sits inside the
   source.
 
+### 🛰️ Optimized-IP Subscription — `src/pages/optimized_ip_generator.py`
+
+Engine lives in `src/lib/subgen/`. Batch-replace the server in your self-built
+`vmess` / `vless` / `trojan` nodes with optimized Cloudflare IPs, then generate
+subscriptions for Shadowrocket / Clash / Surge — as an auto-updating LAN link, a
+QR code, or downloadable files. Everything is stored locally in `data/sub.db`;
+nothing leaves your machine.
+
+- Paste nodes plus optimized `host[:port][#remark]` addresses; base64
+  subscriptions auto-expand and duplicates are removed.
+- One click produces Raw / Clash / Surge output, a subscription link, and a QR
+  code a phone on the same Wi-Fi can import directly.
+- Identical inputs reuse the same short link (deduplicated by content hash);
+  history is listed at the bottom to reload or delete.
+
+**LAN sub-server.** Streamlit can't return raw subscription bodies, so the page
+starts a small standard-library `http.server` in a background thread (default
+port `8765`) serving `/sub/{id}`. It starts the first time you open the page and
+stays up for the life of the app. Links point at your Mac's `.local` name (or a
+LAN IP), e.g. `http://192.168.x.x:8765/sub/<id>?target=clash`; append
+`&download=1` to download the file instead.
+
+**Configuration** — all optional, via environment variables:
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `SUB_HTTP_PORT` | `8765` | Subscription-link port |
+| `SUB_HTTP_HOST` | `0.0.0.0` | Bind address for the subscription port |
+| `SUB_PUBLIC_HOST` | empty | Host used in links; defaults to the Mac's `.local` name, then a LAN IP |
+| `SUB_DB_PATH` | `data/sub.db` | SQLite database path |
+| `SUB_ACCESS_TOKEN` | empty | Require `?token=…` on subscription links |
+| `SUB_DISABLE_HTTP` | empty | Set to `1` to skip starting the sub-server |
+
+```bash
+SUB_ACCESS_TOKEN=your-token uv run streamlit run src/app.py
+```
+
 ## Development
 
 Common tasks are wrapped in the `Makefile`:
@@ -120,14 +158,24 @@ ffmpeg command building).
 
 ```
 toolkit/
+├── data/                    # local SQLite store (git-ignored)
+│   └── sub.db
 ├── src/
 │   ├── app.py               # entry point — multipage navigation
 │   ├── home.py              # landing / overview page
-│   └── pages/
-│       ├── magnet_scraper.py
-│       ├── img_to_pdf.py
-│       ├── remux_processor.py
-│       └── file_gatherer.py
+│   ├── pages/               # one self-contained script per tool
+│   │   ├── magnet_scraper.py
+│   │   ├── img_to_pdf.py
+│   │   ├── remux_processor.py
+│   │   ├── file_gatherer.py
+│   │   └── optimized_ip_generator.py
+│   └── lib/                 # engines for tools that need >1 module
+│       └── subgen/          # Optimized-IP Subscription engine
+│           ├── core.py      # parse / rewrite / render
+│           ├── db.py        # SQLite store
+│           ├── subserver.py # background /sub/{id} HTTP server
+│           ├── netutil.py   # short id / dedup hash / LAN IP
+│           └── config.py    # environment configuration
 ├── tests/                   # unit tests for the pure helpers
 ├── .env.example             # Magnet Scraper config template
 ├── Makefile · LICENSE
@@ -135,8 +183,10 @@ toolkit/
 └── README.md
 ```
 
-Each tool is a self-contained script — it can run on its own or as a page in the
-app.
+Most tools are a single self-contained script that can also run on its own (e.g.
+`uv run streamlit run src/pages/remux_processor.py`). The **Optimized-IP
+Subscription** tool is the exception: its engine lives in `src/lib/subgen/`, so
+run it through the app entry (`src/app.py`) rather than standalone.
 
 ## License
 

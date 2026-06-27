@@ -158,18 +158,16 @@ st.write("## 1. Select Videos")
 if "source_folder" not in st.session_state:
     st.session_state.source_folder = str(Path("~/Desktop").expanduser())
 
-field_col, button_col = st.columns([5.5, 1])
-# Handle the button before drawing the field so it reflects the new folder
-with button_col:
-    if st.button("📂 Browse…", key="browse_src"):
-        picked = pick_folder(st.session_state.source_folder)
-        if picked:
-            st.session_state.source_folder = picked
+# Browse updates the folder, then st.rerun() refreshes the field + file list.
 folder = st.session_state.source_folder
-with field_col:
-    st.text_input(
-        "Source folder", value=folder, disabled=True, label_visibility="collapsed"
-    )
+st.text_input(
+    "Source folder", value=folder, disabled=True, label_visibility="collapsed"
+)
+if st.button("📂 Browse…", key="browse_src"):
+    picked = pick_folder(st.session_state.source_folder)
+    if picked:
+        st.session_state.source_folder = picked
+        st.rerun()
 
 video_files = []
 folder_path = Path(folder).expanduser()
@@ -229,7 +227,7 @@ with col3:
 sub_lang = st.text_input("Subtitle language tag", value="chi")
 
 # --- 3. EXTERNAL SUBTITLES (OPTIONAL) ---
-st.write("## 3. External Subtitles (optional)")
+st.write("## 3. External Subtitles (Optional)")
 use_external_sub = st.checkbox("Attach external subtitle files")
 external_sub_map = {}
 if use_external_sub:
@@ -237,20 +235,18 @@ if use_external_sub:
     if "sub_folder" not in st.session_state:
         st.session_state.sub_folder = None
 
-    sub_field_col, sub_button_col = st.columns([5.5, 1])
-    with sub_button_col:
-        if st.button("📂 Browse…", key="browse_sub"):
-            picked = pick_folder(st.session_state.sub_folder or folder)
-            if picked:
-                st.session_state.sub_folder = picked
     sub_folder = st.session_state.sub_folder or folder
-    with sub_field_col:
-        st.text_input(
-            "Subtitle folder",
-            value=sub_folder,
-            disabled=True,
-            label_visibility="collapsed",
-        )
+    st.text_input(
+        "Subtitle folder",
+        value=sub_folder,
+        disabled=True,
+        label_visibility="collapsed",
+    )
+    if st.button("📂 Browse…", key="browse_sub"):
+        picked = pick_folder(st.session_state.sub_folder or folder)
+        if picked:
+            st.session_state.sub_folder = picked
+            st.rerun()
 
     sub_folder_path = Path(sub_folder).expanduser()
     if sub_folder_path.is_dir():
@@ -287,17 +283,15 @@ st.write("## 4. Output")
 if "out_folder" not in st.session_state:
     st.session_state.out_folder = str(Path("~/Desktop/🎬").expanduser())
 
-out_field_col, out_button_col = st.columns([5.5, 1])
-with out_button_col:
-    if st.button("📂 Browse…", key="browse_out"):
-        picked = pick_folder(st.session_state.out_folder)
-        if picked:
-            st.session_state.out_folder = picked
 out_folder = st.session_state.out_folder
-with out_field_col:
-    st.text_input(
-        "Output folder", value=out_folder, disabled=True, label_visibility="collapsed"
-    )
+st.text_input(
+    "Output folder", value=out_folder, disabled=True, label_visibility="collapsed"
+)
+if st.button("📂 Browse…", key="browse_out"):
+    picked = pick_folder(st.session_state.out_folder)
+    if picked:
+        st.session_state.out_folder = picked
+        st.rerun()
 
 max_workers = st.slider("Parallel workers", min_value=1, max_value=8, value=4)
 
