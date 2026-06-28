@@ -25,7 +25,6 @@ VIDEO_EXTENSIONS = {
     ".m4v",
 }
 SUBTITLE_EXTENSIONS = {".srt", ".ass", ".ssa", ".sub", ".vtt"}
-COMPLETION_SOUND = "/System/Library/Sounds/Hero.aiff"
 
 
 def natural_sort_key(name):
@@ -404,5 +403,4 @@ if st.button("🚀 Start Remuxing", type="primary"):
 
         st.success(f"Done! Output saved to: {out_path}")
 
-        # Play notification sound
-        subprocess.run(["afplay", COMPLETION_SOUND])
+        st.toast("Remux Processor: remux complete.", icon="🎬")

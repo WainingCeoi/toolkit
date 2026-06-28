@@ -1,5 +1,4 @@
 import os
-import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -8,7 +7,6 @@ import streamlit as st
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv, set_key
 
-COMPLETION_SOUND = "/System/Library/Sounds/Hero.aiff"
 MAX_PAGES = 100  # hard cap so Automatic mode can never loop forever
 
 # Anchor .env to the repo root regardless of the launch directory
@@ -169,7 +167,10 @@ if run_scraper:
             "failed": [r for r in results if not r["success"]],
         }
         # Notify only on a fresh scrape
-        subprocess.run(["afplay", COMPLETION_SOUND])
+        st.toast(
+            f"Magnet Scraper: {sum(r['success'] for r in results)} magnet(s) found.",
+            icon="🧲",
+        )
 
 # Render the most recent scrape so results survive unrelated reruns
 scrape = st.session_state.get("scrape")

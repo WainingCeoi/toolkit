@@ -36,7 +36,6 @@ FILE_TYPE_PRESETS = {
     "Document": ["*.pdf", "*.docx", "*.doc", "*.txt", "*.epub", "*.pptx", "*.xlsx"],
     "Archive": ["*.zip", "*.rar", "*.7z", "*.tar", "*.gz"],
 }
-COMPLETION_SOUND = "/System/Library/Sounds/Hero.aiff"
 
 
 def natural_sort_key(name):
@@ -235,5 +234,4 @@ if files and st.session_state.get("scan_source") == src_now:
             # Results are now stale (files relocated)
             st.session_state.scan_files = []
 
-            # Play notification sound
-            subprocess.run(["afplay", COMPLETION_SOUND])
+            st.toast(f"File Gatherer: moved {len(moved)} file(s).", icon="📦")

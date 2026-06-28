@@ -1,5 +1,4 @@
 import os
-import subprocess
 
 import streamlit as st
 from PIL import Image
@@ -7,8 +6,6 @@ from pillow_heif import register_heif_opener
 
 # Let Pillow open HEIC/HEIF files (e.g. iPhone photos)
 register_heif_opener()
-
-COMPLETION_SOUND = "/System/Library/Sounds/Hero.aiff"
 
 st.title("🖼️ Image to PDF")
 st.write("Combine selected images into a single PDF saved to your Desktop.")
@@ -50,7 +47,7 @@ if st.button("Convert to PDF"):
                 images[0].save(output_pdf, save_all=True, append_images=images[1:])
 
                 st.success(f"✅ Done! PDF saved to your Desktop as: {name}")
-                subprocess.run(["afplay", COMPLETION_SOUND])
+                st.toast(f"Image to PDF: saved {name}.", icon="🖼️")
 
             except Exception as e:
                 st.error(f"❌ An error occurred: {e}")
