@@ -13,6 +13,8 @@ pages = [
         title="Optimized-IP Subscription",
         icon="🛰️",
     ),
+    st.Page("pages/cache_purge.py", title="Cache Purge", icon="🧹"),
+    st.Page("pages/web_images_to_pdf.py", title="Web Images to PDF", icon="🌐"),
 ]
 
 nav = st.navigation(pages)

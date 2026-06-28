@@ -21,6 +21,8 @@ media & file utilities into one multipage interface.
 | 🎬  | **Remux Processor** | Parallel, lossless remuxing (stream-copy) of videos with configurable tracks.       |
 | 📦  | **File Gatherer**   | Recursively gather files by type from a folder and move them into one target.       |
 | 🛰️  | **Optimized-IP Subscription** | Rewrite nodes with optimized Cloudflare IPs and serve LAN subscriptions (Shadowrocket / Clash / Surge). |
+| 🧹  | **Cache Purge**     | Recursively find and delete cache / junk files from a folder.                       |
+| 🌐  | **Web Images to PDF** | Open a web page, scroll to load its images, and capture them into a single PDF.    |
 
 ## Requirements
 
@@ -29,6 +31,8 @@ media & file utilities into one multipage interface.
 - Python 3.14 — managed automatically by uv via `.python-version`
 - [FFmpeg](https://ffmpeg.org/) on your `PATH` — required by **Remux Processor**
   (`brew install ffmpeg`)
+- [Google Chrome](https://www.google.com/chrome/) — required by **Web Images to
+  PDF** (the matching driver is downloaded automatically)
 
 ## Install
 
@@ -140,6 +144,26 @@ LAN IP), e.g. `http://192.168.x.x:8765/sub/<id>?target=clash`; append
 SUB_ACCESS_TOKEN=your-token uv run streamlit run src/app.py
 ```
 
+### 🧹 Cache Purge — `src/pages/cache_purge.py`
+
+Recursively find and delete cache / junk files from a folder:
+
+- Pick a **folder**, then edit the file-type globs (defaults cover `*.dwl`,
+  `*.dwl2`, `*.bak`, `*.log`, `*.db`, `*.tmp`, `*.err`).
+- **Scan** to preview every match (with total size), then **Delete** — files are
+  removed in parallel. Deletion is permanent, so the preview is your safety net.
+
+### 🌐 Web Images to PDF — `src/pages/web_images_to_pdf.py`
+
+Capture a lazy-loaded web page's images into a single PDF (requires Google
+Chrome):
+
+- Enter the page **URL** and an output folder, then **Open in browser** — a real
+  Chrome window opens (its driver is auto-managed by `webdriver-manager`).
+- Scroll until every page/image has loaded, then **Capture & build PDF**. The
+  page's images (`img[class*=bi]`) are downloaded, stitched into a PDF, and a
+  bookmarked table of contents is added when the page exposes one.
+
 ## Development
 
 Common tasks are wrapped in the `Makefile`:
@@ -168,7 +192,9 @@ toolkit/
 │   │   ├── img_to_pdf.py
 │   │   ├── remux_processor.py
 │   │   ├── file_gatherer.py
-│   │   └── optimized_ip_generator.py
+│   │   ├── optimized_ip_generator.py
+│   │   ├── cache_purge.py
+│   │   └── web_images_to_pdf.py
 │   └── lib/                 # engines for tools that need >1 module
 │       └── subgen/          # Optimized-IP Subscription engine
 │           ├── core.py      # parse / rewrite / render

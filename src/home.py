@@ -34,6 +34,17 @@ TOOLS = [
         "Rewrite vmess/vless/trojan nodes with optimized Cloudflare IPs and "
         "serve Shadowrocket / Clash / Surge subscriptions over your LAN.",
     ),
+    (
+        "pages/cache_purge.py",
+        "🧹 Cache Purge",
+        "Recursively find and delete cache / junk files from a folder.",
+    ),
+    (
+        "pages/web_images_to_pdf.py",
+        "🌐 Web Images to PDF",
+        "Open a web page, scroll to load its images, and capture them into "
+        "a single PDF.",
+    ),
 ]
 
 cols = st.columns(2)
