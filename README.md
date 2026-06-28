@@ -23,6 +23,7 @@ media & file utilities into one multipage interface.
 | 🛰️  | **Optimized-IP Subscription** | Rewrite nodes with optimized Cloudflare IPs and serve LAN subscriptions (Shadowrocket / Clash / Surge). |
 | 🧹  | **Cache Purge**     | Recursively find and delete cache / junk files from a folder.                       |
 | 🌐  | **Web Images to PDF** | Open a web page, scroll to load its images, and capture them into a single PDF.    |
+| 📄  | **Doc to PDF** | Clean a Word doc (accept changes, remove comments) and export it to PDF (LibreOffice). |
 
 ## Requirements
 
@@ -33,6 +34,8 @@ media & file utilities into one multipage interface.
   (`brew install ffmpeg`)
 - [Google Chrome](https://www.google.com/chrome/) — required by **Web Images to
   PDF** (the matching driver is downloaded automatically)
+- [LibreOffice](https://www.libreoffice.org/) — required by **Doc to PDF**
+  (`brew install --cask libreoffice`)
 
 ## Install
 
@@ -164,6 +167,17 @@ Chrome):
   page's images (`img[class*=bi]`) are downloaded, stitched into a PDF, and a
   bookmarked table of contents is added when the page exposes one.
 
+### 📄 Doc to PDF — `src/pages/doc_to_pdf.py`
+
+Clean Word documents and export them to PDF (no Microsoft Word needed):
+
+- Upload one or more `.docx` files.
+- Every tracked change is accepted and comments are removed at the XML level —
+  so the document carries no revision markup — then LibreOffice renders the PDF.
+
+All files are converted in one LibreOffice run and bundled into a single zip you
+can download.
+
 ## Development
 
 Common tasks are wrapped in the `Makefile`:
@@ -194,7 +208,8 @@ toolkit/
 │   │   ├── file_gatherer.py
 │   │   ├── optimized_ip_generator.py
 │   │   ├── cache_purge.py
-│   │   └── web_images_to_pdf.py
+│   │   ├── web_images_to_pdf.py
+│   │   └── doc_to_pdf.py
 │   └── lib/                 # engines for tools that need >1 module
 │       └── subgen/          # Optimized-IP Subscription engine
 │           ├── core.py      # parse / rewrite / render

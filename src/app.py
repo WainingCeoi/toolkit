@@ -15,8 +15,9 @@ pages = [
     ),
     st.Page("pages/cache_purge.py", title="Cache Purge", icon="🧹"),
     st.Page("pages/web_images_to_pdf.py", title="Web Images to PDF", icon="🌐"),
+    st.Page("pages/doc_to_pdf.py", title="Doc to PDF", icon="📄"),
 ]
 
 nav = st.navigation(pages)
-st.sidebar.caption("🧰 Toolkit · local media & file utilities")
+st.sidebar.caption("🧰 Toolkit · Media & Files Utilities")
 nav.run()

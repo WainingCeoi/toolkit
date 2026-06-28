@@ -6,50 +6,78 @@ st.write(
     "Choose a tool from the sidebar — or jump in below."
 )
 
-TOOLS = [
+# Tools grouped by category. Reorder freely — each category renders as a
+# top-aligned 2-column grid under its own divider.
+CATEGORIES = [
     (
-        "pages/magnet_scraper.py",
-        "🧲 Magnet Scraper",
-        "Scrape unwatched video magnet links automatically, in bulk, "
-        "or de-duplicate a pasted list.",
+        "🎬 Media",
+        [
+            (
+                "pages/magnet_scraper.py",
+                "🧲 Magnet Scraper",
+                "Scrape unwatched video magnet links automatically, in bulk, "
+                "or de-duplicate a pasted list.",
+            ),
+            (
+                "pages/remux_processor.py",
+                "🎬 Remux Processor",
+                "Parallel, lossless remuxing (stream-copy) of videos with FFmpeg.",
+            ),
+        ],
     ),
     (
-        "pages/file_gatherer.py",
-        "📦 File Gatherer",
-        "Recursively gather files by type and move them into one folder.",
+        "🗂️ Documents & Files",
+        [
+            (
+                "pages/web_images_to_pdf.py",
+                "🌐 Web Images to PDF",
+                "Open a web page, scroll to load its images, and capture them "
+                "into a single PDF.",
+            ),
+            (
+                "pages/file_gatherer.py",
+                "📦 File Gatherer",
+                "Recursively gather files by type and move them into one folder.",
+            ),
+            (
+                "pages/img_to_pdf.py",
+                "🖼️ Image to PDF",
+                "Combine selected images into a single PDF on your Desktop.",
+            ),
+            (
+                "pages/doc_to_pdf.py",
+                "📄 Doc to PDF",
+                "Clean a Word doc (accept changes, remove comments) and export "
+                "it to PDF.",
+            ),
+            (
+                "pages/cache_purge.py",
+                "🧹 Cache Purge",
+                "Recursively find and delete cache / junk files from a folder.",
+            ),
+        ],
     ),
     (
-        "pages/remux_processor.py",
-        "🎬 Remux Processor",
-        "Parallel, lossless remuxing (stream-copy) of videos with FFmpeg.",
-    ),
-    (
-        "pages/img_to_pdf.py",
-        "🖼️ Image to PDF",
-        "Combine selected images into a single PDF on your Desktop.",
-    ),
-    (
-        "pages/optimized_ip_generator.py",
-        "🛰️ Optimized-IP Subscription",
-        "Rewrite vmess/vless/trojan nodes with optimized Cloudflare IPs and "
-        "serve Shadowrocket / Clash / Surge subscriptions over your LAN.",
-    ),
-    (
-        "pages/cache_purge.py",
-        "🧹 Cache Purge",
-        "Recursively find and delete cache / junk files from a folder.",
-    ),
-    (
-        "pages/web_images_to_pdf.py",
-        "🌐 Web Images to PDF",
-        "Open a web page, scroll to load its images, and capture them into "
-        "a single PDF.",
+        "🌐 Network",
+        [
+            (
+                "pages/optimized_ip_generator.py",
+                "🛰️ Optimized-IP Subscription",
+                "Rewrite vmess/vless/trojan nodes with optimized Cloudflare IPs "
+                "and serve Shadowrocket / Clash / Surge subscriptions over your "
+                "LAN.",
+            ),
+        ],
     ),
 ]
 
-cols = st.columns(2)
-for index, (path, title, description) in enumerate(TOOLS):
-    with cols[index % 2]:
-        with st.container(border=True):
-            st.page_link(path, label=title)
-            st.caption(description)
+for category, tools in CATEGORIES:
+    st.subheader(category, divider="gray")
+    for row in range(0, len(tools), 2):
+        cols = st.columns(2, vertical_alignment="top")
+        pair = tools[row : row + 2]
+        for col, (path, title, description) in zip(cols, pair, strict=False):
+            with col:
+                with st.container(border=True):
+                    st.page_link(path, label=title)
+                    st.caption(description)
