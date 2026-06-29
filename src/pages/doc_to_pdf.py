@@ -175,7 +175,9 @@ if st.button("Convert to PDF", type="primary"):
         st.error("❌ Install LibreOffice, then try again.")
     else:
         done, failed, zip_bytes = [], [], None
-        with st.spinner(f"Converting {len(uploaded_files)} file(s)…"):
+        total = len(uploaded_files)
+        bar = st.progress(0, text=f"Cleaning 0/{total}…")
+        with st.spinner(f"Converting {total} file(s)…"):
             with tempfile.TemporaryDirectory() as tmp:
                 tmp = Path(tmp)
                 clean_dir = tmp / "cleaned"
@@ -184,8 +186,14 @@ if st.button("Convert to PDF", type="primary"):
                 out_dir.mkdir()
 
                 # Clean each upload (fast, in-memory XML) into one temp dir.
+                # Cleaning spans the first half of the bar; the conversion below
+                # is one batched LibreOffice run with no per-file progress.
                 jobs = []  # (cleaned_path, arcname, original_name)
                 for idx, upload in enumerate(uploaded_files):
+                    bar.progress(
+                        int(idx / total * 50),
+                        text=f"Cleaning {idx + 1}/{total} — {upload.name}…",
+                    )
                     stem = Path(upload.name).stem
                     try:
                         src = tmp / f"src_{idx}.docx"
@@ -199,10 +207,17 @@ if st.button("Convert to PDF", type="primary"):
                 # Convert every cleaned file in a single LibreOffice run, then
                 # bundle the produced PDFs into an in-memory zip.
                 if jobs:
+                    bar.progress(
+                        50, text=f"Converting {len(jobs)} file(s) with LibreOffice…"
+                    )
                     result = batch_to_pdf(SOFFICE, [job[0] for job in jobs], out_dir)
                     buffer = io.BytesIO()
                     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
-                        for cleaned, arcname, name in jobs:
+                        for i, (cleaned, arcname, name) in enumerate(jobs):
+                            bar.progress(
+                                50 + int((i + 1) / len(jobs) * 50),
+                                text=f"Bundling {i + 1}/{len(jobs)} — {arcname}…",
+                            )
                             produced = out_dir / f"{cleaned.stem}.pdf"
                             if produced.exists():
                                 archive.write(produced, arcname)
@@ -214,6 +229,7 @@ if st.button("Convert to PDF", type="primary"):
                     if done:
                         zip_bytes = buffer.getvalue()
 
+        bar.progress(100, text=f"Converted {len(done)}/{total} file(s).")
         # Persist so the download button survives the rerun a click triggers.
         st.session_state["docconv_result"] = {
             "zip": zip_bytes,

@@ -51,6 +51,12 @@ CATEGORIES = [
                 "it to PDF.",
             ),
             (
+                "pages/doc_to_markdown.py",
+                "📝 Doc to Markdown",
+                "Convert PDFs, Office docs, and images into clean Markdown "
+                "with MinerU.",
+            ),
+            (
                 "pages/cache_purge.py",
                 "🧹 Cache Purge",
                 "Recursively find and delete cache / junk files from a folder.",

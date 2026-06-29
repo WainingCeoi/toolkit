@@ -155,11 +155,19 @@ if run_scraper:
     if not unwatched_video_urls:
         st.session_state.scrape = {"urls": [], "successful": [], "failed": []}
     else:
-        # Fetch magnets simultaneously
-        with st.status("Fetching magnet links concurrently.", expanded=True) as status:
-            with ThreadPoolExecutor() as executor:
-                results = list(executor.map(get_magnet_link, unwatched_video_urls))
-            status.update(label="Scraping complete!", state="complete", expanded=False)
+        # Fetch magnets simultaneously, advancing the bar as each one returns.
+        total = len(unwatched_video_urls)
+        bar = st.progress(0, text=f"Fetching magnets… 0/{total}")
+        results = []
+        with ThreadPoolExecutor() as executor:
+            for idx, result in enumerate(
+                executor.map(get_magnet_link, unwatched_video_urls), start=1
+            ):
+                results.append(result)
+                bar.progress(
+                    int(idx / total * 100), text=f"Fetching magnets… {idx}/{total}"
+                )
+        bar.progress(100, text=f"Fetched {total}/{total} link(s).")
 
         st.session_state.scrape = {
             "urls": unwatched_video_urls,

@@ -48,6 +48,40 @@ def test_build_ffmpeg_cmd_copies_and_tags_subtitle(remux):
     assert "language=chi" in joined
 
 
+def test_build_mineru_cmd_pipeline_includes_method_lang_and_toggles(markdown):
+    cmd = markdown.build_mineru_cmd(
+        ["mineru"],
+        "in.pdf",
+        "out",
+        backend="pipeline",
+        method="ocr",
+        lang="ch",
+        formula=True,
+        table=False,
+    )
+    assert cmd[:7] == ["mineru", "-p", "in.pdf", "-o", "out", "-b", "pipeline"]
+    joined = " ".join(cmd)
+    assert "-m ocr" in joined
+    assert "-l ch" in joined
+    assert "-f true" in joined
+    assert "-t false" in joined
+    assert "--effort" not in joined
+
+
+def test_build_mineru_cmd_hybrid_uses_effort_not_pipeline_flags(markdown):
+    cmd = markdown.build_mineru_cmd(
+        ["mineru"],
+        "in.pdf",
+        "out",
+        backend="hybrid-engine",
+        effort="high",
+    )
+    joined = " ".join(cmd)
+    assert "--effort high" in joined
+    assert "-m " not in joined
+    assert "-l " not in joined
+
+
 def test_build_ffmpeg_cmd_omits_subtitle_metadata_when_absent(remux):
     cmd = remux.build_ffmpeg_cmd(
         "in.mkv",

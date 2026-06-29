@@ -30,3 +30,8 @@ def remux():
 @pytest.fixture(scope="session")
 def gatherer():
     return _load("file_gatherer.py", "file_gatherer_under_test")
+
+
+@pytest.fixture(scope="session")
+def markdown():
+    return _load("doc_to_markdown.py", "doc_to_markdown_under_test")

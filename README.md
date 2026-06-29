@@ -9,8 +9,7 @@
 A local [Streamlit](https://streamlit.io/) app that bundles a handful of small
 media & file utilities into one multipage interface.
 
-> **macOS only.** Folder pickers use AppleScript (`osascript`) and completion
-> chimes use `afplay`.
+> **macOS only.** Folder pickers use AppleScript (`osascript`).
 
 ## Tools
 
@@ -24,10 +23,11 @@ media & file utilities into one multipage interface.
 | 🧹  | **Cache Purge**     | Recursively find and delete cache / junk files from a folder.                       |
 | 🌐  | **Web Images to PDF** | Open a web page, scroll to load its images, and capture them into a single PDF.    |
 | 📄  | **Doc to PDF** | Clean a Word doc (accept changes, remove comments) and export it to PDF (LibreOffice). |
+| 📝  | **Doc to Markdown** | Convert PDFs, Office docs, and images into Markdown — text, tables, formulas, images — with MinerU. |
 
 ## Requirements
 
-- **macOS** (for the native folder pickers and completion sound)
+- **macOS** (for the native folder pickers)
 - [uv](https://docs.astral.sh/uv/)
 - Python 3.14 — managed automatically by uv via `.python-version`
 - [FFmpeg](https://ffmpeg.org/) on your `PATH` — required by **Remux Processor**
@@ -36,6 +36,10 @@ media & file utilities into one multipage interface.
   PDF** (the matching driver is downloaded automatically)
 - [LibreOffice](https://www.libreoffice.org/) — required by **Doc to PDF**
   (`brew install --cask libreoffice`)
+- [MinerU](https://github.com/opendatalab/MinerU) — required by **Doc to
+  Markdown**; installed with the project via the `mineru[core]` dependency, and
+  its ML models download automatically on first run (cached under
+  `~/.cache/huggingface`)
 
 ## Install
 
@@ -178,6 +182,27 @@ Clean Word documents and export them to PDF (no Microsoft Word needed):
 All files are converted in one LibreOffice run and bundled into a single zip you
 can download.
 
+### 📝 Doc to Markdown — `src/pages/doc_to_markdown.py`
+
+Convert documents to Markdown with
+[MinerU](https://github.com/opendatalab/MinerU) — text, tables, formulas, and
+extracted images:
+
+- Upload one or more `pdf`, `png`, `jpg`, `docx`, `pptx`, or `xlsx` files.
+- Each file is parsed by MinerU in a subprocess, with a progress bar tracking
+  the batch (`2/3 — report.pdf …`).
+- All output — the Markdown plus its `images/` and JSON sidecars — is bundled
+  into a single zip you can download.
+
+**Advanced options** pick the MinerU backend (`hybrid-engine` by default,
+`pipeline` for a lighter/faster run, or `vlm-engine`), the pipeline parse method
+(`auto` / `txt` / `ocr`), OCR language, hybrid effort, and formula/table
+toggles.
+
+> MinerU's models download on first run, so the first conversion takes longer.
+> The `hybrid-engine` / `vlm-engine` backends need the VLM models pulled in by
+> the `mineru[core]` dependency.
+
 ## Development
 
 Common tasks are wrapped in the `Makefile`:
@@ -190,7 +215,7 @@ make test    # uv run pytest
 ```
 
 `tests/` covers the pure helper functions (natural sort, AppleScript escaping,
-ffmpeg command building).
+ffmpeg and MinerU command building).
 
 ## Project structure
 
@@ -209,7 +234,8 @@ toolkit/
 │   │   ├── optimized_ip_generator.py
 │   │   ├── cache_purge.py
 │   │   ├── web_images_to_pdf.py
-│   │   └── doc_to_pdf.py
+│   │   ├── doc_to_pdf.py
+│   │   └── doc_to_markdown.py
 │   └── lib/                 # engines for tools that need >1 module
 │       └── subgen/          # Optimized-IP Subscription engine
 │           ├── core.py      # parse / rewrite / render
