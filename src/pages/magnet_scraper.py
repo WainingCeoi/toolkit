@@ -8,6 +8,7 @@ from bs4 import BeautifulSoup
 from dotenv import load_dotenv, set_key
 
 MAX_PAGES = 100  # hard cap so Automatic mode can never loop forever
+CODE_HEIGHT = 200  # px — fixed height for result blocks; overflow scrolls
 
 # Anchor .env to the repo root regardless of the launch directory
 if "__file__" in globals():
@@ -105,20 +106,22 @@ if mode == "auto":
                     st.error(f"❌ Error on page {page_idx}: {e}")
                     break
 
-        if not found:
-            st.warning(
-                "Cutoff video not found — check CUTOFF_VIDEO or raise the page limit."
-            )
-
-        if unwatched_video_urls and cutoff_video_url in unwatched_video_urls:
-            # Remove already-watched video URLs
+        # Only save / advance the cutoff / scrape once the cutoff is located —
+        # otherwise a stale CUTOFF_VIDEO or a network error would overwrite the
+        # anchor and submit a huge/partial batch.
+        if found:
+            # Keep only the videos newer than the cutoff, then advance the
+            # cutoff to the newest so the next run stops here.
             cutoff_idx = unwatched_video_urls.index(cutoff_video_url)
             unwatched_video_urls = unwatched_video_urls[:cutoff_idx]
-
-        if unwatched_video_urls:
-            set_key(ENV_PATH, "CUTOFF_VIDEO", unwatched_video_urls[0])
-
-        run_scraper = True
+            if unwatched_video_urls:
+                set_key(ENV_PATH, "CUTOFF_VIDEO", unwatched_video_urls[0])
+            run_scraper = True
+        else:
+            st.warning(
+                "Cutoff video not found — check CUTOFF_VIDEO or raise the page "
+                "limit. Nothing was scraped and the cutoff was left unchanged."
+            )
 
 
 # --- OPTION 2: MANUAL MODE ---
@@ -143,7 +146,7 @@ if mode == "cleanup":
             unique_magnet = set(raw_input.strip().splitlines())
             pure_magnet = "\n".join(unique_magnet)
             st.write(f"Found {len(unique_magnet)} Unique Links")
-            st.code(pure_magnet, language="text")
+            st.code(pure_magnet, language="text", height=CODE_HEIGHT)
         else:
             st.warning("Please enter at least one magnet link")
 
@@ -199,12 +202,10 @@ if scrape is not None and mode in ("auto", "manual"):
         if successful:
             st.write("## 🚀 Grabbed Magnets")
             magnets_text = "\n".join(item["result"] for item in successful)
-            st.code(magnets_text, language="text")
+            st.code(magnets_text, language="text", height=CODE_HEIGHT)
 
-        # Show Failed URLs with their reason
+        # Show Failed URLs (URLs only, no reason)
         if failed:
             st.write("## ⚠️ Failed URLs")
-            failed_text = "\n".join(
-                f"{item['url']}  # {item.get('reason', 'unknown')}" for item in failed
-            )
-            st.code(failed_text, language="text")
+            failed_text = "\n".join(item["url"] for item in failed)
+            st.code(failed_text, language="text", height=CODE_HEIGHT)
