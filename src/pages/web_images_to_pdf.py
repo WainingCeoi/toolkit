@@ -1,7 +1,6 @@
 import base64
 import json
 import re
-import subprocess
 from io import BytesIO
 from pathlib import Path
 from urllib.parse import urljoin
@@ -15,43 +14,9 @@ from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
 
+from lib.folder_picker import folder_field
+
 DRIVER_KEY = "wipdf_driver"
-
-
-# =======================================================
-# FOLDER PICKER
-# =======================================================
-def _applescript_str(value):
-    """Quote a Python string as an AppleScript string literal."""
-    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
-    return f'"{escaped}"'
-
-
-def pick_folder(start_dir=None):
-    """
-    Open the native macOS folder chooser and return the selected path.
-
-    Uses AppleScript (`osascript`) rather than tkinter, which isn't bundled
-    with every Python build (e.g. Homebrew's). The dialog opens at start_dir
-    when given. Returns "" if the user cancels.
-    """
-    prompt = "Select a folder"
-    start = Path(start_dir).expanduser() if start_dir else None
-    if start and start.is_dir():
-        script = (
-            f'POSIX path of (choose folder with prompt "{prompt}" '
-            f"default location (POSIX file {_applescript_str(str(start))}))"
-        )
-    else:
-        script = f'POSIX path of (choose folder with prompt "{prompt}")'
-
-    result = subprocess.run(
-        ["osascript", "-e", script],
-        capture_output=True,
-        text=True,
-    )
-    path = result.stdout.strip()
-    return path.rstrip("/") if len(path) > 1 else path
 
 
 # =======================================================
@@ -95,8 +60,12 @@ def scrape_images_from_source(page_source, page_url):
 
 
 def build_pdf(images, output_folder, pdf_name):
-    """Save the page images into a single multi-page PDF; return its path."""
+    """Save the page images into a single multi-page PDF; return its path.
+
+    Creates the output folder if a typed path doesn't exist yet.
+    """
     pdf_path = Path(output_folder).expanduser() / pdf_name
+    pdf_path.parent.mkdir(parents=True, exist_ok=True)
     images[0].save(str(pdf_path), save_all=True, append_images=images[1:])
     return str(pdf_path)
 
@@ -148,22 +117,9 @@ st.write(
 st.write("## 1. Source & Output")
 url = st.text_input("Page URL", placeholder="https://…")
 
-if "wipdf_output" not in st.session_state:
-    st.session_state.wipdf_output = str(Path("~/Desktop").expanduser())
-
-st.caption("Output folder")
-output_folder = st.session_state.wipdf_output
-st.text_input(
-    "Output folder",
-    value=output_folder,
-    disabled=True,
-    label_visibility="collapsed",
+output_folder = folder_field(
+    "Output folder", "wipdf_output", str(Path("~/Desktop").expanduser())
 )
-if st.button("📂 Browse…", key="browse_out"):
-    picked = pick_folder(st.session_state.wipdf_output)
-    if picked:
-        st.session_state.wipdf_output = picked
-        st.rerun()
 
 # --- 2. CAPTURE ---
 st.write("## 2. Capture")
@@ -197,6 +153,10 @@ if driver_open:
         "has loaded**, then click *Capture & build PDF*."
     )
     if st.button("📸 Capture & build PDF", type="primary"):
+        # A relative (or empty) typed path would land in the app's CWD.
+        if not Path(output_folder).expanduser().is_absolute():
+            st.error("❌ Use an absolute output folder path.")
+            st.stop()
         driver = st.session_state[DRIVER_KEY]
         try:
             with st.spinner("Capturing page & downloading images…"):

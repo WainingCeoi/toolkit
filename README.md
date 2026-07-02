@@ -236,7 +236,8 @@ toolkit/
 │   │   ├── web_images_to_pdf.py
 │   │   ├── doc_to_pdf.py
 │   │   └── doc_to_markdown.py
-│   └── lib/                 # engines for tools that need >1 module
+│   └── lib/                 # shared code (kept deliberately small)
+│       ├── folder_picker.py # editable path field + native Browse dialog
 │       └── subgen/          # Optimized-IP Subscription engine
 │           ├── core.py      # parse / rewrite / render
 │           ├── db.py        # SQLite store
@@ -250,10 +251,11 @@ toolkit/
 └── README.md
 ```
 
-Most tools are a single self-contained script that can also run on its own (e.g.
-`uv run streamlit run src/pages/remux_processor.py`). The **Optimized-IP
-Subscription** tool is the exception: its engine lives in `src/lib/subgen/`, so
-run it through the app entry (`src/app.py`) rather than standalone.
+Most tools are a single self-contained script. Tools that pick local folders
+share `src/lib/folder_picker.py` (an editable path field — type/paste a path or
+use the native Browse dialog), and the **Optimized-IP Subscription** engine
+lives in `src/lib/subgen/` — so run the app through its entry point
+(`src/app.py`) rather than as standalone page scripts.
 
 ## License
 

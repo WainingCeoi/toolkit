@@ -1,10 +1,11 @@
 import re
 import shutil
-import subprocess
 from pathlib import Path
 
 import streamlit as st
 from scandir_rs import Scandir
+
+from lib.folder_picker import folder_field
 
 # File-type presets -> scandir_rs file_include glob patterns
 FILE_TYPE_PRESETS = {
@@ -60,60 +61,6 @@ def normalize_pattern(token):
 
 
 # =======================================================
-# FOLDER PICKER
-# =======================================================
-def _applescript_str(value):
-    """Quote a Python string as an AppleScript string literal."""
-    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
-    return f'"{escaped}"'
-
-
-def pick_folder(start_dir=None):
-    """
-    Open the native macOS folder chooser and return the selected path.
-
-    Uses AppleScript (`osascript`) rather than tkinter, which isn't bundled
-    with every Python build (e.g. Homebrew's). The dialog opens at start_dir
-    when given. Returns "" if the user cancels.
-    """
-    prompt = "Select a folder"
-    start = Path(start_dir).expanduser() if start_dir else None
-    if start and start.is_dir():
-        script = (
-            f'POSIX path of (choose folder with prompt "{prompt}" '
-            f"default location (POSIX file {_applescript_str(str(start))}))"
-        )
-    else:
-        script = f'POSIX path of (choose folder with prompt "{prompt}")'
-
-    result = subprocess.run(
-        ["osascript", "-e", script],
-        capture_output=True,
-        text=True,
-    )
-    path = result.stdout.strip()
-    return path.rstrip("/") if len(path) > 1 else path
-
-
-def folder_selector(label, state_key, default, button_key):
-    """Render a labelled Browse button + read-only path field on one line."""
-    if state_key not in st.session_state:
-        st.session_state[state_key] = default
-
-    st.caption(label)
-
-    value = st.session_state[state_key]
-    st.text_input(label, value=value, disabled=True, label_visibility="collapsed")
-    if st.button("📂 Browse…", key=button_key):
-        picked = pick_folder(st.session_state[state_key])
-        if picked:
-            st.session_state[state_key] = picked
-            st.rerun()
-
-    return value
-
-
-# =======================================================
 # STREAMLIT UI SETUP
 # =======================================================
 st.title("📦 File Gatherer")
@@ -125,8 +72,8 @@ st.write(
 # --- 1. FOLDERS ---
 st.write("## 1. Folders")
 desktop = str(Path("~/Desktop").expanduser())
-source_folder = folder_selector("Source folder", "move_source", desktop, "browse_src")
-target_folder = folder_selector("Target folder", "move_target", desktop, "browse_tgt")
+source_folder = folder_field("Source folder", "move_source", desktop)
+target_folder = folder_field("Target folder", "move_target", desktop)
 
 # --- 2. FILE TYPES ---
 st.write("## 2. File Types")
@@ -156,10 +103,15 @@ if patterns:
 # --- 3. SCAN & MOVE ---
 st.write("## 3. Scan & Move")
 if st.button("🚚 Scan & Move", type="primary", key="scan_move_btn"):
-    src = Path(source_folder).expanduser().resolve()
-    tgt = Path(target_folder).expanduser().resolve()
+    src_raw = Path(source_folder).expanduser()
+    tgt_raw = Path(target_folder).expanduser()
+    src, tgt = src_raw.resolve(), tgt_raw.resolve()
 
-    if not src.is_dir():
+    # A relative (or empty) typed path would resolve against the app's CWD —
+    # refuse it before it can target the wrong tree.
+    if not (src_raw.is_absolute() and tgt_raw.is_absolute()):
+        st.error("❌ Use absolute folder paths (e.g. ~/Movies or /Volumes/T7).")
+    elif not src.is_dir():
         st.error("❌ Source folder not found.")
     elif not patterns:
         st.error("❌ Select at least one file type.")
@@ -181,7 +133,12 @@ if st.button("🚚 Scan & Move", type="primary", key="scan_move_btn"):
         if not files:
             st.info("No matching files found.")
         else:
-            tgt.mkdir(parents=True, exist_ok=True)
+            try:
+                tgt.mkdir(parents=True, exist_ok=True)
+            except OSError as e:
+                # e.g. the typed target (or one of its parents) is a file
+                st.error(f"❌ Cannot create the target folder: {e}")
+                st.stop()
             total = len(files)
             bar = st.progress(0, text=f"Moving… 0/{total}")
             moved, failed = [], []

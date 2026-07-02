@@ -1,6 +1,5 @@
 import re
 import shutil
-import subprocess
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -9,6 +8,8 @@ from pathlib import Path
 import ffmpeg
 import streamlit as st
 from ffmpeg_progress_yield import FfmpegProgress
+
+from lib.folder_picker import folder_field
 
 VIDEO_EXTENSIONS = {
     ".mkv",
@@ -36,42 +37,6 @@ def natural_sort_key(name):
         int(chunk) if chunk.isdigit() else chunk.lower()
         for chunk in re.split(r"(\d+)", name)
     ]
-
-
-# =======================================================
-# FOLDER PICKER
-# =======================================================
-def _applescript_str(value):
-    """Quote a Python string as an AppleScript string literal."""
-    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
-    return f'"{escaped}"'
-
-
-def pick_folder(start_dir=None):
-    """
-    Open the native macOS folder chooser and return the selected path.
-
-    Uses AppleScript (`osascript`) rather than tkinter, which isn't bundled
-    with every Python build (e.g. Homebrew's). The dialog opens at start_dir
-    when given. Returns "" if the user cancels.
-    """
-    prompt = "Select a folder"
-    start = Path(start_dir).expanduser() if start_dir else None
-    if start and start.is_dir():
-        script = (
-            f'POSIX path of (choose folder with prompt "{prompt}" '
-            f"default location (POSIX file {_applescript_str(str(start))}))"
-        )
-    else:
-        script = f'POSIX path of (choose folder with prompt "{prompt}")'
-
-    result = subprocess.run(
-        ["osascript", "-e", script],
-        capture_output=True,
-        text=True,
-    )
-    path = result.stdout.strip()
-    return path.rstrip("/") if len(path) > 1 else path
 
 
 # =======================================================
@@ -154,35 +119,30 @@ st.write("Parallel, lossless remuxing (re-multiplexing) of videos with FFmpeg.")
 # --- 1. SELECT SOURCE FOLDER & FILES ---
 st.write("## 1. Select Videos")
 
-if "source_folder" not in st.session_state:
-    st.session_state.source_folder = str(Path("~/Desktop").expanduser())
-
-# Browse updates the folder, then st.rerun() refreshes the field + file list.
-folder = st.session_state.source_folder
-st.text_input(
-    "Source folder", value=folder, disabled=True, label_visibility="collapsed"
+folder = folder_field(
+    "Source folder", "source_folder", str(Path("~/Desktop").expanduser())
 )
-if st.button("📂 Browse…", key="browse_src"):
-    picked = pick_folder(st.session_state.source_folder)
-    if picked:
-        st.session_state.source_folder = picked
-        st.rerun()
 
 video_files = []
 folder_path = Path(folder).expanduser()
-if folder and folder_path.is_dir():
-    video_files = sorted(
-        (
-            p
-            for p in folder_path.iterdir()
-            if p.is_file() and p.suffix.lower() in VIDEO_EXTENSIONS
-        ),
-        key=lambda p: natural_sort_key(p.name),
-    )
-    if not video_files:
-        st.info("No video files found in this folder.")
+# Require an absolute path: a relative one would list the app's CWD.
+if folder and folder_path.is_absolute() and folder_path.is_dir():
+    try:
+        video_files = sorted(
+            (
+                p
+                for p in folder_path.iterdir()
+                if p.is_file() and p.suffix.lower() in VIDEO_EXTENSIONS
+            ),
+            key=lambda p: natural_sort_key(p.name),
+        )
+        if not video_files:
+            st.info("No video files found in this folder.")
+    except OSError as e:
+        # e.g. a typed folder that stats fine but isn't readable
+        st.error(f"❌ Cannot read the source folder: {e}")
 elif folder:
-    st.error("❌ Folder not found.")
+    st.error("❌ Folder not found — use an absolute path (e.g. ~/Movies).")
 
 options = [str(p) for p in video_files]
 selected = st.multiselect(
@@ -230,31 +190,30 @@ st.write("## 3. External Subtitles (Optional)")
 use_external_sub = st.checkbox("Attach external subtitle files")
 external_sub_map = {}
 if use_external_sub:
-    # Default to the source folder until a subtitle folder is explicitly chosen
-    if "sub_folder" not in st.session_state:
-        st.session_state.sub_folder = None
-
-    sub_folder = st.session_state.sub_folder or folder
-    st.text_input(
+    # Empty until a subtitle folder is explicitly chosen; falls back to the
+    # source folder.
+    typed = folder_field(
         "Subtitle folder",
-        value=sub_folder,
-        disabled=True,
-        label_visibility="collapsed",
+        "sub_folder",
+        placeholder="Defaults to the source folder",
+        start_dir=folder,
     )
-    if st.button("📂 Browse…", key="browse_sub"):
-        picked = pick_folder(st.session_state.sub_folder or folder)
-        if picked:
-            st.session_state.sub_folder = picked
-            st.rerun()
+    sub_folder = typed or folder
 
     sub_folder_path = Path(sub_folder).expanduser()
-    if sub_folder_path.is_dir():
+    # Require an absolute path: a relative one would list the app's CWD.
+    if sub_folder_path.is_absolute() and sub_folder_path.is_dir():
         # Match each selected video to a subtitle sharing the same filename stem
-        subs_by_stem = {
-            p.stem: str(p)
-            for p in sub_folder_path.iterdir()
-            if p.is_file() and p.suffix.lower() in SUBTITLE_EXTENSIONS
-        }
+        try:
+            subs_by_stem = {
+                p.stem: str(p)
+                for p in sub_folder_path.iterdir()
+                if p.is_file() and p.suffix.lower() in SUBTITLE_EXTENSIONS
+            }
+        except OSError as e:
+            # e.g. a typed folder that stats fine but isn't readable
+            st.error(f"❌ Cannot read the subtitle folder: {e}")
+            subs_by_stem = {}
         for s in selected:
             external_sub_map[s] = subs_by_stem.get(Path(s).stem)
         if selected:
@@ -274,23 +233,14 @@ if use_external_sub:
                 hide_index=True,
             )
     else:
-        st.error("❌ Subtitle folder not found.")
+        st.error("❌ Subtitle folder not found — use an absolute path.")
 
 # --- 4. OUTPUT & RUN CONFIG ---
 st.write("## 4. Output")
 
-if "out_folder" not in st.session_state:
-    st.session_state.out_folder = str(Path("~/Desktop/🎬").expanduser())
-
-out_folder = st.session_state.out_folder
-st.text_input(
-    "Output folder", value=out_folder, disabled=True, label_visibility="collapsed"
+out_folder = folder_field(
+    "Output folder", "out_folder", str(Path("~/Desktop/🎬").expanduser())
 )
-if st.button("📂 Browse…", key="browse_out"):
-    picked = pick_folder(st.session_state.out_folder)
-    if picked:
-        st.session_state.out_folder = picked
-        st.rerun()
 
 max_workers = st.slider("Parallel workers", min_value=1, max_value=8, value=4)
 
@@ -301,6 +251,9 @@ max_workers = st.slider("Parallel workers", min_value=1, max_value=8, value=4)
 if st.button("🚀 Start Remuxing", type="primary"):
     if not selected:
         st.error("❌ Please select at least one video.")
+    elif not Path(out_folder).expanduser().is_absolute():
+        # A relative (or empty) output path would land in the app's CWD.
+        st.error("❌ Use an absolute output folder path.")
     elif shutil.which("ffmpeg") is None:
         st.error(
             "❌ ffmpeg not found on PATH. Install it (e.g. `brew install ffmpeg`)."
@@ -335,7 +288,12 @@ if st.button("🚀 Start Remuxing", type="primary"):
             st.stop()
 
         out_path = Path(out_folder).expanduser()
-        out_path.mkdir(parents=True, exist_ok=True)
+        try:
+            out_path.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            # e.g. the typed path (or one of its parents) is a file
+            st.error(f"❌ Cannot create the output folder: {e}")
+            st.stop()
 
         # Build the task list
         tasks = []

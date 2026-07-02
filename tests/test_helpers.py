@@ -19,10 +19,10 @@ def test_natural_sort_is_consistent_between_tools(remux, gatherer):
     )
 
 
-def test_applescript_str_escapes_quotes_and_backslashes(remux):
-    assert remux._applescript_str("/a/b") == '"/a/b"'
-    assert remux._applescript_str('a"b') == '"a\\"b"'
-    assert remux._applescript_str("a\\b") == '"a\\\\b"'
+def test_applescript_str_escapes_quotes_and_backslashes(picker):
+    assert picker._applescript_str("/a/b") == '"/a/b"'
+    assert picker._applescript_str('a"b') == '"a\\"b"'
+    assert picker._applescript_str("a\\b") == '"a\\\\b"'
 
 
 def test_normalize_pattern(gatherer):

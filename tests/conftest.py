@@ -1,5 +1,6 @@
 import importlib.util
 import logging
+import sys
 import warnings
 from pathlib import Path
 
@@ -10,7 +11,12 @@ import pytest
 # helper functions. Silence the resulting Streamlit warnings.
 logging.getLogger("streamlit").setLevel(logging.CRITICAL)
 
-PAGES = Path(__file__).resolve().parents[1] / "src" / "pages"
+SRC = Path(__file__).resolve().parents[1] / "src"
+PAGES = SRC / "pages"
+
+# Pages import the shared lib (e.g. lib.folder_picker) relative to src/, which
+# Streamlit puts on sys.path at runtime — mirror that here.
+sys.path.insert(0, str(SRC))
 
 
 def _load(filename, name):
@@ -35,3 +41,10 @@ def gatherer():
 @pytest.fixture(scope="session")
 def markdown():
     return _load("doc_to_markdown.py", "doc_to_markdown_under_test")
+
+
+@pytest.fixture(scope="session")
+def picker():
+    from lib import folder_picker
+
+    return folder_picker

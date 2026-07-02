@@ -1,10 +1,11 @@
 import re
-import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import streamlit as st
 from scandir_rs import Scandir
+
+from lib.folder_picker import folder_field
 
 DEFAULT_CACHE_TYPES = ["*.dwl", "*.dwl2", "*.bak", "*.log", "*.db", "*.tmp", "*.err"]
 
@@ -34,42 +35,6 @@ def normalize_pattern(token):
     return f"*.{token.lstrip('.')}"
 
 
-# =======================================================
-# FOLDER PICKER
-# =======================================================
-def _applescript_str(value):
-    """Quote a Python string as an AppleScript string literal."""
-    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
-    return f'"{escaped}"'
-
-
-def pick_folder(start_dir=None):
-    """
-    Open the native macOS folder chooser and return the selected path.
-
-    Uses AppleScript (`osascript`) rather than tkinter, which isn't bundled
-    with every Python build (e.g. Homebrew's). The dialog opens at start_dir
-    when given. Returns "" if the user cancels.
-    """
-    prompt = "Select a folder"
-    start = Path(start_dir).expanduser() if start_dir else None
-    if start and start.is_dir():
-        script = (
-            f'POSIX path of (choose folder with prompt "{prompt}" '
-            f"default location (POSIX file {_applescript_str(str(start))}))"
-        )
-    else:
-        script = f'POSIX path of (choose folder with prompt "{prompt}")'
-
-    result = subprocess.run(
-        ["osascript", "-e", script],
-        capture_output=True,
-        text=True,
-    )
-    path = result.stdout.strip()
-    return path.rstrip("/") if len(path) > 1 else path
-
-
 def delete_file(file_path):
     """Delete one file; return (path, None) on success or (path, error)."""
     try:
@@ -90,22 +55,9 @@ st.write(
 
 # --- 1. FOLDER ---
 st.write("## 1. Folder")
-if "purge_source" not in st.session_state:
-    st.session_state.purge_source = str(Path("~/Desktop").expanduser())
-
-st.caption("Folder to clean")
-source_folder = st.session_state.purge_source
-st.text_input(
-    "Folder to clean",
-    value=source_folder,
-    disabled=True,
-    label_visibility="collapsed",
+source_folder = folder_field(
+    "Folder to clean", "purge_source", str(Path("~/Desktop").expanduser())
 )
-if st.button("📂 Browse…", key="browse_purge"):
-    picked = pick_folder(st.session_state.purge_source)
-    if picked:
-        st.session_state.purge_source = picked
-        st.rerun()
 
 # --- 2. FILE TYPES ---
 st.write("## 2. File Types")
@@ -135,7 +87,11 @@ if patterns:
 st.write("## 3. Scan & Delete")
 if st.button("🔍 Scan folder", key="scan_btn"):
     src = Path(source_folder).expanduser()
-    if not src.is_dir():
+    # A relative (or empty) typed path would resolve against the app's CWD —
+    # refuse it before the delete flow can target the wrong tree.
+    if not src.is_absolute():
+        st.error("❌ Use an absolute folder path (e.g. ~/Library/Caches).")
+    elif not src.is_dir():
         st.error("❌ Folder not found.")
     elif not patterns:
         st.error("❌ Enter at least one extension / pattern.")
