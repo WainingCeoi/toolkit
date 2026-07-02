@@ -155,56 +155,36 @@ if patterns:
 
 # --- 3. SCAN & MOVE ---
 st.write("## 3. Scan & Move")
-if st.button("🔍 Scan source folder", key="scan_btn"):
-    src = Path(source_folder).expanduser()
+if st.button("🚚 Scan & Move", type="primary", key="scan_move_btn"):
+    src = Path(source_folder).expanduser().resolve()
+    tgt = Path(target_folder).expanduser().resolve()
+
     if not src.is_dir():
         st.error("❌ Source folder not found.")
     elif not patterns:
         st.error("❌ Select at least one file type.")
+    elif tgt == src or src in tgt.parents:
+        st.error("❌ Target must be a different folder, outside the source.")
     else:
-        scanner, errors = Scandir(str(src), file_include=patterns).collect()
-        found = [str(src / entry.path) for entry in scanner if entry.is_file]
-        found.sort(key=lambda p: natural_sort_key(Path(p).name))
-        st.session_state.scan_files = found
-        st.session_state.scan_errors = list(errors) if errors else []
-        st.session_state.scan_source = str(src)
+        with st.spinner("Scanning source folder…"):
+            scanner, errors = Scandir(str(src), file_include=patterns).collect()
+            files = [str(src / entry.path) for entry in scanner if entry.is_file]
+            files.sort(key=lambda p: natural_sort_key(Path(p).name))
 
-# Show scan results only while they match the current source folder
-files = st.session_state.get("scan_files", [])
-src_now = str(Path(source_folder).expanduser())
-if files and st.session_state.get("scan_source") == src_now:
-    st.success(f"Found {len(files)} file(s).")
+        # A scan error means part of the tree was unreadable, so the gather may
+        # be incomplete — surface the count here and in the final status below.
+        if errors:
+            with st.expander(f"⚠️ {len(errors)} scan warning(s)"):
+                for error in errors:
+                    st.text(str(error))
 
-    if st.session_state.get("scan_errors"):
-        with st.expander("⚠️ Scan warnings"):
-            for error in st.session_state.scan_errors:
-                st.text(str(error))
-
-    preview = files[:200]
-    st.dataframe(
-        [
-            {
-                "File": Path(f).name,
-                "Subfolder": str(Path(f).parent.relative_to(src_now)) or ".",
-            }
-            for f in preview
-        ],
-        hide_index=True,
-    )
-    if len(files) > len(preview):
-        st.caption(f"Showing first {len(preview)} of {len(files)}.")
-
-    if st.button(f"🚚 Move {len(files)} file(s) to target", type="primary"):
-        src = Path(source_folder).expanduser().resolve()
-        tgt = Path(target_folder).expanduser().resolve()
-
-        if tgt == src or src in tgt.parents:
-            st.error("❌ Target must be a different folder, outside the source.")
+        if not files:
+            st.info("No matching files found.")
         else:
             tgt.mkdir(parents=True, exist_ok=True)
-            bar = st.progress(0, text="Moving…")
-            moved, failed = [], []
             total = len(files)
+            bar = st.progress(0, text=f"Moving… 0/{total}")
+            moved, failed = [], []
 
             for idx, file_path in enumerate(files, start=1):
                 file = Path(file_path)
@@ -230,8 +210,11 @@ if files and st.session_state.get("scan_source") == src_now:
                 for name, err in failed:
                     st.error(f"🔴 {name}: {err}")
 
-            st.success(f"Done! Moved to: {tgt}")
-            # Results are now stale (files relocated)
-            st.session_state.scan_files = []
-
+            if errors:
+                st.warning(
+                    f"Moved to {tgt}, but {len(errors)} location(s) couldn't be "
+                    "scanned — matching files may remain in the source."
+                )
+            else:
+                st.success(f"Done! Moved to: {tgt}")
             st.toast(f"File Gatherer: moved {len(moved)} file(s).", icon="📦")

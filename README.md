@@ -110,9 +110,9 @@ Recursively collect files by type and move them into a single folder:
 - Pick **source** and **target** folders.
 - Choose file-type **categories** (Video, Audio, Image, Subtitle, Document,
   Archive) and/or add custom glob patterns.
-- **Scan** to preview the matched files, then **Move** them. Duplicate names are
-  auto-numbered (`name_1.ext`), and the target is refused if it sits inside the
-  source.
+- **Scan & Move** in one click — matches are moved immediately, with a progress
+  bar and a moved/failed summary. Duplicate names are auto-numbered
+  (`name_1.ext`), and the target is refused if it sits inside the source.
 
 ### 🛰️ Optimized-IP Subscription — `src/pages/optimized_ip_generator.py`
 
