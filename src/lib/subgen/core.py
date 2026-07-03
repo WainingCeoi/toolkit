@@ -43,7 +43,7 @@ def split_csv_like(text: str) -> list[str]:
 def _to_int(value, fallback: int = 0) -> int:
     try:
         return int(str(value).strip())
-    except ValueError, TypeError:
+    except (ValueError, TypeError):
         return fallback
 
 
