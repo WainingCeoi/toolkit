@@ -21,15 +21,24 @@ import requests
 from bs4 import BeautifulSoup
 from PIL import Image
 
-with warnings.catch_warnings():
-    # pymupdf's SWIG bindings emit "builtin type ... has no __module__
-    # attribute" DeprecationWarnings during C-extension init on Python 3.14;
-    # promoted to errors (the test suite runs with filterwarnings=error) they
-    # segfault the interpreter mid-import. Suppress them for this import only.
-    warnings.filterwarnings(
-        "ignore", message="builtin type .* has no __module__ attribute"
-    )
-    import fitz
+
+def _import_fitz():
+    """Import pymupdf lazily, and only when a bookmark is actually written.
+
+    On Python 3.14 pymupdf's SWIG bindings emit "builtin type ... has no
+    __module__ attribute" DeprecationWarnings during C-extension init, and any
+    process where warnings are promoted to errors (the test suite runs with
+    filterwarnings=error) segfaults at interpreter shutdown once fitz has been
+    loaded — even if the import itself is guarded. Keeping the import out of
+    module scope means the API/test processes never load fitz at all; only the
+    capture worker pays for it, with default warning filters.
+    """
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore", message="builtin type .* has no __module__ attribute"
+        )
+        import fitz
+    return fitz
 
 
 # =======================================================
@@ -107,6 +116,7 @@ def add_bookmark(page_url, pdf_path):
             toc.append([level, page_name, page_number])
         if not toc:
             return "no bookmark anchors found on the page"
+        fitz = _import_fitz()
         doc = fitz.open(pdf_path)
         doc.set_toc(toc)
         doc.save(pdf_path, incremental=True, encryption=fitz.PDF_ENCRYPT_KEEP)
