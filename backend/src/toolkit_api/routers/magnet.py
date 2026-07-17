@@ -150,13 +150,17 @@ def start_auto(req: AutoScrapeIn, state: StateDep) -> JobStartedOut:
                 "warning": WARN_CUTOFF_NOT_FOUND,
                 "error": error,
             }
-        if urls:
-            # Advance the cutoff to the newest so the next run stops here.
-            set_key(magnet.ENV_PATH, "CUTOFF_VIDEO", urls[0])
         result = _scrape(job, urls, should_stop=should_stop)
-        if job.cancelled:
-            return None
         result["cutoff_found"] = True
+        # Advance the cutoff ONLY on a clean, uncancelled scrape. Cancelling
+        # mid-scrape must not move the anchor past videos we never fetched —
+        # otherwise they fall below the cutoff and are skipped forever. On
+        # cancel we return the partial result (the registry marks the job
+        # cancelled) and leave the next run to re-scrape the whole batch.
+        if job.cancelled:
+            return result
+        if urls:
+            set_key(magnet.ENV_PATH, "CUTOFF_VIDEO", urls[0])
         return result
 
     job = state.jobs.submit(TOOL_SLUG, [], worker)

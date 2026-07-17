@@ -125,9 +125,12 @@ def convert_batch(named_files, options, on_progress, mineru_cmd):
         for idx, (name, content) in enumerate(named_files):
             # Sanitize the client-supplied filename to a bare basename before
             # ANY path use — a name like "../../x" or an absolute path would
-            # otherwise escape the temp dir on the join below.
+            # otherwise escape the temp dir on the join below. Path().name
+            # already strips every directory/traversal segment (and reduces
+            # "." / ".." to ""), so an empty result is the only unsafe case;
+            # a legitimate dotfile like ".hidden.pdf" is kept.
             safe = Path(name or "").name
-            if not safe or safe.startswith("."):
+            if not safe:
                 failed.append((idx, name, "❌ Invalid filename."))
                 continue
             # Show which file is in flight before its (long) MinerU run.

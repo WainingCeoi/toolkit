@@ -141,6 +141,48 @@ def test_auto_happy_path_advances_cutoff_and_scrapes(
     assert "https://site.test/v5" in env_file.read_text()
 
 
+def test_auto_cancel_during_scrape_does_not_advance_cutoff(
+    tool_client, monkeypatch, tmp_path
+):
+    # Regression: cancelling mid-scrape must NOT advance the cutoff — otherwise
+    # the un-fetched videos fall below the anchor and are skipped forever.
+    env_file = tmp_path / ".env"
+    env_file.write_text('CUTOFF_VIDEO="https://site.test/v0"\n')
+    monkeypatch.setattr(magnet_engine, "ENV_PATH", env_file)
+    monkeypatch.setenv("WEBSITE_URL", "https://site.test")
+    monkeypatch.setenv("CUTOFF_VIDEO", "https://site.test/v0")
+
+    new_urls = ["https://site.test/v3", "https://site.test/v2", "https://site.test/v1"]
+    monkeypatch.setattr(
+        magnet_engine,
+        "find_unwatched_urls",
+        lambda *a, **k: (new_urls, True, None),
+    )
+
+    # Simulate a scrape that gets cancelled after fetching the first video.
+    def fake_scrape(job, urls, should_stop=None):
+        job._cancel.set()
+        return {
+            "urls": urls,
+            "successful": [{"success": True, "result": "magnet:?xt=v3"}],
+            "failed": [],
+            "total": len(urls),
+            "successful_count": 1,
+            "failed_count": 0,
+        }
+
+    monkeypatch.setattr(magnet_router, "_scrape", fake_scrape)
+
+    resp = tool_client.post("/api/magnet/auto", json={"start_page": 1})
+    snap = wait_for_job(tool_client, resp.json()["job_id"])
+    assert snap["state"] == "cancelled"
+    # Cutoff left untouched, and the partial result is preserved (not None).
+    assert "https://site.test/v0" in env_file.read_text()
+    assert "https://site.test/v3" not in env_file.read_text()
+    assert snap["result"] is not None
+    assert snap["result"]["successful_count"] == 1
+
+
 def test_auto_cutoff_not_found_warns_and_leaves_env_alone(
     tool_client, monkeypatch, tmp_path
 ):

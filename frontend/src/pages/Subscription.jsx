@@ -4,7 +4,7 @@
 // request state instead of useToolJob.
 
 import React, { useCallback, useEffect, useState } from 'react'
-import { api } from '../api'
+import { api, saveBlob } from '../api'
 import CodeBox from '../components/CodeBox'
 
 const PREVIEW_COLS = ['name', 'type', 'server', 'port', 'host', 'sni', 'network', 'tls']
@@ -20,6 +20,10 @@ export default function Subscription() {
   const [result, setResult] = useState(null)
   const [error, setError] = useState(null)
   const [busy, setBusy] = useState(false)
+  // per-target download failure (e.g. Surge can't express vless nodes) — the
+  // old page showed the render reason on a disabled button; here it appears
+  // inline under the download row.
+  const [dlError, setDlError] = useState(null)
 
   // history (loads independently of any generate)
   const [history, setHistory] = useState([])
@@ -49,6 +53,7 @@ export default function Subscription() {
         keep_original_host: keepHost,
       })
       setResult(res)
+      setDlError(null)
       refreshHistory()
     } catch (err) {
       setError(err.message)
@@ -57,8 +62,19 @@ export default function Subscription() {
     }
   }
 
+  async function download(target) {
+    setDlError(null)
+    try {
+      const { blob, filename } = await api.subsDownload(result.sub_id, target)
+      saveBlob(blob, filename)
+    } catch (err) {
+      setDlError(`${target}: ${err.message}`)
+    }
+  }
+
   async function loadSub(id) {
     setError(null)
+    setDlError(null)
     try {
       setResult(await api.subsGet(id))
     } catch (err) {
@@ -234,10 +250,11 @@ export default function Subscription() {
               <div className="field">
                 <span className="label">Download subscription files (import without a server)</span>
                 <div className="row">
-                  <a className="btn" href={api.subsRenderUrl(result.sub_id, 'raw')}>⬇ raw .txt</a>
-                  <a className="btn" href={api.subsRenderUrl(result.sub_id, 'clash')}>⬇ clash .yaml</a>
-                  <a className="btn" href={api.subsRenderUrl(result.sub_id, 'surge')}>⬇ surge .conf</a>
+                  <button type="button" className="btn" onClick={() => download('raw')}>⬇ raw .txt</button>
+                  <button type="button" className="btn" onClick={() => download('clash')}>⬇ clash .yaml</button>
+                  <button type="button" className="btn" onClick={() => download('surge')}>⬇ surge .conf</button>
                 </div>
+                {dlError && <div className="note warn">Unavailable — {dlError}</div>}
               </div>
 
               <details className="expander">

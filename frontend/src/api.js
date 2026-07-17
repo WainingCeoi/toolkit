@@ -29,22 +29,36 @@ async function request(path, { method = 'GET', body } = {}) {
   return type.includes('application/json') ? res.json() : res
 }
 
+function filenameFromDisposition(res, fallback) {
+  const dispo = res.headers.get('content-disposition') || ''
+  const star = /filename\*=utf-8''([^;]+)/i.exec(dispo)
+  const plain = /filename="?([^";]+)"?/i.exec(dispo)
+  return star ? decodeURIComponent(star[1]) : plain ? plain[1] : fallback
+}
+
+async function blobError(res) {
+  let detail = `${res.status} ${res.statusText}`
+  try {
+    detail = (await res.json()).detail ?? detail
+  } catch { /* keep status text */ }
+  return new Error(detail)
+}
+
 // Binary POST (Image to PDF returns the file directly): resolves to a Blob +
 // suggested filename from Content-Disposition.
 async function requestBlob(path, formData) {
   const res = await fetch(`${BASE}${path}`, { method: 'POST', body: formData })
-  if (!res.ok) {
-    let detail = `${res.status} ${res.statusText}`
-    try {
-      detail = (await res.json()).detail ?? detail
-    } catch { /* keep status text */ }
-    throw new Error(detail)
-  }
-  const dispo = res.headers.get('content-disposition') || ''
-  const star = /filename\*=utf-8''([^;]+)/i.exec(dispo)
-  const plain = /filename="?([^";]+)"?/i.exec(dispo)
-  const filename = star ? decodeURIComponent(star[1]) : plain ? plain[1] : 'download'
-  return { blob: await res.blob(), filename }
+  if (!res.ok) throw await blobError(res)
+  return { blob: await res.blob(), filename: filenameFromDisposition(res, 'download') }
+}
+
+// Binary GET (subscription file downloads): same shape, but a failed render
+// (e.g. Surge can't express vless nodes) surfaces its reason as an Error the
+// page can show inline instead of a broken browser download.
+async function fetchBlob(path, fallbackName) {
+  const res = await fetch(`${BASE}${path}`)
+  if (!res.ok) throw await blobError(res)
+  return { blob: await res.blob(), filename: filenameFromDisposition(res, fallbackName) }
 }
 
 // Save a Blob through the browser's download flow.
@@ -139,4 +153,6 @@ export const api = {
   subsUrls: (id) => request(`/subs/${id}/urls`),
   subsQrUrl: (id) => `${BASE}/subs/${id}/qr.png`,
   subsRenderUrl: (id, target) => `${BASE}/subs/${id}/render?target=${target}`,
+  subsDownload: (id, target) =>
+    fetchBlob(`/subs/${id}/render?target=${target}`, `subscription-${target}`),
 }
