@@ -8,12 +8,28 @@ becomes a direct download response.
 from __future__ import annotations
 
 from typing import Annotated
+from urllib.parse import quote
 
 from fastapi import APIRouter, File, Form, HTTPException, Response, UploadFile
 
 from toolkit_engine.imgpdf import images_to_pdf_bytes
 
 router = APIRouter(tags=["img-to-pdf"])
+
+
+def _content_disposition(out_name: str) -> str:
+    """Build a Content-Disposition header value that survives latin-1 encoding.
+
+    Mirrors Starlette's FileResponse: latin-1-safe names keep the ``filename="..."``
+    form (with backslash/quote escaped), while non-latin-1 names fall back to the
+    RFC 5987 ``filename*=utf-8''<percent-encoded>`` form.
+    """
+    try:
+        out_name.encode("latin-1")
+    except UnicodeEncodeError:
+        return f"attachment; filename*=utf-8''{quote(out_name)}"
+    escaped = out_name.replace("\\", "\\\\").replace('"', '\\"')
+    return f'attachment; filename="{escaped}"'
 
 
 @router.post("/img-to-pdf")
@@ -41,5 +57,5 @@ def img_to_pdf(
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="{out_name}"'},
+        headers={"Content-Disposition": _content_disposition(out_name)},
     )

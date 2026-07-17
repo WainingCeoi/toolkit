@@ -112,7 +112,8 @@ def convert_batch(named_files, options, on_progress, mineru_cmd):
     one MinerU subprocess per file with the per-file timeout, and every
     successful output tree is bundled into one in-memory zip. `options` carries
     backend/method/lang/effort/formula/table. Returns (zip_bytes, done, failed)
-    — zip_bytes is None when nothing converted.
+    — failed entries are (idx, name, error); zip_bytes is None when nothing
+    converted.
     """
     done, failed, zip_bytes = [], [], None
     total = len(named_files)
@@ -122,6 +123,13 @@ def convert_batch(named_files, options, on_progress, mineru_cmd):
         archive = zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED)
 
         for idx, (name, content) in enumerate(named_files):
+            # Sanitize the client-supplied filename to a bare basename before
+            # ANY path use — a name like "../../x" or an absolute path would
+            # otherwise escape the temp dir on the join below.
+            safe = Path(name or "").name
+            if not safe or safe.startswith("."):
+                failed.append((idx, name, "❌ Invalid filename."))
+                continue
             # Show which file is in flight before its (long) MinerU run.
             on_progress(
                 int(idx / total * 100),
@@ -129,7 +137,7 @@ def convert_batch(named_files, options, on_progress, mineru_cmd):
             )
             # Isolate each file's input and output so identical names
             # and MinerU's whole-directory scanning can't collide.
-            src = tmp / f"in_{idx}" / name
+            src = tmp / f"in_{idx}" / safe
             out_dir = tmp / f"out_{idx}"
             src.parent.mkdir(parents=True, exist_ok=True)
             out_dir.mkdir()
@@ -155,7 +163,7 @@ def convert_batch(named_files, options, on_progress, mineru_cmd):
                     timeout=PER_FILE_TIMEOUT,
                 )
             except subprocess.TimeoutExpired:
-                failed.append((name, "timed out"))
+                failed.append((idx, name, "timed out"))
                 continue
 
             if find_markdown(out_dir):
@@ -163,7 +171,9 @@ def convert_batch(named_files, options, on_progress, mineru_cmd):
                 done.append(name)
             else:
                 reason = (result.stderr or result.stdout or "").strip()
-                failed.append((name, reason[-2000:] or "no Markdown produced"))
+                failed.append(
+                    (idx, name, reason[-2000:] or "no Markdown produced")
+                )
 
         archive.close()
         if done:

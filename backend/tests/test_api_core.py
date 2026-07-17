@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import shutil
 import time
 
 from toolkit_api.jobs import FINISHED_STATES
+from toolkit_engine import docmd
 
 
 def wait_for_job(client, job_id, timeout=5.0):
@@ -31,6 +33,19 @@ def test_health_reports_dependency_booleans(client):
     body = client.get("/api/health").json()
     assert set(body) == {"ok", "ffmpeg", "soffice", "mineru"}
     assert all(isinstance(v, bool) for v in body.values())
+
+
+def test_health_mineru_uses_docmd_detection_not_just_path(client, monkeypatch):
+    # MinerU is installed in the venv but not on PATH: shutil.which misses it,
+    # while docmd.find_mineru() (the tool's own detector) finds it. Health must
+    # agree with the tool, else the home lamp reads "not found" while it runs.
+    real_which = shutil.which
+    monkeypatch.setattr(
+        shutil, "which", lambda name: None if name == "mineru" else real_which(name)
+    )
+    monkeypatch.setattr(docmd, "find_mineru", lambda: ["mineru"])
+    body = client.get("/api/health").json()
+    assert body["mineru"] is True
 
 
 def test_job_lifecycle_success(client, app_state):

@@ -240,3 +240,113 @@ def test_docmd_job_zips_markdown_artifact(tool_client, monkeypatch):
     assert download.status_code == 200
     with zipfile.ZipFile(io.BytesIO(download.content)) as z:
         assert "notes/auto/notes.md" in z.namelist()
+
+
+def test_docmd_post_rejects_unsupported_type(tool_client):
+    resp = tool_client.post(
+        "/api/doc-to-markdown",
+        files={"files": ("evil.exe", b"stub", "application/octet-stream")},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == (
+        "❌ Unsupported file type: evil.exe. Accepted: "
+        + ", ".join(docmd.ACCEPTED_TYPES)
+    )
+
+
+def test_docmd_convert_batch_sanitizes_traversal_filename(monkeypatch):
+    # A client-supplied name like "../../pwned.pdf" must never reach the path
+    # join unsanitized — otherwise the upload escapes the per-run temp dir.
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        in_path = Path(cmd[cmd.index("-p") + 1])
+        captured["in_path"] = in_path
+        out_dir = Path(cmd[cmd.index("-o") + 1])
+        md_dir = out_dir / "x" / "auto"
+        md_dir.mkdir(parents=True)
+        (md_dir / "x.md").write_text("# hi")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(docmd.subprocess, "run", fake_run)
+
+    options = {
+        "backend": "pipeline",
+        "method": "auto",
+        "lang": "ch",
+        "effort": "medium",
+        "formula": True,
+        "table": True,
+    }
+    docmd.convert_batch(
+        [("../../pwned.pdf", b"stub")],
+        options,
+        lambda pct, text: None,
+        ["mineru"],
+    )
+
+    in_path = captured["in_path"]
+    # Sanitized to a bare basename: no traversal segments survive the join.
+    assert in_path.name == "pwned.pdf"
+    assert ".." not in in_path.parts
+
+
+def test_docmd_duplicate_names_get_index_correct_states(tool_client, monkeypatch):
+    # Two uploads share a name; only index 0 fails. The failure must not bleed
+    # onto the succeeded duplicate — states must be keyed by input index.
+    monkeypatch.setattr(docmd, "find_mineru", lambda: ["mineru"])
+
+    def fake_run(cmd, **kwargs):
+        in_path = Path(cmd[cmd.index("-p") + 1])
+        out_dir = Path(cmd[cmd.index("-o") + 1])
+        if in_path.parent.name == "in_1":  # only the second upload produces md
+            md_dir = out_dir / "a" / "auto"
+            md_dir.mkdir(parents=True)
+            (md_dir / "a.md").write_text("# hi")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="boom")
+
+    monkeypatch.setattr(docmd.subprocess, "run", fake_run)
+
+    resp = tool_client.post(
+        "/api/doc-to-markdown",
+        files=[
+            ("files", ("a.pdf", b"%PDF-1.4 one", "application/pdf")),
+            ("files", ("a.pdf", b"%PDF-1.4 two", "application/pdf")),
+        ],
+        data={"backend": "pipeline"},
+    )
+    assert resp.status_code == 200
+
+    snap = wait_for_job(tool_client, resp.json()["job_id"])
+    assert snap["state"] == "done"
+    assert [item["state"] for item in snap["items"]] == ["failed", "done"]
+
+
+def test_docpdf_duplicate_names_get_index_correct_states(
+    tool_client, monkeypatch, tmp_path
+):
+    # Two uploads share a name; only index 0 fails to render. The failure must
+    # not mark the succeeded duplicate red — states are keyed by input index.
+    monkeypatch.setattr(docpdf, "find_soffice", lambda: "/stub/soffice")
+
+    def fake_batch_to_pdf(soffice, docx_paths, out_dir):
+        for p in docx_paths:
+            if Path(p).stem == "1_a":  # only the second cleaned file renders
+                (Path(out_dir) / f"{Path(p).stem}.pdf").write_bytes(b"%PDF stub")
+        return subprocess.CompletedProcess([], 0, stdout="", stderr="boom")
+
+    monkeypatch.setattr(docpdf, "batch_to_pdf", fake_batch_to_pdf)
+
+    src = make_docx(tmp_path / "a.docx").read_bytes()
+    resp = tool_client.post(
+        "/api/doc-to-pdf",
+        files=[
+            ("files", ("a.docx", src, "application/octet-stream")),
+            ("files", ("a.docx", src, "application/octet-stream")),
+        ],
+    )
+    assert resp.status_code == 200
+
+    snap = wait_for_job(tool_client, resp.json()["job_id"])
+    assert snap["state"] == "done"
+    assert [item["state"] for item in snap["items"]] == ["failed", "done"]

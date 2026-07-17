@@ -10,6 +10,8 @@ instantly (requests.MissingSchema) without touching the network.
 from __future__ import annotations
 
 import base64
+import threading
+import time
 from io import BytesIO
 
 import pytest
@@ -103,6 +105,28 @@ def test_img_to_pdf_no_files_is_400(tool_client):
     resp = tool_client.post("/api/img-to-pdf", data={"name": "scan"})
     assert resp.status_code == 400
     assert resp.json()["detail"] == "❌ Please select at least one image first."
+
+
+def test_img_to_pdf_non_ascii_name_uses_rfc5987(tool_client):
+    from urllib.parse import quote
+
+    files = [("files", ("a.png", _png_bytes(), "image/png"))]
+    resp = tool_client.post("/api/img-to-pdf", data={"name": "扫描文档"}, files=files)
+    assert resp.status_code == 200
+    assert resp.content.startswith(b"%PDF")
+    assert resp.headers["content-type"] == "application/pdf"
+    disposition = resp.headers["content-disposition"]
+    assert "filename*=utf-8''" in disposition
+    assert quote("扫描文档.pdf") in disposition
+
+
+def test_img_to_pdf_name_with_quote_is_well_formed(tool_client):
+    files = [("files", ("a.png", _png_bytes(), "image/png"))]
+    resp = tool_client.post("/api/img-to-pdf", data={"name": 'a"b'}, files=files)
+    assert resp.status_code == 200
+    assert resp.content.startswith(b"%PDF")
+    # The inner double-quote must be backslash-escaped, not left bare.
+    assert resp.headers["content-disposition"] == 'attachment; filename="a\\"b.pdf"'
 
 
 # =======================================================
@@ -244,3 +268,69 @@ def test_webpdf_close_is_idempotent(tool_client, app_state):
     assert tool_client.post("/api/webpdf/close").json() == {"open": False}
     assert fake.quit_called is True
     assert app_state.browser is None
+
+
+def test_webpdf_open_is_race_safe(tool_client, app_state, monkeypatch):
+    # Two near-simultaneous /open calls (double-click / retry) must launch
+    # exactly ONE Chrome: the check + launch + assign is serialized, so the
+    # loser blocks and then gets a clean 409 instead of leaking a driver.
+    launches: list[str] = []
+    launches_lock = threading.Lock()
+    in_open = threading.Event()
+    may_finish = threading.Event()
+
+    class SlowSession(FakeBrowserSession):
+        def open(self, url):
+            with launches_lock:
+                launches.append(url)
+            in_open.set()
+            may_finish.wait(timeout=5)
+
+    monkeypatch.setattr(webpdf, "BrowserSession", SlowSession)
+
+    results: dict[str, int] = {}
+
+    def call(key):
+        r = tool_client.post("/api/webpdf/open", json={"url": "http://example.com"})
+        results[key] = r.status_code
+
+    first = threading.Thread(target=call, args=("first",))
+    first.start()
+    assert in_open.wait(timeout=5)  # first has passed the check and is launching
+    second = threading.Thread(target=call, args=("second",))
+    second.start()
+    time.sleep(0.2)  # let the second reach its check (buggy) or block (fixed)
+    may_finish.set()
+    first.join(timeout=10)
+    second.join(timeout=10)
+
+    assert len(launches) == 1  # only one driver spawned; no leak
+    assert sorted(results.values()) == [200, 409]
+    assert isinstance(app_state.browser, SlowSession)
+
+
+def test_webpdf_capture_preserves_newer_session(tool_client, app_state, monkeypatch):
+    # If a newer session is opened mid-capture, the success path must clear the
+    # slot only when it still holds the session it captured from (identity
+    # check) — otherwise it clobbers the newer session.
+    html = (
+        "<html><head><title>Book</title></head><body>"
+        f'<img class="bi" src="{_data_uri(_png_bytes("red"))}">'
+        "</body></html>"
+    )
+    captured = FakeBrowserSession(html)
+    newer = FakeBrowserSession(html)
+    app_state.browser = captured
+
+    def reassign(url, pdf_path):
+        # Stand in for a newer /open that landed while this capture was running.
+        app_state.browser = newer
+        return None
+
+    monkeypatch.setattr(webpdf, "add_bookmark", reassign)
+    resp = tool_client.post("/api/webpdf/capture")
+    assert resp.status_code == 200
+
+    assert captured.quit_called is True  # the captured session is closed
+    assert app_state.browser is newer  # the newer session is NOT clobbered
+    assert newer.quit_called is False

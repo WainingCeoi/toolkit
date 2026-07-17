@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 from pathlib import Path
 
@@ -225,3 +226,50 @@ def test_start_runs_batch_and_reports_results(tool_client, tmp_path, monkeypatch
     states = {item["name"]: item["state"] for item in snap["items"]}
     assert states == {"good.mkv": "done", "bad.mkv": "failed"}
     assert out_dir.is_dir()
+
+
+def test_start_cancel_keeps_partial_report(
+    tool_client, app_state, tmp_path, monkeypatch
+):
+    monkeypatch.setattr("shutil.which", lambda cmd: "/opt/fake/ffmpeg")
+
+    started = threading.Event()
+    release = threading.Event()
+
+    def fake_run_remux_task(task, progress_state, lock):
+        # The running ffmpeg finishes its current file; block until cancelled.
+        title = Path(task["input_video"]).name
+        started.set()
+        release.wait(3.0)
+        with lock:
+            progress_state[task["task_id"]] = 100.0
+        return {
+            "task_id": task["task_id"],
+            "title": title,
+            "success": True,
+            "error": None,
+        }
+
+    monkeypatch.setattr(remux, "run_remux_task", fake_run_remux_task)
+
+    out_dir = tmp_path / "out"
+    resp = tool_client.post(
+        "/api/remux/start",
+        json=start_payload(
+            selected=[str(tmp_path / "a.mkv")],
+            out_folder=str(out_dir),
+        ),
+    )
+    assert resp.status_code == 200
+    job_id = resp.json()["job_id"]
+    assert started.wait(3.0)
+    assert app_state.jobs.cancel(job_id)
+    release.set()
+
+    snap = wait_for_job(tool_client, job_id)
+    assert snap["state"] == "cancelled"
+    # The partial report of the already-remuxed file must survive cancellation.
+    assert snap["result"] is not None
+    assert snap["result"]["total"] == 1
+    assert snap["result"]["successful"] == 1
+    assert snap["result"]["out_folder"] == str(out_dir)

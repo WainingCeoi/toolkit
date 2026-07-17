@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 from pathlib import Path
 
@@ -90,6 +91,75 @@ def test_gather_moves_files_and_autonumbers_duplicates(tool_client, tmp_path):
     assert (src / "a" / "notes.txt").exists()  # non-matching file stays put
 
 
+def test_gather_no_match_does_not_create_target(tool_client, tmp_path):
+    # Source has only a non-matching file, so the Video scan finds nothing.
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "notes.txt").write_text("not a video")
+    tgt = tmp_path / "tgt"
+
+    resp = tool_client.post(
+        "/api/gather/start",
+        json={
+            "source": str(src),
+            "target": str(tgt),
+            "categories": ["Video"],
+            "custom": "",
+        },
+    )
+    assert resp.status_code == 200
+    snap = wait_for_job(tool_client, resp.json()["job_id"])
+    assert snap["state"] == "done"
+    assert snap["result"]["moved"] == []
+    assert snap["result"]["failed"] == []
+    # The empty target folder must NOT be littered on a no-match run.
+    assert not tgt.exists()
+
+
+def test_gather_cancel_keeps_partial_report(
+    tool_client, app_state, tmp_path, monkeypatch
+):
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "a.mkv").write_bytes(b"a")
+    (src / "b.mkv").write_bytes(b"b")
+    tgt = tmp_path / "tgt"
+
+    started = threading.Event()
+    release = threading.Event()
+
+    def fake_move_files(files, target, on_progress=None):
+        # Report one moved file, then block until the job is cancelled.
+        started.set()
+        release.wait(3.0)
+        return ["a.mkv"], []
+
+    monkeypatch.setattr(gather, "move_files", fake_move_files)
+
+    resp = tool_client.post(
+        "/api/gather/start",
+        json={
+            "source": str(src),
+            "target": str(tgt),
+            "categories": ["Video"],
+            "custom": "",
+        },
+    )
+    assert resp.status_code == 200
+    job_id = resp.json()["job_id"]
+    assert started.wait(3.0)
+    assert app_state.jobs.cancel(job_id)
+    release.set()
+
+    snap = wait_for_job(tool_client, job_id)
+    assert snap["state"] == "cancelled"
+    # The partial report of already-moved files must survive cancellation.
+    assert snap["result"] is not None
+    assert snap["result"]["moved"] == ["a.mkv"]
+    assert snap["result"]["failed"] == []
+    assert snap["result"]["target"] == str(tgt.resolve())
+
+
 def test_gather_rejects_target_inside_source(tool_client, tmp_path):
     src = tmp_path / "src"
     src.mkdir()
@@ -155,6 +225,38 @@ def test_purge_scan_and_delete_end_to_end(tool_client, tmp_path):
     for f in body["files"]:
         assert not Path(f).exists()
     assert (folder / "keep.txt").exists()
+
+
+def test_purge_delete_cancel_keeps_partial_report(
+    tool_client, app_state, tmp_path, monkeypatch
+):
+    started = threading.Event()
+    release = threading.Event()
+
+    def fake_delete_files(paths, on_progress=None):
+        # Report one deleted file, then block until the job is cancelled.
+        started.set()
+        release.wait(3.0)
+        return [paths[0]], []
+
+    monkeypatch.setattr(purge, "delete_files", fake_delete_files)
+
+    resp = tool_client.post(
+        "/api/purge/delete",
+        json={"files": [str(tmp_path / "a.log"), str(tmp_path / "b.log")]},
+    )
+    assert resp.status_code == 200
+    job_id = resp.json()["job_id"]
+    assert started.wait(3.0)
+    assert app_state.jobs.cancel(job_id)
+    release.set()
+
+    snap = wait_for_job(tool_client, job_id)
+    assert snap["state"] == "cancelled"
+    # The partial report of already-deleted files must survive cancellation.
+    assert snap["result"] is not None
+    assert snap["result"]["deleted"] == [str(tmp_path / "a.log")]
+    assert snap["result"]["failed"] == []
 
 
 def test_purge_scan_rejects_catch_all_only_patterns(tool_client, tmp_path):

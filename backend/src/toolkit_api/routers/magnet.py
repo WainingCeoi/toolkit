@@ -10,8 +10,9 @@ submit time, so progress streams through the job message instead of items.
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 
-from dotenv import load_dotenv, set_key
+from dotenv import dotenv_values, set_key
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
@@ -58,7 +59,11 @@ class DedupeOut(BaseModel):
     count: int
 
 
-def _scrape(job: Job, urls: list[str]) -> dict:
+def _scrape(
+    job: Job,
+    urls: list[str],
+    should_stop: Callable[[], bool] | None = None,
+) -> dict:
     """The page's execution block: parallel fetch with per-URL progress."""
     if not urls:
         # Page equivalent: {"urls": [], "successful": [], "failed": []} ->
@@ -70,7 +75,9 @@ def _scrape(job: Job, urls: list[str]) -> dict:
     def on_result(idx: int, result: dict) -> None:
         job.set_message(f"Fetching magnets… {idx}/{total}")
 
-    successful, failed = magnet.scrape_magnets(urls, on_result=on_result)
+    successful, failed = magnet.scrape_magnets(
+        urls, on_result=on_result, should_stop=should_stop
+    )
     job.set_message(f"Fetched {total}/{total} link(s).")
     return {
         "urls": urls,
@@ -84,10 +91,15 @@ def _scrape(job: Job, urls: list[str]) -> dict:
 
 @router.get("/config", response_model=MagnetConfigOut)
 def get_config() -> MagnetConfigOut:
-    load_dotenv(magnet.ENV_PATH)
+    # Read the file directly so set_key's cutoff advance is seen within a
+    # long-lived process (load_dotenv defaults override=False and never
+    # refreshes os.environ); shell-exported values still fill any gaps.
+    cfg = dotenv_values(magnet.ENV_PATH)
+    website = cfg.get("WEBSITE_URL") or os.getenv("WEBSITE_URL")
+    cutoff = cfg.get("CUTOFF_VIDEO") or os.getenv("CUTOFF_VIDEO")
     return MagnetConfigOut(
-        website_url_set=bool(os.getenv("WEBSITE_URL")),
-        cutoff_set=bool(os.getenv("CUTOFF_VIDEO")),
+        website_url_set=bool(website),
+        cutoff_set=bool(cutoff),
     )
 
 
@@ -96,9 +108,12 @@ def start_auto(req: AutoScrapeIn, state: StateDep) -> JobStartedOut:
     start_page = req.start_page
 
     def worker(job: Job) -> dict | None:
-        load_dotenv(magnet.ENV_PATH)
-        cutoff_video_url = os.getenv("CUTOFF_VIDEO")
-        source_website = os.getenv("WEBSITE_URL")
+        # Read the .env file directly so a cutoff advanced by set_key earlier
+        # in this same process is seen; os.getenv only fills unset gaps (a
+        # cached load_dotenv would keep re-scraping the whole batch forever).
+        cfg = dotenv_values(magnet.ENV_PATH)
+        cutoff_video_url = cfg.get("CUTOFF_VIDEO") or os.getenv("CUTOFF_VIDEO")
+        source_website = cfg.get("WEBSITE_URL") or os.getenv("WEBSITE_URL")
 
         # Guard against missing config (otherwise URLs become "None/page/1/"
         # and the pagination loop has no valid stopping point).
@@ -110,9 +125,21 @@ def start_auto(req: AutoScrapeIn, state: StateDep) -> JobStartedOut:
         def on_page(page_idx: int) -> None:
             job.set_message(f"Finding unwatched videos from page {page_idx}...")
 
+        def should_stop() -> bool:
+            return job.cancelled
+
         urls, found, error = magnet.find_unwatched_urls(
-            source_website, cutoff_video_url, start_page, on_page=on_page
+            source_website,
+            cutoff_video_url,
+            start_page,
+            on_page=on_page,
+            should_stop=should_stop,
         )
+
+        # A cancel during the walk leaves the cutoff untouched and marks the
+        # job cancelled (None result); the registry reads job.cancelled.
+        if job.cancelled:
+            return None
 
         # Only save / advance the cutoff / scrape once the cutoff is located —
         # otherwise a stale CUTOFF_VIDEO or a network error would overwrite
@@ -123,12 +150,12 @@ def start_auto(req: AutoScrapeIn, state: StateDep) -> JobStartedOut:
                 "warning": WARN_CUTOFF_NOT_FOUND,
                 "error": error,
             }
-        if job.cancelled:
-            return None
         if urls:
             # Advance the cutoff to the newest so the next run stops here.
             set_key(magnet.ENV_PATH, "CUTOFF_VIDEO", urls[0])
-        result = _scrape(job, urls)
+        result = _scrape(job, urls, should_stop=should_stop)
+        if job.cancelled:
+            return None
         result["cutoff_found"] = True
         return result
 
@@ -143,7 +170,7 @@ def start_manual(req: ManualScrapeIn, state: StateDep) -> JobStartedOut:
     urls = list(req.urls)
 
     def worker(job: Job) -> dict:
-        return _scrape(job, urls)
+        return _scrape(job, urls, should_stop=lambda: job.cancelled)
 
     job = state.jobs.submit(TOOL_SLUG, [], worker)
     return JobStartedOut(job_id=job.id)

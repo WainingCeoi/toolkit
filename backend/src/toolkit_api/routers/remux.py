@@ -161,9 +161,9 @@ def start(req: StartIn, jobs: JobsDep) -> JobStartedOut:
     max_workers = req.max_workers
 
     def worker(job):
+        # On cancel, run_remux_batch returns the results of the tasks that
+        # already finished; keep them so a cancelled run still reports them.
         results = run_remux_batch(tasks, max_workers, job)
-        if job.cancelled:
-            return None
         successful = [r for r in results if r["success"]]
         failed = [r for r in results if not r["success"]]
         return {

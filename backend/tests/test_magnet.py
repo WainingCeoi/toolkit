@@ -302,3 +302,130 @@ def test_find_unwatched_urls_reports_page_error(monkeypatch):
     assert found is False
     assert urls == []
     assert error == "❌ Error on page 7: connection refused"
+
+
+# ----------------------------------------------- regression: stale cutoff --
+
+
+def test_auto_rereads_advanced_cutoff_from_env_file_within_process(
+    tool_client, monkeypatch, tmp_path
+):
+    """DEFECT 1: within a long-lived process, a second auto run must honour the
+    cutoff that the first run advanced via set_key (written to the file only).
+    The old load_dotenv(override=False) + os.getenv read kept the process-start
+    cutoff in os.environ forever, so every later run re-scraped the whole batch.
+    """
+    env_file = tmp_path / ".env"
+    env_file.write_text('CUTOFF_VIDEO="https://site.test/v3"\n')
+    monkeypatch.setattr(magnet_engine, "ENV_PATH", env_file)
+    # Simulate the daemon: os.environ was populated at process start and never
+    # changes; set_key only rewrites the file.
+    monkeypatch.setenv("WEBSITE_URL", "https://site.test")
+    monkeypatch.setenv("CUTOFF_VIDEO", "https://site.test/v3")
+
+    pages: dict[str, str] = {}
+
+    def fake_requests_get(url, timeout=10):
+        return FakeResponse(pages[url])
+
+    def fake_get_magnet_link(url):
+        return {"success": True, "result": f"magnet:?xt={url}"}
+
+    monkeypatch.setattr(magnet_engine.requests, "get", fake_requests_get)
+    monkeypatch.setattr(magnet_engine, "get_magnet_link", fake_get_magnet_link)
+
+    # Run 1: cutoff v3; newest videos are v5, v4.
+    pages["https://site.test/page/1/"] = _page_html(
+        ["https://site.test/v5", "https://site.test/v4"]
+    )
+    pages["https://site.test/page/2/"] = _page_html(
+        ["https://site.test/v3", "https://site.test/v2"]
+    )
+    resp = tool_client.post("/api/magnet/auto", json={"start_page": 1})
+    snap = wait_for_job(tool_client, resp.json()["job_id"])
+    assert snap["state"] == "done"
+    assert snap["result"]["urls"] == [
+        "https://site.test/v5",
+        "https://site.test/v4",
+    ]
+    # set_key advanced the file's cutoff to v5; os.environ still says v3.
+    assert "https://site.test/v5" in env_file.read_text()
+
+    # Run 2: one genuinely new video (v6) appeared at the top.
+    pages["https://site.test/page/1/"] = _page_html(
+        ["https://site.test/v6", "https://site.test/v5"]
+    )
+    pages["https://site.test/page/2/"] = _page_html(
+        ["https://site.test/v4", "https://site.test/v3"]
+    )
+    resp = tool_client.post("/api/magnet/auto", json={"start_page": 1})
+    snap = wait_for_job(tool_client, resp.json()["job_id"])
+    assert snap["state"] == "done"
+    # Only v6 is new. Before the fix the worker read the stale v3 from
+    # os.environ and re-scraped [v6, v5, v4].
+    assert snap["result"]["urls"] == ["https://site.test/v6"]
+
+
+# --------------------------------------------------- regression: cancel ----
+
+
+def test_find_unwatched_urls_should_stop_aborts_before_walking_all_pages(
+    monkeypatch,
+):
+    """DEFECT 2a: a should_stop that trips mid-walk stops paging and reports
+    cutoff_found=False so the caller never advances the cutoff."""
+    pages = {
+        "https://site.test/page/1/": _page_html(["https://site.test/v5"]),
+        "https://site.test/page/2/": _page_html(["https://site.test/v4"]),
+    }
+    visited: list[str] = []
+
+    def fake_requests_get(url, timeout=10):
+        visited.append(url)
+        return FakeResponse(pages[url])
+
+    monkeypatch.setattr(magnet_engine.requests, "get", fake_requests_get)
+
+    polls = {"n": 0}
+
+    def should_stop() -> bool:
+        # Allow page 1, then abort before page 2.
+        stop = polls["n"] >= 1
+        polls["n"] += 1
+        return stop
+
+    urls, found, error = magnet_engine.find_unwatched_urls(
+        "https://site.test",
+        "https://site.test/nope",
+        1,
+        should_stop=should_stop,
+    )
+    assert found is False  # cutoff not located -> caller leaves cutoff alone
+    assert error is None
+    assert visited == ["https://site.test/page/1/"]  # stopped before page 2
+    assert urls == ["https://site.test/v5"]
+
+
+def test_scrape_magnets_should_stop_returns_partial_results(monkeypatch):
+    """DEFECT 2b: once should_stop trips after k completions, scrape_magnets
+    stops fanning out and returns <= k results instead of the full batch."""
+
+    def fake_get_magnet_link(url):
+        return {"success": True, "result": f"magnet:?xt={url}"}
+
+    monkeypatch.setattr(magnet_engine, "get_magnet_link", fake_get_magnet_link)
+
+    urls = [f"https://site.test/v{i}" for i in range(20)]
+
+    completed = {"n": 0}
+
+    def should_stop() -> bool:
+        completed["n"] += 1
+        return completed["n"] >= 3  # stop after 3 completed results
+
+    successful, failed = magnet_engine.scrape_magnets(
+        urls, should_stop=should_stop
+    )
+    total = len(successful) + len(failed)
+    assert total <= 3
+    assert total < len(urls)  # aborted well before the full fan-out finished

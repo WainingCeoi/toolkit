@@ -8,6 +8,7 @@ request so importing this module never touches torch.
 from __future__ import annotations
 
 import importlib.util
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Form, HTTPException, UploadFile
@@ -57,6 +58,16 @@ def convert(
             status_code=400,
             detail="❌ Please select at least one file first.",
         )
+    for upload in files:
+        suffix = Path(upload.filename or "").suffix.lower().lstrip(".")
+        if suffix not in docmd.ACCEPTED_TYPES:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"❌ Unsupported file type: {upload.filename}. "
+                    f"Accepted: {', '.join(docmd.ACCEPTED_TYPES)}"
+                ),
+            )
     mineru_cmd = docmd.find_mineru()
     if mineru_cmd is None:
         raise HTTPException(
@@ -88,16 +99,21 @@ def convert(
         except _CancelledError:
             return None
 
-        errors = {}
-        for name, error in failed:
-            errors.setdefault(name, error)
-        for idx, (name, _) in enumerate(named):
-            if name in errors:
-                job.update_item(idx, pct=100, state="failed", error=errors[name])
+        # Key per-item state by input index — two uploads with the same name
+        # must not cross-contaminate each other's success/failure state.
+        failed_by_idx = {idx: error for idx, _name, error in failed}
+        for idx in range(len(named)):
+            if idx in failed_by_idx:
+                job.update_item(
+                    idx, pct=100, state="failed", error=failed_by_idx[idx]
+                )
             else:
                 job.update_item(idx, pct=100, state="done")
 
-        result = {"done": done, "failed": failed}
+        result = {
+            "done": done,
+            "failed": [(name, error) for _idx, name, error in failed],
+        }
         if zip_bytes is not None:
             result["artifact_id"] = state.artifacts.put_bytes(
                 "markdown.zip", zip_bytes, "application/zip"

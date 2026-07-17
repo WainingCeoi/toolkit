@@ -63,16 +63,21 @@ def convert(state: StateDep, files: list[UploadFile] | None = None) -> JobStarte
             except _CancelledError:
                 return None
 
-        errors = {}
-        for name, error in failed:
-            errors.setdefault(name, error)
-        for idx, (name, _) in enumerate(named):
-            if name in errors:
-                job.update_item(idx, pct=100, state="failed", error=errors[name])
+        # Key per-item state by input index — two uploads with the same name
+        # must not cross-contaminate each other's success/failure state.
+        failed_by_idx = {idx: error for idx, _name, error in failed}
+        for idx in range(len(named)):
+            if idx in failed_by_idx:
+                job.update_item(
+                    idx, pct=100, state="failed", error=failed_by_idx[idx]
+                )
             else:
                 job.update_item(idx, pct=100, state="done")
 
-        result = {"done": done, "failed": failed}
+        result = {
+            "done": done,
+            "failed": [(name, error) for _idx, name, error in failed],
+        }
         if zip_bytes is not None:
             result["artifact_id"] = state.artifacts.put_bytes(
                 "converted_pdfs.zip", zip_bytes, "application/zip"

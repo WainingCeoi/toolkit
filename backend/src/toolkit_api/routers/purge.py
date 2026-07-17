@@ -71,9 +71,9 @@ def delete_files(req: PurgeDeleteIn, jobs: JobsDep) -> JobStartedOut:
             job.set_message(f"Deleting… {done}/{total}")
             return job.cancelled
 
+        # On cancel, delete_files returns the partial deleted/failed already
+        # collected; keep them so a cancelled run still reports what it deleted.
         deleted, failed = purge.delete_files(files, on_progress)
-        if job.cancelled:
-            return None
         return {
             "deleted": deleted,
             "failed": [

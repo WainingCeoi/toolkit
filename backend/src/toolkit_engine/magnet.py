@@ -10,7 +10,7 @@ through the optional callbacks.
 from __future__ import annotations
 
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import requests
@@ -44,19 +44,22 @@ def find_unwatched_urls(
     cutoff_video: str,
     start_page: int,
     on_page: Callable[[int], None] | None = None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> tuple[list[str], bool, str | None]:
     """The page's Automatic-mode pagination loop.
 
     Walks {website_url}/page/{n}/ collecting <a rel="bookmark"> hrefs until the
     cutoff video is found, an empty page is hit, a request fails, or MAX_PAGES
     pages have been visited. `on_page(page_number)` fires before each fetch so
-    a job can stream progress.
+    a job can stream progress. `should_stop()` is polled at the top of each
+    page so a cancelled job aborts the walk without advancing the cutoff.
 
     Returns (urls_newer_than_cutoff, cutoff_found, error_message_or_None).
     Only when the cutoff is found is the collected list sliced down to the
     videos newer than the cutoff (the newest first — index 0 becomes the next
     cutoff); otherwise the raw accumulation is returned and the caller must
-    not scrape or advance the cutoff.
+    not scrape or advance the cutoff. A should_stop abort returns
+    cutoff_found=False so the caller leaves the cutoff untouched.
     """
     unwatched_video_urls: list[str] = []
     page_idx = start_page
@@ -65,6 +68,8 @@ def find_unwatched_urls(
     error: str | None = None
 
     while not found and page_idx < last_page:
+        if should_stop is not None and should_stop():
+            return unwatched_video_urls, False, None
         if on_page is not None:
             on_page(page_idx)
         try:
@@ -99,21 +104,36 @@ def find_unwatched_urls(
 def scrape_magnets(
     urls: list[str],
     on_result: Callable[[int, dict], None] | None = None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> tuple[list[dict], list[dict]]:
     """The page's execution block: fetch magnets simultaneously.
 
-    `on_result(index, result)` fires per completed URL (index is 1-based, in
-    input order, matching the page's progress bar). Returns
-    (successful_magnets, failed_urls_with_reasons) preserving the page's
-    result dict shapes: {"success": True, "result": href} and
-    {"success": False, "url": url, "reason": str}.
+    `on_result(count, result)` fires per completed URL (count is 1-based, in
+    completion order, matching the page's progress bar). `should_stop()` is
+    polled after each completion so a cancelled job stops fanning out and
+    returns whatever finished so far. Successful/failed lists preserve input
+    order and the page's result dict shapes: {"success": True,
+    "result": href} and {"success": False, "url": url, "reason": str}.
     """
-    results: list[dict] = []
-    with ThreadPoolExecutor() as executor:
-        for idx, result in enumerate(executor.map(get_magnet_link, urls), start=1):
-            results.append(result)
+    results_by_idx: dict[int, dict] = {}
+    stopped = False
+    executor = ThreadPoolExecutor()
+    try:
+        future_to_idx = {
+            executor.submit(get_magnet_link, url): idx
+            for idx, url in enumerate(urls)
+        }
+        for count, future in enumerate(as_completed(future_to_idx), start=1):
+            result = future.result()
+            results_by_idx[future_to_idx[future]] = result
             if on_result is not None:
-                on_result(idx, result)
+                on_result(count, result)
+            if should_stop is not None and should_stop():
+                stopped = True
+                break
+    finally:
+        executor.shutdown(wait=not stopped, cancel_futures=stopped)
+    results = [results_by_idx[idx] for idx in sorted(results_by_idx)]
     successful = [r for r in results if r["success"]]
     failed = [r for r in results if not r["success"]]
     return successful, failed

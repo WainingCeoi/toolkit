@@ -7,6 +7,8 @@ from pathlib import Path
 
 from fastapi import APIRouter
 
+from toolkit_engine import docmd
+
 from ..schemas import CategoryOut, HealthOut, ToolOut
 
 router = APIRouter(tags=["meta"])
@@ -116,5 +118,5 @@ def health() -> HealthOut:
     return HealthOut(
         ffmpeg=shutil.which("ffmpeg") is not None,
         soffice=_soffice_available(),
-        mineru=shutil.which("mineru") is not None,
+        mineru=docmd.find_mineru() is not None,
     )

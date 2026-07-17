@@ -24,6 +24,10 @@ class AppState:
     # LibreOffice conversions share one user profile, so they must not run
     # concurrently — Doc to PDF serializes on this lock.
     soffice_lock: threading.Lock = field(default_factory=threading.Lock)
+    # Guards the single browser slot against read-check-then-set races
+    # (double-click / retry): /webpdf/open, /close, and /capture serialize
+    # their check-and-mutate of `browser` on this lock.
+    browser_lock: threading.Lock = field(default_factory=threading.Lock)
 
 
 def build_state() -> AppState:

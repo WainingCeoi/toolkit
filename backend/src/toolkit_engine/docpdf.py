@@ -155,8 +155,8 @@ def convert_batch(named_files, on_progress, soffice):
     failure capture), render everything in one batched LibreOffice run, then
     bundle the produced PDFs into an in-memory zip. Cleaning spans the first
     half of the progress range; the batched conversion sits at 50; bundling
-    fills the second half. Returns (zip_bytes, done, failed) — zip_bytes is
-    None when nothing converted.
+    fills the second half. Returns (zip_bytes, done, failed) — failed entries
+    are (idx, name, error); zip_bytes is None when nothing converted.
     """
     done, failed, zip_bytes = [], [], None
     total = len(named_files)
@@ -184,7 +184,7 @@ def convert_batch(named_files, on_progress, soffice):
                 clean_docx(src, cleaned)
                 jobs.append((cleaned, f"{stem}.pdf", name))
             except Exception as e:
-                failed.append((name, str(e)))
+                failed.append((idx, name, str(e)))
 
         # Convert every cleaned file in a single LibreOffice run, then
         # bundle the produced PDFs into an in-memory zip.
@@ -203,8 +203,11 @@ def convert_batch(named_files, on_progress, soffice):
                         archive.write(produced, arcname)
                         done.append(arcname)
                     else:
+                        # cleaned stem is "{idx}_{stem}" — recover the input
+                        # index so per-item state is keyed correctly.
+                        idx = int(cleaned.stem.split("_", 1)[0])
                         failed.append(
-                            (name, result.stderr.strip() or "no PDF produced")
+                            (idx, name, result.stderr.strip() or "no PDF produced")
                         )
             if done:
                 zip_bytes = buffer.getvalue()

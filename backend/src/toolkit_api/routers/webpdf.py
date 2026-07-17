@@ -49,18 +49,22 @@ def _session_open(state) -> bool:
 
 @router.post("/open", response_model=StatusOut)
 def open_browser(req: OpenIn, state: StateDep) -> StatusOut:
-    if _session_open(state):
-        raise HTTPException(
-            status_code=409, detail="A browser session is already open."
-        )
-    session = BrowserSession()
-    try:
-        session.open(req.url)
-    except Exception as e:
-        raise HTTPException(
-            status_code=502, detail=f"Could not open browser: {e}"
-        ) from e
-    state.browser = session
+    # Hold browser_lock across check + launch + assign so a near-simultaneous
+    # second open (double-click / retry) blocks and then gets a clean 409
+    # instead of both passing the check and each leaking a Chrome driver.
+    with state.browser_lock:
+        if _session_open(state):
+            raise HTTPException(
+                status_code=409, detail="A browser session is already open."
+            )
+        session = BrowserSession()
+        try:
+            session.open(req.url)
+        except Exception as e:
+            raise HTTPException(
+                status_code=502, detail=f"Could not open browser: {e}"
+            ) from e
+        state.browser = session
     return StatusOut(open=True)
 
 
@@ -72,9 +76,11 @@ def status(state: StateDep) -> StatusOut:
 @router.post("/close", response_model=StatusOut)
 def close_browser(state: StateDep) -> StatusOut:
     # Ok even if none is open — the page's close button swallows quit errors.
-    if state.browser is not None:
-        state.browser.quit()
-        state.browser = None
+    # Swap the slot out under the lock, then quit outside it (quit is slow).
+    with state.browser_lock:
+        session, state.browser = state.browser, None
+    if session is not None:
+        session.quit()
     return StatusOut(open=False)
 
 
@@ -105,9 +111,13 @@ def capture(state: StateDep, artifacts: ArtifactsDep) -> CaptureOut:
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Capture failed: {e}") from e
 
-    # Page behavior: a successful capture also closes the browser.
+    # Page behavior: a successful capture also closes the browser. Only clear
+    # the slot if it still holds the session we captured from — a newer session
+    # opened meanwhile (double-click / retry) must not be clobbered.
     session.quit()
-    state.browser = None
+    with state.browser_lock:
+        if state.browser is session:
+            state.browser = None
 
     artifact_id = artifacts.put_bytes(pdf_name, pdf_bytes, "application/pdf")
     return CaptureOut(

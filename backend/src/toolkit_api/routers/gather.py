@@ -46,33 +46,46 @@ def start_gather(req: GatherStartIn, jobs: JobsDep) -> JobStartedOut:
             status_code=400,
             detail="❌ Target must be a different folder, outside the source.",
         )
-    try:
-        tgt.mkdir(parents=True, exist_ok=True)
-    except OSError as e:
-        # e.g. the typed target (or one of its parents) is a file
-        raise HTTPException(
-            status_code=400, detail=f"❌ Cannot create the target folder: {e}"
-        ) from e
 
     def worker(job: Job) -> dict | None:
         job.set_message("Scanning source folder…")
         files, errors = gather.scan_source(src, patterns)
         scan_errors = [str(error) for error in errors]
-        if job.cancelled:
-            return None
 
-        job.set_message(f"Moving… 0/{len(files)}")
+        if not files:
+            # No matches: the page's "No matching files found." state never
+            # created the target folder — report the empty result, untouched.
+            return {
+                "moved": [],
+                "failed": [],
+                "scan_errors": scan_errors,
+                "target": str(tgt),
+                "warning": None,
+            }
 
-        def on_progress(done: int, total: int) -> bool:
-            job.set_message(f"Moving… {done}/{total}")
-            return job.cancelled
+        moved, failed = [], []
+        if not job.cancelled:
+            # Only create the target once there is something to move — the
+            # page mkdir'd here too, never on a no-match (or early-cancel) run.
+            try:
+                tgt.mkdir(parents=True, exist_ok=True)
+            except OSError as e:
+                # e.g. the typed target (or one of its parents) is a file
+                raise RuntimeError(
+                    f"❌ Cannot create the target folder: {e}"
+                ) from e
 
-        moved, failed = gather.move_files(files, tgt, on_progress)
-        if job.cancelled:
-            return None
+            job.set_message(f"Moving… 0/{len(files)}")
+
+            def on_progress(done: int, total: int) -> bool:
+                job.set_message(f"Moving… {done}/{total}")
+                return job.cancelled
+
+            moved, failed = gather.move_files(files, tgt, on_progress)
 
         # A scan error means part of the tree was unreadable, so the gather
-        # may be incomplete — surface the page's warning in the result.
+        # may be incomplete — surface the page's warning in the result. On
+        # cancel we still return the partial moved/failed already collected.
         warning = None
         if scan_errors:
             warning = (
