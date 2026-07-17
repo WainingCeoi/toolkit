@@ -1,0 +1,483 @@
+// Remux Processor — scan a folder for videos, configure tracks, optionally
+// attach external subtitles, then run a parallel lossless ffmpeg remux job.
+
+import React, { useEffect, useMemo, useState } from 'react'
+import { api } from '../api'
+import { useToolJob } from '../jobs'
+import FolderField from '../components/FolderField'
+import JobPanel from '../components/JobPanel'
+
+const baseName = (p) => p.split('/').pop()
+
+const hintStyle = { fontSize: 11.5, color: 'var(--faint)', marginTop: 4 }
+
+export default function Remux() {
+  // 01 — source folder + video selection
+  const [folder, setFolder] = useState('')
+  const [videos, setVideos] = useState([]) // [{path, name}] natural-sorted server-side
+  const [selected, setSelected] = useState([]) // paths
+  const [scanned, setScanned] = useState(false)
+  const [scanning, setScanning] = useState(false)
+  const [scanError, setScanError] = useState(null)
+
+  // 02 — track configuration
+  const [includeVideo, setIncludeVideo] = useState(true)
+  const [videoIdx, setVideoIdx] = useState('0')
+  const [multiAudio, setMultiAudio] = useState(false)
+  const [audioIdx, setAudioIdx] = useState('0')
+  const [audioMulti, setAudioMulti] = useState('0')
+  const [includeSubtitle, setIncludeSubtitle] = useState(true)
+  const [subIdx, setSubIdx] = useState('0')
+  const [subLang, setSubLang] = useState('chi')
+
+  // 03 — external subtitles
+  const [useExternalSub, setUseExternalSub] = useState(false)
+  const [subFolder, setSubFolder] = useState('')
+  const [matches, setMatches] = useState([]) // [{video, subtitle|null}]
+  const [subError, setSubError] = useState(null)
+
+  // 04 — output & run
+  const [outFolder, setOutFolder] = useState('~/Desktop/🎬')
+  const [workers, setWorkers] = useState(4)
+
+  const { start, snapshot, running, error } = useToolJob('/tools/remux')
+
+  const selectedSet = useMemo(() => new Set(selected), [selected])
+  // Payload order follows the natural-sorted scan list, not click order.
+  const selectedPaths = useMemo(
+    () => videos.filter((v) => selectedSet.has(v.path)).map((v) => v.path),
+    [videos, selectedSet],
+  )
+
+  async function scan() {
+    setScanning(true)
+    setScanError(null)
+    try {
+      const { videos: found } = await api.remuxScan(folder)
+      setVideos(found)
+      setScanned(true)
+      // Keep only selections that still exist in the rescanned list.
+      setSelected((prev) => prev.filter((p) => found.some((v) => v.path === p)))
+    } catch (err) {
+      setVideos([])
+      setSelected([])
+      setScanned(false)
+      setScanError(err.message)
+    } finally {
+      setScanning(false)
+    }
+  }
+
+  function toggle(path) {
+    setSelected((prev) =>
+      prev.includes(path) ? prev.filter((p) => p !== path) : [...prev, path],
+    )
+  }
+
+  // Auto-preview subtitle matches whenever the folder or selection changes.
+  useEffect(() => {
+    if (!useExternalSub) {
+      setMatches([])
+      setSubError(null)
+      return undefined
+    }
+    let stale = false
+    const timer = setTimeout(async () => {
+      try {
+        // Empty subtitle folder falls back to the source folder (old page rule).
+        const { matches: m } = await api.remuxSubtitles(
+          (subFolder || folder).trim(),
+          selectedPaths,
+        )
+        if (!stale) {
+          setMatches(m)
+          setSubError(null)
+        }
+      } catch (err) {
+        if (!stale) {
+          setMatches([])
+          setSubError(err.message)
+        }
+      }
+    }, 300)
+    return () => {
+      stale = true
+      clearTimeout(timer)
+    }
+  }, [useExternalSub, subFolder, folder, selectedPaths])
+
+  function startRemux() {
+    const payload = {
+      selected: selectedPaths,
+      include_video: includeVideo,
+      video_index: parseInt(videoIdx, 10) || 0,
+      multi_audio: multiAudio,
+      // Multi mode sends the raw comma text (empty = no audio); single mode one index.
+      audio_value: multiAudio ? audioMulti : String(parseInt(audioIdx, 10) || 0),
+      include_subtitle: includeSubtitle,
+      subtitle_index: parseInt(subIdx, 10) || 0,
+      sub_lang: subLang,
+      use_external_sub: useExternalSub,
+      external_sub_map: Object.fromEntries(matches.map((m) => [m.video, m.subtitle])),
+      out_folder: outFolder,
+      max_workers: workers,
+    }
+    start(() => api.remuxStart(payload))
+  }
+
+  const result = snapshot?.state === 'done' ? snapshot.result : null
+
+  return (
+    <div>
+      <div className="page-head">
+        <h1>🎬 Remux Processor</h1>
+      </div>
+      <p className="page-sub">
+        Parallel, lossless remuxing (re-multiplexing) of videos with FFmpeg.
+      </p>
+
+      <div className="station">
+        <div>
+          {/* ---- 01 SELECT VIDEOS ---- */}
+          <div className="panel">
+            <div className="step">
+              <span className="n">01</span>
+              <span>Select videos</span>
+            </div>
+            <FolderField
+              label="Source folder"
+              value={folder}
+              onChange={setFolder}
+              placeholder="~/Desktop"
+              startDir="~/Desktop"
+            />
+            <div className="row">
+              <button type="button" className="btn" onClick={scan} disabled={scanning}>
+                {scanning ? 'Scanning…' : '🔍 Scan'}
+              </button>
+              {videos.length > 0 && (
+                <>
+                  <button
+                    type="button"
+                    className="btn ghost"
+                    onClick={() => setSelected(videos.map((v) => v.path))}
+                  >
+                    Select all
+                  </button>
+                  <button type="button" className="btn ghost" onClick={() => setSelected([])}>
+                    None
+                  </button>
+                  <span style={{ font: '11px var(--mono)', color: 'var(--muted)' }}>
+                    {selected.length}/{videos.length} selected
+                  </span>
+                </>
+              )}
+            </div>
+            {scanError && <div className="note error">{scanError}</div>}
+            {scanned && videos.length === 0 && (
+              <div className="note info">No video files found in this folder.</div>
+            )}
+            {videos.length > 0 && (
+              <div
+                style={{
+                  maxHeight: 250,
+                  overflowY: 'auto',
+                  marginTop: 10,
+                  border: '1px solid var(--edge)',
+                  borderRadius: 'var(--radius-s)',
+                  padding: '4px 10px',
+                }}
+              >
+                {videos.map((v) => (
+                  <label className="check" key={v.path} title={v.path}>
+                    <input
+                      type="checkbox"
+                      checked={selectedSet.has(v.path)}
+                      onChange={() => toggle(v.path)}
+                    />
+                    <span
+                      style={{
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {v.name}
+                    </span>
+                  </label>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* ---- 02 TRACK CONFIGURATION ---- */}
+          <div className="panel">
+            <div className="step">
+              <span className="n">02</span>
+              <span>Track configuration</span>
+            </div>
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))',
+                gap: '4px 14px',
+              }}
+            >
+              <div>
+                <label className="check">
+                  <input
+                    type="checkbox"
+                    checked={includeVideo}
+                    onChange={(e) => setIncludeVideo(e.target.checked)}
+                  />
+                  Include video
+                </label>
+                {includeVideo && (
+                  <div className="field">
+                    <label htmlFor="rx-video-idx">Video track index</label>
+                    <input
+                      id="rx-video-idx"
+                      className="control"
+                      type="number"
+                      min="0"
+                      step="1"
+                      value={videoIdx}
+                      onChange={(e) => setVideoIdx(e.target.value)}
+                    />
+                  </div>
+                )}
+              </div>
+              <div>
+                <label className="check">
+                  <input
+                    type="checkbox"
+                    checked={multiAudio}
+                    onChange={(e) => setMultiAudio(e.target.checked)}
+                  />
+                  Multiple audio tracks
+                </label>
+                {multiAudio ? (
+                  <div className="field">
+                    <label htmlFor="rx-audio-multi">Audio track index(es)</label>
+                    <input
+                      id="rx-audio-multi"
+                      className="control"
+                      value={audioMulti}
+                      onChange={(e) => setAudioMulti(e.target.value)}
+                      placeholder="0,1"
+                      spellCheck={false}
+                    />
+                    <div style={hintStyle}>
+                      Comma-separated, e.g. 0,1. Leave empty for no audio.
+                    </div>
+                  </div>
+                ) : (
+                  <div className="field">
+                    <label htmlFor="rx-audio-idx">Audio track index</label>
+                    <input
+                      id="rx-audio-idx"
+                      className="control"
+                      type="number"
+                      min="0"
+                      step="1"
+                      value={audioIdx}
+                      onChange={(e) => setAudioIdx(e.target.value)}
+                    />
+                  </div>
+                )}
+              </div>
+              <div>
+                <label className="check">
+                  <input
+                    type="checkbox"
+                    checked={includeSubtitle}
+                    onChange={(e) => setIncludeSubtitle(e.target.checked)}
+                  />
+                  Include embedded subtitle
+                </label>
+                {includeSubtitle && (
+                  <div className="field">
+                    <label htmlFor="rx-sub-idx">Subtitle track index</label>
+                    <input
+                      id="rx-sub-idx"
+                      className="control"
+                      type="number"
+                      min="0"
+                      step="1"
+                      value={subIdx}
+                      onChange={(e) => setSubIdx(e.target.value)}
+                    />
+                  </div>
+                )}
+              </div>
+            </div>
+            <div className="field" style={{ marginTop: 6, marginBottom: 0 }}>
+              <label htmlFor="rx-sub-lang">Subtitle language tag</label>
+              <input
+                id="rx-sub-lang"
+                className="control"
+                value={subLang}
+                onChange={(e) => setSubLang(e.target.value)}
+                style={{ maxWidth: 160 }}
+                spellCheck={false}
+              />
+            </div>
+          </div>
+
+          {/* ---- 03 EXTERNAL SUBTITLES (OPTIONAL) ---- */}
+          <div className="panel">
+            <div className="step">
+              <span className="n">03</span>
+              <span>External subtitles (optional)</span>
+            </div>
+            <details className="expander" open={useExternalSub} style={{ margin: 0 }}>
+              <summary
+                onClick={(e) => {
+                  e.preventDefault()
+                  setUseExternalSub((v) => !v)
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={useExternalSub}
+                  readOnly
+                  tabIndex={-1}
+                  aria-hidden="true"
+                  style={{
+                    pointerEvents: 'none',
+                    accentColor: 'var(--amber)',
+                    verticalAlign: '-2px',
+                    marginRight: 7,
+                  }}
+                />
+                Attach external subtitle files
+              </summary>
+              <div className="body">
+                <FolderField
+                  label="Subtitle folder"
+                  value={subFolder}
+                  onChange={setSubFolder}
+                  placeholder="Defaults to the source folder"
+                  startDir={folder || '~/Desktop'}
+                />
+                {subError && <div className="note error">{subError}</div>}
+                {!subError && selectedPaths.length === 0 && (
+                  <div className="note info">
+                    Select videos in step 01 to preview subtitle matches.
+                  </div>
+                )}
+                {!subError && selectedPaths.length > 0 && (
+                  <>
+                    <div style={{ font: '11px var(--mono)', color: 'var(--muted)', margin: '2px 0 6px' }}>
+                      Matched by filename (external takes priority over embedded):
+                    </div>
+                    <div style={{ overflowX: 'auto' }}>
+                      <table className="table">
+                        <thead>
+                          <tr>
+                            <th>Video</th>
+                            <th>Subtitle</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {matches.map((m) => (
+                            <tr key={m.video}>
+                              <td>{baseName(m.video)}</td>
+                              <td>{m.subtitle ? baseName(m.subtitle) : '— none —'}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </>
+                )}
+              </div>
+            </details>
+          </div>
+
+          {/* ---- 04 OUTPUT ---- */}
+          <div className="panel">
+            <div className="step">
+              <span className="n">04</span>
+              <span>Output</span>
+            </div>
+            <FolderField
+              label="Output folder"
+              value={outFolder}
+              onChange={setOutFolder}
+              placeholder="~/Desktop/🎬"
+              startDir="~/Desktop"
+            />
+            <div className="field" style={{ marginBottom: 0 }}>
+              <label htmlFor="rx-workers">Parallel workers — {workers}</label>
+              <input
+                id="rx-workers"
+                type="range"
+                min="1"
+                max="8"
+                value={workers}
+                onChange={(e) => setWorkers(Number(e.target.value))}
+                style={{ width: '100%', accentColor: 'var(--amber)', minHeight: 28 }}
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* ---- RUN & RESULTS ---- */}
+        <div className="panel">
+          <button
+            type="button"
+            className="btn primary"
+            onClick={startRemux}
+            disabled={running}
+            style={{ width: '100%' }}
+          >
+            🚀 Start remuxing
+          </button>
+          <div style={{ ...hintStyle, marginTop: 8 }}>
+            Lossless stream copy — one LED bar per file below.
+          </div>
+          {error && <div className="note error">{error}</div>}
+          {!snapshot && !error && (
+            <div className="note info">
+              Scan a folder, tick the videos, tune the tracks, then start.
+            </div>
+          )}
+          <JobPanel snapshot={snapshot}>
+            {result && (
+              <>
+                <div className="metrics">
+                  <div className="metric">
+                    <div className="v">{result.total}</div>
+                    <div className="k">Total</div>
+                  </div>
+                  <div className="metric ok">
+                    <div className="v">{result.successful}</div>
+                    <div className="k">Success ✅</div>
+                  </div>
+                  <div className={result.failed.length ? 'metric bad' : 'metric'}>
+                    <div className="v">{result.failed.length}</div>
+                    <div className="k">Failed ❌</div>
+                  </div>
+                </div>
+                {result.failed.length > 0 && (
+                  <div>
+                    <div className="step" style={{ margin: '12px 0 6px' }}>
+                      <span>⚠️ Failures</span>
+                    </div>
+                    {result.failed.map((f, i) => (
+                      <div className="note error" key={i}>
+                        🔴 {f.title}: {f.error}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div className="note ok">Done! Output saved to: {result.out_folder}</div>
+              </>
+            )}
+          </JobPanel>
+        </div>
+      </div>
+    </div>
+  )
+}
