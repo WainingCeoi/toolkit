@@ -22,7 +22,20 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from .routers import fs, jobs, meta
+from .routers import (
+    docmd,
+    docpdf,
+    fs,
+    gather,
+    imgpdf,
+    jobs,
+    magnet,
+    meta,
+    purge,
+    remux,
+    subs,
+    webpdf,
+)
 from .state import AppState, build_state
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
@@ -75,6 +88,17 @@ def create_app(state: AppState | None = None) -> FastAPI:
     app.include_router(meta.router, prefix="/api")
     app.include_router(fs.router, prefix="/api")
     app.include_router(jobs.router, prefix="/api")
+    app.include_router(magnet.router, prefix="/api")
+    app.include_router(remux.router, prefix="/api")
+    app.include_router(gather.router, prefix="/api")
+    app.include_router(purge.router, prefix="/api")
+    app.include_router(imgpdf.router, prefix="/api")
+    app.include_router(webpdf.router, prefix="/api")
+    app.include_router(docpdf.router, prefix="/api")
+    app.include_router(docmd.router, prefix="/api")
+    app.include_router(subs.router, prefix="/api")
+    # Public subscription route for proxy clients: GET /sub/{id} (no /api).
+    app.include_router(subs.public_router)
 
     # Serve the built frontend from this same server, if present (make start /
     # make host). Mounted LAST so it only catches unmatched paths, and skipped
