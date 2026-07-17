@@ -9,6 +9,9 @@ dist/
 .venv/
 venv/
 
+# Node / frontend
+node_modules/
+
 # Tooling caches
 .ruff_cache/
 .mypy_cache/

@@ -1,15 +1,26 @@
 # 🧰 Toolkit
 
 ![Python](https://img.shields.io/badge/Python-3.14-3776AB?style=for-the-badge&logo=python&logoColor=white)
-![Streamlit](https://img.shields.io/badge/Streamlit-1.58-FF4B4B?style=for-the-badge&logo=streamlit&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=for-the-badge&logo=fastapi&logoColor=white)
+![React](https://img.shields.io/badge/React-19-61DAFB?style=for-the-badge&logo=react&logoColor=black)
 ![Platform](https://img.shields.io/badge/Platform-macOS-000000?style=for-the-badge&logo=apple&logoColor=white)
 ![License](https://img.shields.io/github/license/WainingCeoi/toolkit?style=for-the-badge&logo=gnu&logoColor=white)
 ![Stars](https://img.shields.io/github/stars/WainingCeoi/toolkit?style=for-the-badge&logo=github)
 
-A local [Streamlit](https://streamlit.io/) app that bundles a handful of small
-media & file utilities into one multipage interface.
+A local app bundling small media & file utilities — a FastAPI backend driving the
+engines, and a React single-page UI.
 
-> **macOS only.** Folder pickers use AppleScript (`osascript`).
+> **macOS only.** Folder pickers use AppleScript (`osascript`), and several tools
+> drive desktop apps (Chrome, LibreOffice) on this Mac.
+
+A **monorepo** with one entrance:
+
+```
+toolkit/
+├── Makefile        one entrance: install / dev / start / host / build / test / clean
+├── backend/        FastAPI service + the engines (Python, src layout)
+└── frontend/       React + Vite single-page UI (JavaScript)
+```
 
 ## Tools
 
@@ -25,237 +36,176 @@ media & file utilities into one multipage interface.
 | 📄  | **Doc to PDF** | Clean a Word doc (accept changes, remove comments) and export it to PDF (LibreOffice). |
 | 📝  | **Doc to Markdown** | Convert PDFs, Office docs, and images into Markdown — text, tables, formulas, images — with MinerU. |
 
-## Requirements
-
-- **macOS** (for the native folder pickers)
-- [uv](https://docs.astral.sh/uv/)
-- Python 3.14 — managed automatically by uv via `.python-version`
-- [FFmpeg](https://ffmpeg.org/) on your `PATH` — required by **Remux Processor**
-  (`brew install ffmpeg`)
-- [Google Chrome](https://www.google.com/chrome/) — required by **Web Images to
-  PDF** (the matching driver is downloaded automatically)
-- [LibreOffice](https://www.libreoffice.org/) — required by **Doc to PDF**
-  (`brew install --cask libreoffice`)
-- [MinerU](https://github.com/opendatalab/MinerU) — required by **Doc to
-  Markdown**; installed with the project via the `mineru[core]` dependency, and
-  its ML models download automatically on first run (cached under
-  `~/.cache/huggingface`)
-
-## Install
+## Quick start
 
 ```bash
-uv sync
+make install     # backend deps (uv) + frontend deps (npm)
+make dev         # backend :8000 + frontend :5173 together, hot-reload
 ```
 
-## Run
+Open **http://localhost:5173**. One command runs both servers; one Ctrl-C stops both.
+The Vite dev server proxies `/api` to the backend, so the UI calls same-origin and
+streaming needs no CORS.
+
+Single-server (build the UI and serve it + the API from one process, loopback):
 
 ```bash
-uv run streamlit run src/app.py
+make start       # builds frontend/dist, then serves UI + API on 127.0.0.1:8000
 ```
 
-Then pick a tool from the sidebar. You can also launch a single tool directly,
-e.g.:
+### Host it on your LAN
+
+To reach the app from another device on the same Wi-Fi (e.g. import a proxy
+subscription on your phone):
 
 ```bash
-uv run streamlit run src/pages/remux_processor.py
+make host                    # serves API + UI on http://<this-machine>.local:8000
+make host PORT=9000          # different base port (auto-advances if busy)
+HOST=127.0.0.1 make host     # local-only
 ```
 
-## Tools in detail
+> ⚠️ `make host` binds `0.0.0.0` — everyone on the Wi-Fi can reach the app. **This
+> app has no authentication, and its tools move and permanently delete files on this
+> Mac**, so anyone on the network has full access to those actions. It's plain HTTP;
+> run it only on a network you trust.
 
-### 🧲 Magnet Scraper — `src/pages/magnet_scraper.py`
+## Architecture
 
-Three modes:
-
-- **Automatic** — walks your source site page by page from a `.env` config until
-  it reaches the last-seen video, then scrapes magnets for everything newer.
-- **Manual** — paste video page URLs and scrape their magnets.
-- **Remove Duplicated** — paste raw magnet links and get the unique set back.
-
-Automatic mode reads/writes a `.env` file in the project root — copy the
-template and fill it in:
-
-```bash
-cp .env.example .env
+```
+frontend (React + Vite) ──/api (JSON + SSE)──▶ backend (FastAPI) ──▶ engines ──▶ ffmpeg / Chrome / LibreOffice / MinerU / SQLite
 ```
 
-```dotenv
-WEBSITE_URL=https://example.com
-CUTOFF_VIDEO=https://example.com/last-watched-video
-```
+- **`backend/src/subgen/`** — the Optimized-IP Subscription engine (parse / rewrite /
+  render / SQLite store), lifted intact from the Streamlit app.
+- **`backend/src/toolkit_engine/`** — the other tools' domain logic (framework-free,
+  importable): ffmpeg command building, docx cleanup, scanning, scraping, PDF
+  assembly, the native folder picker.
+- **`backend/src/toolkit_api/`** — the web layer: `main.py` (app factory + lifespan
+  builds the shared state on `app.state`), `deps.py`, `schemas.py`, `routers/` (one
+  per tool), and a small job registry streaming long-running progress over SSE.
+- **`frontend/src/`** — `api.js` (one HTTP + SSE wrapper) and the React components.
 
-`CUTOFF_VIDEO` is advanced automatically to the newest link after each run. The
-scrape stops at the cutoff (or after a page cap) so it never loops indefinitely.
+Long-running work (remux, conversions, scans, deletions) runs as **jobs**: the UI
+submits a batch, then follows per-item progress over Server-Sent Events.
 
-### 🖼️ Image to PDF — `src/pages/img_to_pdf.py`
+## Configuration
 
-Upload one or more images (`png`, `jpg`, `jpeg`, `heic` — iPhone HEIC photos
-supported via `pillow-heif`), name the output, and save a combined PDF to your
-Desktop. Images are ordered by filename.
-
-### 🎬 Remux Processor — `src/pages/remux_processor.py`
-
-Lossless, parallel remuxing with FFmpeg (no re-encoding):
-
-- Pick a **source folder**, then select which videos to process.
-- Configure **video / audio / subtitle** track indices (single or multiple audio
-  tracks) and the subtitle language tag.
-- Optionally attach **external subtitle files**, matched by filename.
-- Choose an output folder and the number of parallel workers; watch per-file
-  progress bars and a success/failure summary.
-
-### 📦 File Gatherer — `src/pages/file_gatherer.py`
-
-Recursively collect files by type and move them into a single folder:
-
-- Pick **source** and **target** folders.
-- Choose file-type **categories** (Video, Audio, Image, Subtitle, Document,
-  Archive) and/or add custom glob patterns.
-- **Scan & Move** in one click — matches are moved immediately, with a progress
-  bar and a moved/failed summary. Duplicate names are auto-numbered
-  (`name_1.ext`), and the target is refused if it sits inside the source.
-
-### 🛰️ Optimized-IP Subscription — `src/pages/optimized_ip_generator.py`
-
-Engine lives in `src/lib/subgen/`. Batch-replace the server in your self-built
-`vmess` / `vless` / `trojan` nodes with optimized Cloudflare IPs, then generate
-subscriptions for Shadowrocket / Clash / Surge — as an auto-updating LAN link, a
-QR code, or downloadable files. Everything is stored locally in `data/sub.db`;
-nothing leaves your machine.
-
-- Paste nodes plus optimized `host[:port][#remark]` addresses; base64
-  subscriptions auto-expand and duplicates are removed.
-- One click produces Raw / Clash / Surge output, a subscription link, and a QR
-  code a phone on the same Wi-Fi can import directly.
-- Identical inputs reuse the same short link (deduplicated by content hash);
-  history is listed at the bottom to reload or delete.
-
-**LAN sub-server.** Streamlit can't return raw subscription bodies, so the page
-starts a small standard-library `http.server` in a background thread (default
-port `8765`) serving `/sub/{id}`. It starts the first time you open the page and
-stays up for the life of the app. Links point at your Mac's `.local` name (or a
-LAN IP), e.g. `http://192.168.x.x:8765/sub/<id>?target=clash`; append
-`&download=1` to download the file instead.
-
-**Configuration** — all optional, via environment variables:
+Settings are read from environment variables / `backend/.env` (copy
+`backend/.env.example`). Everything is optional:
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `SUB_HTTP_PORT` | `8765` | Subscription-link port |
-| `SUB_HTTP_HOST` | `0.0.0.0` | Bind address for the subscription port |
-| `SUB_PUBLIC_HOST` | empty | Host used in links; defaults to the Mac's `.local` name, then a LAN IP |
-| `SUB_DB_PATH` | `data/sub.db` | SQLite database path |
+| `WEBSITE_URL` | empty | Magnet Scraper: base URL walked by Automatic mode |
+| `CUTOFF_VIDEO` | empty | Magnet Scraper: stopping anchor; auto-advanced after each run |
+| `SUB_DB_PATH` | `data/sub.db` | Optimized-IP Subscription: SQLite database path |
 | `SUB_ACCESS_TOKEN` | empty | Require `?token=…` on subscription links |
-| `SUB_DISABLE_HTTP` | empty | Set to `1` to skip starting the sub-server |
-
-```bash
-SUB_ACCESS_TOKEN=your-token uv run streamlit run src/app.py
-```
-
-### 🧹 Cache Purge — `src/pages/cache_purge.py`
-
-Recursively find and delete cache / junk files from a folder:
-
-- Pick a **folder**, then edit the file-type globs (defaults cover `*.dwl`,
-  `*.dwl2`, `*.bak`, `*.log`, `*.db`, `*.tmp`, `*.err`).
-- **Scan** to preview every match (with total size), then **Delete** — files are
-  removed in parallel. Deletion is permanent, so the preview is your safety net.
-
-### 🌐 Web Images to PDF — `src/pages/web_images_to_pdf.py`
-
-Capture a lazy-loaded web page's images into a single PDF (requires Google
-Chrome):
-
-- Enter the page **URL** and an output folder, then **Open in browser** — a real
-  Chrome window opens (its driver is auto-managed by `webdriver-manager`).
-- Scroll until every page/image has loaded, then **Capture & build PDF**. The
-  page's images (`img[class*=bi]`) are downloaded, stitched into a PDF, and a
-  bookmarked table of contents is added when the page exposes one.
-
-### 📄 Doc to PDF — `src/pages/doc_to_pdf.py`
-
-Clean Word documents and export them to PDF (no Microsoft Word needed):
-
-- Upload one or more `.docx` files.
-- Every tracked change is accepted and comments are removed at the XML level —
-  so the document carries no revision markup — then LibreOffice renders the PDF.
-
-All files are converted in one LibreOffice run and bundled into a single zip you
-can download.
-
-### 📝 Doc to Markdown — `src/pages/doc_to_markdown.py`
-
-Convert documents to Markdown with
-[MinerU](https://github.com/opendatalab/MinerU) — text, tables, formulas, and
-extracted images:
-
-- Upload one or more `pdf`, `png`, `jpg`, `docx`, `pptx`, or `xlsx` files.
-- Each file is parsed by MinerU in a subprocess, with a progress bar tracking
-  the batch (`2/3 — report.pdf …`).
-- All output — the Markdown plus its `images/` and JSON sidecars — is bundled
-  into a single zip you can download.
-
-**Advanced options** pick the MinerU backend (`hybrid-engine` by default,
-`pipeline` for a lighter/faster run, or `vlm-engine`), the pipeline parse method
-(`auto` / `txt` / `ocr`), OCR language, hybrid effort, and formula/table
-toggles.
-
-> MinerU's models download on first run, so the first conversion takes longer.
-> The `hybrid-engine` / `vlm-engine` backends need the VLM models pulled in by
-> the `mineru[core]` dependency.
+| `SUB_PUBLIC_HOST` | empty | Host used in subscription links; defaults to the Mac's `.local` name, then a LAN IP |
+| `APP_CORS_ORIGINS` | Vite dev origins | CORS allowlist (only exercised when calling the API cross-origin) |
+| `APP_STATIC_DIR` | `../frontend/dist` | Built UI served by the single-server modes |
+| `HOST` / `PORT` | `0.0.0.0` / `8000` | `make host` bind address / base port (shell env, not `.env`) |
 
 ## Development
 
-Common tasks are wrapped in the `Makefile`:
-
 ```bash
-make run     # uv run streamlit run src/app.py
-make lint    # uv run ruff check .
-make fmt     # uv run ruff format .
-make test    # uv run pytest
+uv run pytest                  # run ALL backend tests (from backend/) — the single test command
+uv run ruff check src tests    # lint the backend: PEP 8 via ruff — zero errors
+make test                      # both of the above + a frontend build check
+make build                     # frontend/dist only
+make clean                     # remove build artifacts
 ```
 
-`tests/` covers the pure helper functions (natural sort, AppleScript escaping,
-ffmpeg and MinerU command building).
+## Requirements
 
-## Project structure
+- **macOS** (native folder pickers, desktop-app integrations)
+- [uv](https://docs.astral.sh/uv/) — Python 3.14 is managed automatically via `.python-version`
+- [Node.js](https://nodejs.org/) ≥ 20 (frontend build)
+- [FFmpeg](https://ffmpeg.org/) on your `PATH` — required by **Remux Processor** (`brew install ffmpeg`)
+- [Google Chrome](https://www.google.com/chrome/) — required by **Web Images to PDF** (the matching driver is downloaded automatically)
+- [LibreOffice](https://www.libreoffice.org/) — required by **Doc to PDF** (`brew install --cask libreoffice`)
+- [MinerU](https://github.com/opendatalab/MinerU) — required by **Doc to Markdown**; installed with the backend via the `mineru[core]` dependency, its ML models download automatically on first run (cached under `~/.cache/huggingface`)
 
-```
-toolkit/
-├── data/                    # local SQLite store (git-ignored)
-│   └── sub.db
-├── src/
-│   ├── app.py               # entry point — multipage navigation
-│   ├── home.py              # landing / overview page
-│   ├── pages/               # one self-contained script per tool
-│   │   ├── magnet_scraper.py
-│   │   ├── img_to_pdf.py
-│   │   ├── remux_processor.py
-│   │   ├── file_gatherer.py
-│   │   ├── optimized_ip_generator.py
-│   │   ├── cache_purge.py
-│   │   ├── web_images_to_pdf.py
-│   │   ├── doc_to_pdf.py
-│   │   └── doc_to_markdown.py
-│   └── lib/                 # shared code (kept deliberately small)
-│       ├── folder_picker.py # editable path field + native Browse dialog
-│       └── subgen/          # Optimized-IP Subscription engine
-│           ├── core.py      # parse / rewrite / render
-│           ├── db.py        # SQLite store
-│           ├── subserver.py # background /sub/{id} HTTP server
-│           ├── netutil.py   # short id / dedup hash / LAN IP
-│           └── config.py    # environment configuration
-├── tests/                   # unit tests for the pure helpers
-├── .env.example             # Magnet Scraper config template
-├── Makefile · LICENSE
-├── pyproject.toml · uv.lock
-└── README.md
-```
+## Tools in detail
 
-Most tools are a single self-contained script. Tools that pick local folders
-share `src/lib/folder_picker.py` (an editable path field — type/paste a path or
-use the native Browse dialog), and the **Optimized-IP Subscription** engine
-lives in `src/lib/subgen/` — so run the app through its entry point
-(`src/app.py`) rather than as standalone page scripts.
+### 🧲 Magnet Scraper
+
+Three modes:
+
+- **Automatic** — walks your source site page by page from the configured
+  `WEBSITE_URL` until it reaches the last-seen video (`CUTOFF_VIDEO`), then scrapes
+  magnets for everything newer. The cutoff is advanced automatically to the newest
+  link after each successful run.
+- **Manual** — paste video page URLs and scrape their magnets.
+- **Remove Duplicated** — paste raw magnet links and get the unique set back.
+
+### 🖼️ Image to PDF
+
+Upload one or more images (`png`, `jpg`, `jpeg`, `heic` — iPhone HEIC photos
+supported via `pillow-heif`), name the output, and download the combined PDF.
+Images are ordered by filename.
+
+### 🎬 Remux Processor
+
+Lossless, parallel remuxing with FFmpeg (no re-encoding): pick a source folder,
+select videos, configure video / audio / subtitle track indices and the subtitle
+language tag, optionally attach external subtitle files (matched by filename stem),
+choose an output folder and worker count, then watch per-file live progress and a
+success/failure summary.
+
+### 📦 File Gatherer
+
+Recursively collect files by type and move them into a single folder. Pick source
+and target folders, choose categories (Video, Audio, Image, Subtitle, Document,
+Archive) and/or custom glob patterns, then **Scan & Move** in one click — with live
+progress, auto-numbered duplicate names (`name_1.ext`), and a moved/failed summary.
+
+### 🛰️ Optimized-IP Subscription
+
+Engine in `backend/src/subgen/`. Batch-replace the server in your self-built
+`vmess` / `vless` / `trojan` nodes with optimized Cloudflare IPs, then generate
+subscriptions for Shadowrocket / Clash / Surge — as a LAN link, a QR code, or
+downloadable files. Everything is stored locally in `data/sub.db`; nothing leaves
+your machine.
+
+- Paste nodes plus optimized `host[:port][#remark]` addresses; base64 subscriptions
+  auto-expand and duplicates are removed.
+- One click produces Raw / Clash / Surge output, a subscription link
+  (`/sub/{id}?target=…`, served natively by the backend), and a QR code a phone on
+  the same Wi-Fi can import directly — use `make host` so the phone can reach it.
+- Identical inputs reuse the same short link (deduplicated by content hash); history
+  is listed to reload or delete.
+
+### 🧹 Cache Purge
+
+Recursively find and delete cache / junk files from a folder. Edit the file-type
+globs (defaults cover `*.dwl`, `*.dwl2`, `*.bak`, `*.log`, `*.db`, `*.tmp`,
+`*.err`; catch-all patterns are refused), **Scan** to preview every match with total
+size, then **Delete** after an explicit confirmation. Deletion is permanent, so the
+preview is your safety net.
+
+### 🌐 Web Images to PDF
+
+Capture a lazy-loaded web page's images into a single PDF (requires Google Chrome):
+enter the page URL, **Open in browser** — a real Chrome window opens on this Mac —
+scroll until every image has loaded, then **Capture & build PDF**. The page's images
+are downloaded, stitched into a PDF, and a bookmarked table of contents is added
+when the page exposes one.
+
+### 📄 Doc to PDF
+
+Clean Word documents and export them to PDF (no Microsoft Word needed): upload
+`.docx` files; every tracked change is accepted and comments are removed at the XML
+level, then LibreOffice renders the PDFs — bundled into a single zip download.
+
+### 📝 Doc to Markdown
+
+Convert documents to Markdown with MinerU — text, tables, formulas, and extracted
+images. Upload `pdf`, `png`, `jpg`, `docx`, `pptx`, or `xlsx` files; each is parsed
+in a subprocess with live batch progress; all output (Markdown + `images/` + JSON
+sidecars) is bundled into a single zip download. Advanced options pick the MinerU
+backend (`hybrid-engine` default, `pipeline`, `vlm-engine`), parse method, OCR
+language, effort, and formula/table toggles.
+
+> MinerU's models download on first run, so the first conversion takes longer.
 
 ## License
 
