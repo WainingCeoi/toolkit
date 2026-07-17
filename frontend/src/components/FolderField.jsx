@@ -4,6 +4,7 @@
 
 import React, { useState } from 'react'
 import { api } from '../api'
+import Button from './Button'
 
 export default function FolderField({ label, value, onChange, placeholder, startDir }) {
   const [busy, setBusy] = useState(false)
@@ -29,9 +30,9 @@ export default function FolderField({ label, value, onChange, placeholder, start
           onChange={(e) => onChange(e.target.value)}
           spellCheck={false}
         />
-        <button type="button" className="btn" onClick={browse} disabled={busy}>
+        <Button onClick={browse} disabled={busy} loading={busy}>
           📂 Browse…
-        </button>
+        </Button>
       </div>
     </div>
   )

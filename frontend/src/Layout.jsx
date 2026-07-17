@@ -6,6 +6,8 @@ import { NavLink, Link, Outlet } from 'react-router-dom'
 import { api } from './api'
 import { useJobs } from './jobs'
 import { LedBar } from './components/JobPanel'
+import Button from './components/Button'
+import ThemeToggle from './components/ThemeToggle'
 import { TOOL_EMOJI } from './tools'
 
 function Dock() {
@@ -41,10 +43,10 @@ function Dock() {
               </span>
             )}
             {snapshot.state !== 'running' && (
-              <button
-                type="button"
-                className="btn ghost"
-                style={{ minHeight: 0, padding: '0 4px' }}
+              <Button
+                variant="ghost"
+                size="sm"
+                className="dock-dismiss"
                 onClick={(e) => {
                   e.preventDefault()
                   dismiss(id)
@@ -52,7 +54,7 @@ function Dock() {
                 aria-label="Dismiss job"
               >
                 ×
-              </button>
+              </Button>
             )}
           </Link>
         )
@@ -127,6 +129,7 @@ export default function Layout() {
           })}
         </React.Fragment>
       ))}
+      <ThemeToggle />
     </nav>
   )
 

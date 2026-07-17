@@ -7,6 +7,7 @@ import { useToolJob } from '../jobs'
 import FileDrop from '../components/FileDrop'
 import JobPanel from '../components/JobPanel'
 import CodeBox from '../components/CodeBox'
+import Button from '../components/Button'
 
 export default function DocToPdf() {
   const [files, setFiles] = useState([])
@@ -61,14 +62,13 @@ export default function DocToPdf() {
 
         <div className="panel">
           <div className="step"><span className="n">02</span><span>CONVERT</span></div>
-          <button
-            type="button"
-            className="btn primary"
+          <Button
+            variant="primary"
             onClick={convert}
             disabled={running}
           >
             Convert to PDF
-          </button>
+          </Button>
           {error && <div className="note error">{error}</div>}
           <JobPanel snapshot={snapshot}>
             {result && (
@@ -79,9 +79,9 @@ export default function DocToPdf() {
                   </div>
                 )}
                 {result.artifact_id && (
-                  <a className="btn" href={artifactUrl(result.artifact_id)}>
+                  <Button as="a" href={artifactUrl(result.artifact_id)}>
                     ⬇ Download PDFs (.zip)
-                  </a>
+                  </Button>
                 )}
                 {failed.length > 0 && (
                   <details className="expander">

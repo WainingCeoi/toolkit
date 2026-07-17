@@ -9,6 +9,7 @@ import { useToolJob } from '../jobs'
 import FolderField from '../components/FolderField'
 import JobPanel from '../components/JobPanel'
 import CodeBox from '../components/CodeBox'
+import Button from '../components/Button'
 
 const DEFAULT_PATTERNS = '*.dwl *.dwl2 *.bak *.log *.db *.tmp *.err'
 const PREVIEW_LIMIT = 200
@@ -141,14 +142,14 @@ export default function CachePurge() {
             {matching.length > 0 && <p style={caption}>Matching: {matching.join(', ')}</p>}
           </div>
 
-          <button
-            type="button"
-            className="btn primary"
+          <Button
+            variant="primary"
             onClick={runScan}
-            disabled={scanning || running}
+            loading={scanning}
+            disabled={running}
           >
-            {scanning ? 'Scanning…' : '🔍 Scan folder'}
-          </button>
+            🔍 Scan folder
+          </Button>
 
           {scanError && <div className="note error">{scanError}</div>}
 
@@ -223,14 +224,13 @@ export default function CachePurge() {
                 I understand this permanently deletes the files listed above.
               </label>
 
-              <button
-                type="button"
-                className="btn danger"
+              <Button
+                variant="danger"
                 onClick={runDelete}
                 disabled={!confirm || running}
               >
                 🗑️ Delete {scan.files.length} file(s)
-              </button>
+              </Button>
             </>
           )}
 

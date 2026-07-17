@@ -1,9 +1,33 @@
 /* Toolkit — instrument-bench theme.
-   Tokens first; every component below derives from them. Dark-only by design:
-   this is a workshop, and its accents are functional LEDs (amber running,
-   teal done, red failed), not decoration. */
+   Tokens first; every component below derives from them.
+
+   Three color modes: dark, light, auto. Dark is the base (the workshop
+   identity, and the no-JS fallback). Auto follows the system via
+   prefers-color-scheme; an explicit choice is stamped as data-theme on
+   <html> and wins over the system. The accents are functional LEDs (amber
+   running, teal done, red failed) and stay constant across modes; only the
+   -text variants deepen on light so they stay readable on pale surfaces. */
 
 :root {
+  /* --- theme-agnostic --- */
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+  --radius: 10px;
+  --radius-s: 6px;
+  --rail-w: 232px;
+  --dock-h: 44px;
+  /* accent LEDs — same hue in both modes (used as fills / button backgrounds) */
+  --amber: #ffb224;        /* primary action / running */
+  --amber-dim: #7a5510;
+  --teal: #3dd6b0;         /* success */
+  --red: #ff6b5e;          /* failure / destructive */
+  --violet: #a78bfa;       /* network category */
+  /* text-on-accent (dark ink on a saturated button — constant across modes) */
+  --on-amber: #1a1204;
+  --on-danger: #2b0703;
+
+  /* --- dark surfaces (base) --- */
+  color-scheme: dark;
   --bench: #14171c;        /* page background — blue-black graphite */
   --panel: #1e232b;        /* drawers / cards */
   --panel-2: #232a34;      /* raised panel (hover, inputs) */
@@ -12,17 +36,57 @@
   --text: #e8eaed;
   --muted: #98a2b3;
   --faint: #5c6675;
-  --amber: #ffb224;        /* primary action / running */
-  --amber-dim: #7a5510;
-  --teal: #3dd6b0;         /* success */
-  --red: #ff6b5e;          /* failure / destructive */
-  --violet: #a78bfa;       /* network category */
-  --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
-  --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
-  --radius: 10px;
-  --radius-s: 6px;
-  --rail-w: 232px;
-  --dock-h: 44px;
+  --scrim: rgba(0, 0, 0, 0.45);
+  --shadow: rgba(0, 0, 0, 0.5);
+  /* accent-as-text (readable on the current surface) */
+  --amber-text: #ffb224;
+  --teal-text: #3dd6b0;
+  --red-text: #ff6b5e;
+  --focus: #ffb224;
+  --select: #7a5510;
+}
+
+/* Light surfaces — a workbench in daylight: warm paper panels, ink text, the
+   same LED accents but deepened where they carry text. Applied in AUTO mode
+   when the system is light, and by an explicit light choice. */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    color-scheme: light;
+    --bench: #eceae3;
+    --panel: #f8f7f2;
+    --panel-2: #ffffff;
+    --edge: #d8d5cb;
+    --edge-hi: rgba(255, 255, 255, 0.7);
+    --text: #1c2530;
+    --muted: #56606e;
+    --faint: #8b95a3;
+    --scrim: rgba(20, 23, 28, 0.35);
+    --shadow: rgba(20, 23, 28, 0.22);
+    --amber-text: #a86800;
+    --teal-text: #0f9b78;
+    --red-text: #cf3a2d;
+    --focus: #a86800;
+    --select: #ffe1a3;
+  }
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bench: #eceae3;
+  --panel: #f8f7f2;
+  --panel-2: #ffffff;
+  --edge: #d8d5cb;
+  --edge-hi: rgba(255, 255, 255, 0.7);
+  --text: #1c2530;
+  --muted: #56606e;
+  --faint: #8b95a3;
+  --scrim: rgba(20, 23, 28, 0.35);
+  --shadow: rgba(20, 23, 28, 0.22);
+  --amber-text: #a86800;
+  --teal-text: #0f9b78;
+  --red-text: #cf3a2d;
+  --focus: #a86800;
+  --select: #ffe1a3;
 }
 
 * { box-sizing: border-box; }
@@ -35,12 +99,12 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-::selection { background: var(--amber-dim); }
+::selection { background: var(--select); }
 a { color: inherit; }
 button { font: inherit; color: inherit; }
 
 :focus-visible {
-  outline: 2px solid var(--amber);
+  outline: 2px solid var(--focus);
   outline-offset: 2px;
   border-radius: 4px;
 }
@@ -149,7 +213,7 @@ button { font: inherit; color: inherit; }
     transform: translateX(-102%);
     transition: transform 0.18s ease;
   }
-  .rail.open { transform: none; box-shadow: 24px 0 60px rgba(0, 0, 0, 0.5); }
+  .rail.open { transform: none; box-shadow: 24px 0 60px var(--shadow); }
   .topbar {
     display: flex;
     align-items: center;
@@ -171,7 +235,7 @@ button { font: inherit; color: inherit; }
   position: fixed;
   inset: 0;
   z-index: 30;
-  background: rgba(0, 0, 0, 0.45);
+  background: var(--scrim);
   border: 0;
 }
 
@@ -214,7 +278,7 @@ button { font: inherit; color: inherit; }
   margin: 0 0 10px;
 }
 .step::after { content: ""; flex: 1; border-top: 1px solid var(--edge); }
-.step .n { color: var(--amber); }
+.step .n { color: var(--amber-text); }
 
 /* ---------- form controls ---------- */
 .field { margin-bottom: 12px; }
@@ -261,16 +325,65 @@ textarea.control { resize: vertical; min-height: 92px; line-height: 1.5; }
   min-height: 36px;
   transition: filter 0.12s ease;
 }
-.btn:hover:not(:disabled) { filter: brightness(1.15); }
-.btn:disabled { opacity: 0.45; cursor: default; }
+.btn:hover:not(:disabled):not([aria-disabled="true"]) { filter: brightness(1.08); }
+.btn:active:not(:disabled):not([aria-disabled="true"]) { transform: translateY(1px); }
+.btn:disabled,
+.btn[aria-disabled="true"] { opacity: 0.45; cursor: default; pointer-events: none; }
 .btn.primary {
   background: var(--amber);
   border-color: var(--amber);
-  color: #1a1204;
+  color: var(--on-amber);
   font-weight: 700;
 }
-.btn.danger { background: var(--red); border-color: var(--red); color: #2b0703; font-weight: 700; }
+.btn.danger { background: var(--red); border-color: var(--red); color: var(--on-danger); font-weight: 700; }
 .btn.ghost { background: transparent; }
+/* anchor form (Button as="a") — a link that looks like a button */
+a.btn { text-decoration: none; display: inline-flex; align-items: center; gap: 6px; }
+/* small form (icon / inline actions) */
+.btn.sm { min-height: 28px; padding: 4px 9px; font-size: 12px; }
+/* loading — spinner before the label, non-interactive */
+.btn.loading { cursor: default; }
+.btn-spinner {
+  width: 12px;
+  height: 12px;
+  margin-right: 7px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  display: inline-block;
+  vertical-align: -1px;
+  animation: btn-spin 0.6s linear infinite;
+}
+@keyframes btn-spin { to { transform: rotate(360deg); } }
+
+/* ---------- theme toggle (rail) ---------- */
+.theme-toggle {
+  display: flex;
+  gap: 2px;
+  margin: auto 4px 4px;
+  padding: 2px;
+  background: var(--panel);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-s);
+}
+.theme-opt {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  padding: 5px 4px;
+  cursor: pointer;
+  color: var(--faint);
+  font: 11px var(--mono);
+}
+.theme-opt:hover { color: var(--text); }
+.theme-opt.active { background: var(--panel-2); color: var(--text); box-shadow: inset 0 0 0 1px var(--edge); }
+.theme-opt-label { letter-spacing: 0.04em; }
+@media (max-width: 340px) { .theme-opt-label { display: none; } }
 
 /* ---------- feedback ---------- */
 .note { border-radius: var(--radius-s); padding: 9px 12px; font-size: 13px; margin: 10px 0; }
@@ -313,8 +426,8 @@ textarea.control { resize: vertical; min-height: 92px; line-height: 1.5; }
 }
 .metric .v { font: 700 20px var(--mono); }
 .metric .k { font: 10px var(--mono); color: var(--faint); text-transform: uppercase; letter-spacing: 0.08em; }
-.metric.ok .v { color: var(--teal); }
-.metric.bad .v { color: var(--red); }
+.metric.ok .v { color: var(--teal-text); }
+.metric.bad .v { color: var(--red-text); }
 
 /* ---------- LED progress ---------- */
 .led-track {
@@ -343,12 +456,12 @@ textarea.control { resize: vertical; min-height: 92px; line-height: 1.5; }
   font: 12px var(--mono);
   color: var(--muted);
 }
-.job-item .name.done { color: var(--teal); }
-.job-item .name.failed { color: var(--red); }
+.job-item .name.done { color: var(--teal-text); }
+.job-item .name.failed { color: var(--red-text); }
 .job-item .led-track { width: 34%; flex: none; }
 .job-item .pct { font: 11px var(--mono); color: var(--faint); width: 4ch; text-align: right; }
 
-.job-message { font: 12px var(--mono); color: var(--amber); margin: 8px 0; min-height: 18px; }
+.job-message { font: 12px var(--mono); color: var(--amber-text); margin: 8px 0; min-height: 18px; }
 
 /* ---------- job dock (signature) ---------- */
 .dock {
@@ -374,8 +487,9 @@ textarea.control { resize: vertical; min-height: 92px; line-height: 1.5; }
   white-space: nowrap;
 }
 .dock-job .led-track { width: 72px; }
-.dock-job .state-done { color: var(--teal); }
-.dock-job .state-failed, .dock-job .state-cancelled { color: var(--red); }
+.dock-dismiss { min-height: 24px; padding: 0 7px; }
+.dock-job .state-done { color: var(--teal-text); }
+.dock-job .state-failed, .dock-job .state-cancelled { color: var(--red-text); }
 
 /* ---------- home ---------- */
 .bench-head { margin: 6px 0 26px; }

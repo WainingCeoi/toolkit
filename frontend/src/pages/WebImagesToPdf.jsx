@@ -6,6 +6,7 @@
 
 import React, { useEffect, useRef, useState } from 'react'
 import { api, artifactUrl } from '../api'
+import Button from '../components/Button'
 
 export default function WebImagesToPdf() {
   const [url, setUrl] = useState('')
@@ -110,14 +111,13 @@ export default function WebImagesToPdf() {
               />
             </div>
             <div className="row">
-              <button
-                type="button"
-                className="btn"
+              <Button
                 onClick={openBrowser}
+                loading={opening}
                 disabled={open || opening || !url.trim()}
               >
-                {opening ? 'Launching Chrome…' : '🌐 Open in browser'}
-              </button>
+                🌐 Open in browser
+              </Button>
             </div>
           </div>
 
@@ -141,22 +141,21 @@ export default function WebImagesToPdf() {
           <div className="panel">
             <div className="step"><span className="n">03</span><span>Capture</span></div>
             <div className="row">
-              <button
-                type="button"
-                className="btn primary"
+              <Button
+                variant="primary"
                 onClick={captureAndBuild}
+                loading={capturing}
                 disabled={!open || capturing}
               >
-                {capturing ? 'Capturing…' : '📸 Capture & build PDF'}
-              </button>
-              <button
-                type="button"
-                className="btn ghost"
+                📸 Capture & build PDF
+              </Button>
+              <Button
+                variant="ghost"
                 onClick={closeBrowser}
                 disabled={!open || capturing}
               >
                 ✖ Close browser
-              </button>
+              </Button>
             </div>
 
             {capturing && (
@@ -183,9 +182,9 @@ export default function WebImagesToPdf() {
                 {result.warn && (
                   <div className="note warn">Bookmarks skipped: {result.warn}</div>
                 )}
-                <a className="btn" href={artifactUrl(result.artifact_id)}>
+                <Button as="a" href={artifactUrl(result.artifact_id)}>
                   ⬇ Download PDF
-                </a>
+                </Button>
               </>
             )}
           </div>

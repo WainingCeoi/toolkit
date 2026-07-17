@@ -6,6 +6,7 @@ import { api } from '../api'
 import { useToolJob } from '../jobs.jsx'
 import FolderField from '../components/FolderField.jsx'
 import JobPanel from '../components/JobPanel.jsx'
+import Button from '../components/Button'
 
 // Client-side mirror of the engine presets — used ONLY for the live
 // "Matching: …" caption; the backend builds the real pattern list from the
@@ -146,16 +147,15 @@ export default function FileGatherer() {
               <span className="label" id="gather-cats-label">Categories</span>
               <div className="row" role="group" aria-labelledby="gather-cats-label">
                 {CATEGORY_NAMES.map((name) => (
-                  <button
+                  <Button
                     key={name}
-                    type="button"
-                    className={selected[name] ? 'btn primary' : 'btn'}
+                    variant={selected[name] ? 'primary' : 'secondary'}
                     aria-pressed={!!selected[name]}
                     onClick={() => toggle(name)}
                     style={{ minHeight: 44 }}
                   >
                     {name}
-                  </button>
+                  </Button>
                 ))}
               </div>
             </div>
@@ -188,15 +188,14 @@ export default function FileGatherer() {
             Scans the source tree for matching files, then moves every match
             into the target folder. You can cancel mid-run.
           </p>
-          <button
-            type="button"
-            className="btn primary"
+          <Button
+            variant="primary"
             onClick={run}
             disabled={running}
             style={{ minHeight: 44 }}
           >
             🚚 Scan &amp; move
-          </button>
+          </Button>
           {error && <div className="note error">{error}</div>}
           <JobPanel snapshot={snapshot}>
             {snapshot?.state === 'done' && snapshot.result && (

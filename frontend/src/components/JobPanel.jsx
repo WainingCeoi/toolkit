@@ -3,6 +3,7 @@
 
 import React from 'react'
 import { api } from '../api'
+import Button from './Button'
 
 export function LedBar({ pct, state }) {
   const cls = state === 'done' ? 'done' : state === 'failed' ? 'failed' : ''
@@ -22,9 +23,9 @@ export default function JobPanel({ snapshot, children }) {
       {state === 'running' && (
         <div className="row" style={{ justifyContent: 'space-between' }}>
           <div className="job-message">{message || 'Working…'}</div>
-          <button type="button" className="btn ghost" onClick={() => api.cancelJob(id)}>
+          <Button variant="ghost" size="sm" onClick={() => api.cancelJob(id)}>
             Cancel
-          </button>
+          </Button>
         </div>
       )}
       {state !== 'running' && message && <div className="job-message">{message}</div>}

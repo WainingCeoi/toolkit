@@ -4,6 +4,7 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { api } from '../api'
 import { useToolJob } from '../jobs'
+import Button from '../components/Button'
 import FolderField from '../components/FolderField'
 import JobPanel from '../components/JobPanel'
 
@@ -152,21 +153,20 @@ export default function Remux() {
               startDir="~/Desktop"
             />
             <div className="row">
-              <button type="button" className="btn" onClick={scan} disabled={scanning}>
-                {scanning ? 'Scanning…' : '🔍 Scan'}
-              </button>
+              <Button onClick={scan} loading={scanning}>
+                🔍 Scan
+              </Button>
               {videos.length > 0 && (
                 <>
-                  <button
-                    type="button"
-                    className="btn ghost"
+                  <Button
+                    variant="ghost"
                     onClick={() => setSelected(videos.map((v) => v.path))}
                   >
                     Select all
-                  </button>
-                  <button type="button" className="btn ghost" onClick={() => setSelected([])}>
+                  </Button>
+                  <Button variant="ghost" onClick={() => setSelected([])}>
                     None
-                  </button>
+                  </Button>
                   <span style={{ font: '11px var(--mono)', color: 'var(--muted)' }}>
                     {selected.length}/{videos.length} selected
                   </span>
@@ -425,15 +425,14 @@ export default function Remux() {
 
         {/* ---- RUN & RESULTS ---- */}
         <div className="panel">
-          <button
-            type="button"
-            className="btn primary"
+          <Button
+            variant="primary"
             onClick={startRemux}
             disabled={running}
             style={{ width: '100%' }}
           >
             🚀 Start remuxing
-          </button>
+          </Button>
           <div style={{ ...hintStyle, marginTop: 8 }}>
             Lossless stream copy — one LED bar per file below.
           </div>

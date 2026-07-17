@@ -5,6 +5,7 @@
 
 import React, { useCallback, useEffect, useState } from 'react'
 import { api, saveBlob } from '../api'
+import Button from '../components/Button'
 import CodeBox from '../components/CodeBox'
 
 const PREVIEW_COLS = ['name', 'type', 'server', 'port', 'host', 'sni', 'network', 'tls']
@@ -156,15 +157,14 @@ export default function Subscription() {
             Keep original Host / SNI (recommended)
           </label>
 
-          <button
-            type="button"
-            className="btn primary"
+          <Button
+            variant="primary"
             style={{ width: '100%', marginTop: 14, minHeight: 44 }}
             onClick={generate}
-            disabled={busy}
+            loading={busy}
           >
-            {busy ? 'Generating…' : 'Generate subscription'}
-          </button>
+            Generate subscription
+          </Button>
         </div>
 
         {/* ------------------------------------------------- result (right) */}
@@ -250,9 +250,9 @@ export default function Subscription() {
               <div className="field">
                 <span className="label">Download subscription files (import without a server)</span>
                 <div className="row">
-                  <button type="button" className="btn" onClick={() => download('raw')}>⬇ raw .txt</button>
-                  <button type="button" className="btn" onClick={() => download('clash')}>⬇ clash .yaml</button>
-                  <button type="button" className="btn" onClick={() => download('surge')}>⬇ surge .conf</button>
+                  <Button onClick={() => download('raw')}>⬇ raw .txt</Button>
+                  <Button onClick={() => download('clash')}>⬇ clash .yaml</Button>
+                  <Button onClick={() => download('surge')}>⬇ surge .conf</Button>
                 </div>
                 {dlError && <div className="note warn">Unavailable — {dlError}</div>}
               </div>
@@ -303,22 +303,19 @@ export default function Subscription() {
             >
               <code>{item.id}</code> · {item.node_count} nodes · {item.created_at.slice(0, 19)}
             </span>
-            <button
-              type="button"
-              className="btn"
+            <Button
               onClick={() => loadSub(item.id)}
               aria-label={`Load subscription ${item.id}`}
             >
               Load
-            </button>
-            <button
-              type="button"
-              className="btn danger"
+            </Button>
+            <Button
+              variant="danger"
               onClick={() => deleteSub(item.id)}
               aria-label={`Delete subscription ${item.id}`}
             >
               Delete
-            </button>
+            </Button>
           </div>
         ))}
       </div>

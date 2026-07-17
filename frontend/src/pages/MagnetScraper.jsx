@@ -8,6 +8,7 @@ import { api } from '../api'
 import { useToolJob } from '../jobs'
 import JobPanel from '../components/JobPanel'
 import CodeBox from '../components/CodeBox'
+import Button from '../components/Button'
 
 const MODES = [
   { key: 'auto', label: 'Automatic' },
@@ -156,16 +157,15 @@ export default function MagnetScraper() {
             </span>
             <div className="row" role="group" aria-labelledby="magnet-mode-label">
               {MODES.map((m) => (
-                <button
+                <Button
                   key={m.key}
-                  type="button"
-                  className={mode === m.key ? 'btn primary' : 'btn'}
+                  variant={mode === m.key ? 'primary' : 'secondary'}
                   aria-pressed={mode === m.key}
                   style={{ ...BIG_TAP, flex: '1 1 auto' }}
                   onClick={() => setMode(m.key)}
                 >
                   {m.label}
-                </button>
+                </Button>
               ))}
             </div>
           </div>
@@ -218,15 +218,14 @@ export default function MagnetScraper() {
                   backend/.env before scraping.
                 </div>
               )}
-              <button
-                type="button"
-                className="btn primary"
+              <Button
+                variant="primary"
                 style={BIG_TAP}
                 disabled={running}
                 onClick={startAuto}
               >
                 🚀 Start automatic scrape
-              </button>
+              </Button>
             </>
           )}
 
@@ -245,15 +244,14 @@ export default function MagnetScraper() {
                   placeholder={'https://…\nhttps://…'}
                 />
               </div>
-              <button
-                type="button"
-                className="btn primary"
+              <Button
+                variant="primary"
                 style={BIG_TAP}
                 disabled={running}
                 onClick={startManual}
               >
                 Process manual links
-              </button>
+              </Button>
             </>
           )}
 
@@ -272,15 +270,14 @@ export default function MagnetScraper() {
                   placeholder={'magnet:?xt=…\nmagnet:?xt=…'}
                 />
               </div>
-              <button
-                type="button"
-                className="btn primary"
+              <Button
+                variant="primary"
                 style={BIG_TAP}
-                disabled={dedupeBusy}
+                loading={dedupeBusy}
                 onClick={runDedupe}
               >
-                {dedupeBusy ? 'Removing…' : 'Remove duplicated'}
-              </button>
+                Remove duplicated
+              </Button>
             </>
           )}
         </div>
