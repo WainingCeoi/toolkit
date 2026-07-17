@@ -97,7 +97,7 @@ Settings are read from environment variables / `backend/.env` (copy
 | --- | --- | --- |
 | `WEBSITE_URL` | empty | Magnet Scraper: base URL walked by Automatic mode |
 | `CUTOFF_VIDEO` | empty | Magnet Scraper: stopping anchor; auto-advanced after each run |
-| `SUB_DB_PATH` | `data/sub.db` | Optimized-IP Subscription: SQLite database path |
+| `SUB_DB_PATH` | `backend/data/sub.db` | Optimized-IP Subscription: SQLite database path |
 | `SUB_ACCESS_TOKEN` | empty | Require `?token=…` on subscription links |
 | `SUB_PUBLIC_HOST` | empty | Host used in subscription links; defaults to the Mac's `.local` name, then a LAN IP |
 | `APP_CORS_ORIGINS` | Vite dev origins | CORS allowlist (only exercised when calling the API cross-origin) |
@@ -163,8 +163,8 @@ progress, auto-numbered duplicate names (`name_1.ext`), and a moved/failed summa
 Engine in `backend/src/subgen/`. Batch-replace the server in your self-built
 `vmess` / `vless` / `trojan` nodes with optimized Cloudflare IPs, then generate
 subscriptions for Shadowrocket / Clash / Surge — as a LAN link, a QR code, or
-downloadable files. Everything is stored locally in `data/sub.db`; nothing leaves
-your machine.
+downloadable files. Everything is stored locally in `backend/data/sub.db`; nothing
+leaves your machine.
 
 - Paste nodes plus optimized `host[:port][#remark]` addresses; base64 subscriptions
   auto-expand and duplicates are removed.

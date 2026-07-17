@@ -1,10 +1,26 @@
-# Python
+# backend/.gitignore — PYTHON/BACKEND ONLY.
+#
+# Shared OS/editor/agent patterns live in the ROOT .gitignore; don't repeat them here, and
+# don't push these up to the root. Paths are relative to backend/, which is why none of them
+# carry a `backend/` prefix.
+
+# Virtualenv. uv writes .venv/.gitignore ("*") so a uv-made env self-ignores — but a stdlib
+# `python -m venv .venv` does NOT, so keep this line.
+.venv/
+
+# Bytecode
 __pycache__/
 *.py[cod]
-.venv/
-.pytest_cache/
-.ruff_cache/
 
-# Config & runtime data
+# Secrets and local config. .env.example is the committed template; .env never is.
 .env
+
+# Runtime data — the subscription SQLite store lives in backend/data/. Never commit.
 data/
+
+# Wheel/sdist output, if `uv build` is ever run.
+dist/
+
+# uv.lock is deliberately NOT ignored: it's committed, and `uv run --frozen` depends on it.
+# Deliberately NOT listed either: .ruff_cache/ and .pytest_cache/ — both write their own
+# `.gitignore` ("*") inside the cache dir, so they self-ignore.

@@ -44,6 +44,12 @@ BACKEND_DIR = Path(__file__).resolve().parents[2]
 # the shell win; the file only fills gaps.
 load_dotenv(BACKEND_DIR / ".env")
 
+# Runtime data lives under backend/data/ (covered by backend/.gitignore).
+# Seeded here rather than edited into the lifted subgen config, whose own
+# default still points at the old repo-root data/; setdefault keeps any
+# user-set SUB_DB_PATH winning.
+os.environ.setdefault("SUB_DB_PATH", str(BACKEND_DIR / "data" / "sub.db"))
+
 # Dev origins for the Vite frontend. Override with a comma-separated env var.
 # In single-origin production the UI is same-origin, so CORS is only
 # exercised when hitting the API directly.
