@@ -32,6 +32,7 @@ async def job_events(job_id: str, jobs: JobsDep) -> EventSourceResponse:
         raise HTTPException(status_code=404, detail="Unknown job id.")
 
     async def gen():
+        last = None
         while True:
             job = jobs.get(job_id)
             if job is None:  # evicted mid-stream — tell the client to stop
@@ -48,10 +49,15 @@ async def job_events(job_id: str, jobs: JobsDep) -> EventSourceResponse:
                 }
                 return
             snap = job.snapshot()
+            payload = json.dumps(snap)
             if snap["state"] in FINISHED_STATES:
-                yield {"event": "done", "data": json.dumps(snap)}
+                yield {"event": "done", "data": payload}
                 return
-            yield {"event": "progress", "data": json.dumps(snap)}
+            # Only push a frame when something actually changed — a quiet job no
+            # longer re-sends an identical snapshot every 0.3 s.
+            if payload != last:
+                yield {"event": "progress", "data": payload}
+                last = payload
             await asyncio.sleep(0.3)
 
     return EventSourceResponse(gen())

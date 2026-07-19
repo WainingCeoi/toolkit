@@ -30,7 +30,7 @@ def get_magnet_link(url):
     try:
         response = requests.get(url, timeout=10)
         response.raise_for_status()
-        soup = BeautifulSoup(response.text, "html.parser")
+        soup = BeautifulSoup(response.text, "lxml")
         tag = soup.find("a", string="Magnet")
         if tag is None or not tag.get("href"):
             return {"success": False, "url": url, "reason": "no magnet link on page"}
@@ -76,7 +76,7 @@ def find_unwatched_urls(
             page_url = f"{website_url}/page/{page_idx}/"
             response = requests.get(url=page_url, timeout=10)
             response.raise_for_status()
-            soup = BeautifulSoup(response.text, "html.parser")
+            soup = BeautifulSoup(response.text, "lxml")
             on_page_links = soup.find_all("a", rel="bookmark")
 
             urls = [link.get("href") for link in on_page_links if link.get("href")]

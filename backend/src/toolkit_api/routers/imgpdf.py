@@ -14,6 +14,8 @@ from fastapi import APIRouter, File, Form, HTTPException, Response, UploadFile
 
 from toolkit_engine.imgpdf import images_to_pdf_bytes
 
+from ..uploads import read_uploads
+
 router = APIRouter(tags=["img-to-pdf"])
 
 
@@ -48,7 +50,10 @@ def img_to_pdf(
     if not out_name.lower().endswith(".pdf"):
         out_name += ".pdf"
 
-    named_files = [(f.filename or "", f.file.read()) for f in files]
+    named_files = [
+        (f.filename or "", data)
+        for f, data in zip(files, read_uploads(files), strict=True)
+    ]
     try:
         pdf_bytes = images_to_pdf_bytes(named_files)
     except Exception as e:

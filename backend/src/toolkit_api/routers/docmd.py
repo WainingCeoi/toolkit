@@ -19,6 +19,7 @@ from toolkit_engine.fsutil import dedupe_filenames
 
 from ..deps import StateDep
 from ..schemas import JobStartedOut
+from ..uploads import read_uploads
 
 router = APIRouter(prefix="/doc-to-markdown", tags=["doc-to-markdown"])
 
@@ -76,14 +77,11 @@ def convert(
             detail="Missing required tool: MinerU (`uv add mineru`).",
         )
 
-    # Uploads are request-scoped — read every file before returning.
-    # Disambiguate duplicate basenames so two same-named uploads don't collide
-    # to one tree in the result zip (dropping one output on extraction).
+    # Uploads are request-scoped — read every file (size-capped) before
+    # returning. Disambiguate duplicate basenames so two same-named uploads
+    # don't collide to one tree in the result zip (dropping one output).
     unique_names = dedupe_filenames([upload.filename for upload in files])
-    named = [
-        (name, upload.file.read())
-        for name, upload in zip(unique_names, files, strict=True)
-    ]
+    named = list(zip(unique_names, read_uploads(files), strict=True))
     options = {
         "backend": backend,
         "method": method,

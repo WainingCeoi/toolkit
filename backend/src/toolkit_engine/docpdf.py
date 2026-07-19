@@ -81,43 +81,55 @@ def _flatten_revisions(root):
             parent.remove(el)
 
 
+def _transform_part(name, data):
+    """Return revision-cleaned XML bytes for a Word part, or None to copy as-is."""
+    if not name.endswith(".xml"):
+        return None
+    if name == "word/settings.xml":
+        root = etree.fromstring(data)
+        for el in [el for el in root if el.tag == _w("trackChanges")]:
+            root.remove(el)
+        return etree.tostring(
+            root, xml_declaration=True, encoding="UTF-8", standalone=True
+        )
+    if (
+        name == "word/document.xml"
+        or name.startswith("word/header")
+        or name.startswith("word/footer")
+        or name in ("word/footnotes.xml", "word/endnotes.xml")
+    ):
+        root = etree.fromstring(data)
+        _flatten_revisions(root)
+        return etree.tostring(
+            root, xml_declaration=True, encoding="UTF-8", standalone=True
+        )
+    return None
+
+
 def clean_docx(src_path, dst_path):
     """Accept every tracked change and strip comment markers via direct XML.
 
     Operates on the .docx parts (document body, headers/footers, notes) and
     turns off change recording in settings.xml, so the result carries no
-    revision markup and renders to PDF without any marks or comments.
+    revision markup and renders to PDF without any marks or comments. Members
+    are streamed one at a time; non-XML parts (images, fonts) are copied with
+    their original compression so already-compressed media isn't inflated and
+    re-deflated.
     """
     src_path, dst_path = Path(src_path), Path(dst_path)
-    with zipfile.ZipFile(src_path) as zin:
-        names = zin.namelist()
-        parts = {name: zin.read(name) for name in names}
-
-    for name in names:
-        if not name.endswith(".xml"):
-            continue
-        if name == "word/settings.xml":
-            root = etree.fromstring(parts[name])
-            for el in [el for el in root if el.tag == _w("trackChanges")]:
-                root.remove(el)
-            parts[name] = etree.tostring(
-                root, xml_declaration=True, encoding="UTF-8", standalone=True
-            )
-        elif (
-            name == "word/document.xml"
-            or name.startswith("word/header")
-            or name.startswith("word/footer")
-            or name in ("word/footnotes.xml", "word/endnotes.xml")
-        ):
-            root = etree.fromstring(parts[name])
-            _flatten_revisions(root)
-            parts[name] = etree.tostring(
-                root, xml_declaration=True, encoding="UTF-8", standalone=True
-            )
-
-    with zipfile.ZipFile(dst_path, "w", zipfile.ZIP_DEFLATED) as zout:
-        for name in names:
-            zout.writestr(name, parts[name])
+    with (
+        zipfile.ZipFile(src_path) as zin,
+        zipfile.ZipFile(dst_path, "w", zipfile.ZIP_DEFLATED) as zout,
+    ):
+        for item in zin.infolist():
+            data = zin.read(item.filename)
+            transformed = _transform_part(item.filename, data)
+            if transformed is not None:
+                zout.writestr(item.filename, transformed)
+            else:
+                # Preserve the member's original compress_type (STORED media
+                # stays STORED — no wasted recompression).
+                zout.writestr(item, data)
     return dst_path
 
 

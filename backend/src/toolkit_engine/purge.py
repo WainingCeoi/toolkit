@@ -56,14 +56,16 @@ def scan_folder(src: Path, patterns: list[str]) -> tuple[list[str], list, int]:
     can't be read still count as matches; they just add 0 bytes.
     """
     scanner, errors = Scandir(str(src), file_include=patterns).collect()
-    found = [str(src / entry.path) for entry in scanner if entry.is_file]
-    found.sort(key=lambda p: natural_sort_key(Path(p).name))
-    total_size = 0
-    for f in found:
-        try:
-            total_size += Path(f).stat().st_size
-        except OSError:
-            pass
+    # Take sizes from the walk's own metadata instead of re-stat()ing every
+    # match — one pass over the tree instead of two.
+    entries = [
+        (str(src / entry.path), entry.st_size)
+        for entry in scanner
+        if entry.is_file
+    ]
+    entries.sort(key=lambda item: natural_sort_key(Path(item[0]).name))
+    found = [path for path, _ in entries]
+    total_size = sum(size for _, size in entries)
     return found, list(errors) if errors else [], total_size
 
 

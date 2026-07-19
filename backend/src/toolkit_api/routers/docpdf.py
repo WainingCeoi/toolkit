@@ -15,6 +15,7 @@ from toolkit_engine.fsutil import dedupe_filenames
 
 from ..deps import StateDep
 from ..schemas import JobStartedOut
+from ..uploads import read_uploads
 
 router = APIRouter(prefix="/doc-to-pdf", tags=["doc-to-pdf"])
 
@@ -46,14 +47,11 @@ def convert(state: StateDep, files: list[UploadFile] | None = None) -> JobStarte
             ),
         )
 
-    # Uploads are request-scoped — read every file before returning.
-    # Disambiguate duplicate basenames so two same-named uploads don't collide
-    # to one entry in the result zip (dropping one PDF on extraction).
+    # Uploads are request-scoped — read every file (size-capped) before
+    # returning. Disambiguate duplicate basenames so two same-named uploads
+    # don't collide to one entry in the result zip (dropping one PDF).
     unique_names = dedupe_filenames([upload.filename for upload in files])
-    named = [
-        (name, upload.file.read())
-        for name, upload in zip(unique_names, files, strict=True)
-    ]
+    named = list(zip(unique_names, read_uploads(files), strict=True))
 
     def worker(job):
         def on_progress(pct, text):

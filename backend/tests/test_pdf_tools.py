@@ -3,8 +3,8 @@
 Hermetic by construction: images are generated in-memory with PIL, scraped
 pages are canned HTML whose images are data: URIs (nothing is fetched), and
 the browser is a fake injected onto app_state — Chrome is never launched.
-The fake's url is deliberately schemeless so add_bookmark's re-fetch fails
-instantly (requests.MissingSchema) without touching the network.
+add_bookmark parses the captured page_source directly (no network), and the
+canned pages carry no TOC anchors so it simply reports none were found.
 """
 
 from __future__ import annotations
@@ -56,7 +56,7 @@ class FakeBrowserSession:
 
     def __init__(self, html=""):
         self._html = html
-        self.url = "not-a-url"  # schemeless: add_bookmark fails offline
+        self.url = "not-a-url"  # never fetched — capture uses page_source
         self.quit_called = False
 
     @property
@@ -322,7 +322,7 @@ def test_webpdf_capture_preserves_newer_session(tool_client, app_state, monkeypa
     newer = FakeBrowserSession(html)
     app_state.browser = captured
 
-    def reassign(url, pdf_path):
+    def reassign(page_source, pdf_path):
         # Stand in for a newer /open that landed while this capture was running.
         app_state.browser = newer
         return None

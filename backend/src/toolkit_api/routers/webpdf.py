@@ -107,8 +107,12 @@ def capture(state: StateDep, artifacts: ArtifactsDep) -> CaptureOut:
             )
         with tempfile.TemporaryDirectory() as tmp_dir:
             pdf_path = build_pdf(images, tmp_dir, pdf_name)
-            warn = add_bookmark(url, pdf_path)
-            pdf_bytes = Path(pdf_path).read_bytes()
+            warn = add_bookmark(page_source, pdf_path)
+            # Move the finished PDF into the artifact store while the temp dir
+            # still exists — no full-file read-into-RAM-then-write round-trip.
+            artifact_id = artifacts.put_file(
+                pdf_name, Path(pdf_path), "application/pdf"
+            )
     except HTTPException:
         raise
     except Exception as e:
@@ -122,7 +126,6 @@ def capture(state: StateDep, artifacts: ArtifactsDep) -> CaptureOut:
         if state.browser is session:
             state.browser = None
 
-    artifact_id = artifacts.put_bytes(pdf_name, pdf_bytes, "application/pdf")
     return CaptureOut(
         artifact_id=artifact_id,
         name=pdf_name,

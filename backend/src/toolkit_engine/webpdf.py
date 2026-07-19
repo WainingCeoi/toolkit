@@ -13,6 +13,7 @@ import base64
 import json
 import re
 import warnings
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from io import BytesIO
 from pathlib import Path
 from urllib.parse import urljoin
@@ -54,30 +55,44 @@ def scrape_images_from_source(page_source, page_url):
     """Parse a captured page for its title + lazy-loaded images; download them.
 
     Image srcs are resolved against page_url (so relative / protocol-relative
-    URLs work) and data: URIs are decoded inline. Each fetch is isolated, so one
-    bad image is skipped rather than aborting the whole capture. Returns
-    (pdf_name, [PIL.Image, ...], skipped_count).
+    URLs work) and data: URIs are decoded inline. Downloads run in parallel over
+    one pooled session (keep-alive) but the page order is preserved. Each fetch
+    is isolated, so one bad image is skipped rather than aborting the whole
+    capture. Returns (pdf_name, [PIL.Image, ...], skipped_count).
     """
-    soup = BeautifulSoup(page_source, "html.parser")
+    soup = BeautifulSoup(page_source, "lxml")
     title_tag = soup.find("title")
     title = title_tag.text.strip() if title_tag and title_tag.text.strip() else "web"
     pdf_name = f"{sanitize_filename(title)}.pdf"
 
-    images, skipped = [], 0
-    for tag in soup.select("img[class*=bi]"):
-        src = tag.get("src")
-        if not src:
-            continue
-        try:
-            if src.startswith("data:"):
-                raw = base64.b64decode(src.partition(",")[2])
-            else:
-                resp = requests.get(urljoin(page_url, src), timeout=15)
-                resp.raise_for_status()
-                raw = resp.content
-            images.append(Image.open(BytesIO(raw)).convert("RGB"))
-        except Exception:
-            skipped += 1
+    srcs = [src for tag in soup.select("img[class*=bi]") if (src := tag.get("src"))]
+
+    def fetch(index_src):
+        index, src = index_src
+        if src.startswith("data:"):
+            raw = base64.b64decode(src.partition(",")[2])
+        else:
+            resp = session.get(urljoin(page_url, src), timeout=15)
+            resp.raise_for_status()
+            raw = resp.content
+        return index, Image.open(BytesIO(raw)).convert("RGB")
+
+    by_index: dict[int, Image.Image] = {}
+    skipped = 0
+    session = requests.Session()
+    try:
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            for future in as_completed(
+                [pool.submit(fetch, item) for item in enumerate(srcs)]
+            ):
+                try:
+                    index, image = future.result()
+                    by_index[index] = image
+                except Exception:
+                    skipped += 1
+    finally:
+        session.close()
+    images = [by_index[i] for i in sorted(by_index)]
     return pdf_name, images, skipped
 
 
@@ -92,15 +107,15 @@ def build_pdf(images, output_folder, pdf_name):
     return str(pdf_path)
 
 
-def add_bookmark(page_url, pdf_path):
-    """Re-fetch the page and add a bookmarked TOC from its anchor tags.
+def add_bookmark(page_source, pdf_path):
+    """Add a bookmarked TOC to the PDF from the captured page's anchor tags.
 
     Best-effort: returns None on success or a short reason string on failure.
-    The PDF is already saved regardless, so a failure here is non-fatal.
+    The PDF is already saved regardless, so a failure here is non-fatal. Uses
+    the page_source the caller already captured — no second network fetch.
     """
     try:
-        html = requests.get(page_url, timeout=10).text
-        soup = BeautifulSoup(html, "html.parser")
+        soup = BeautifulSoup(page_source, "lxml")
         toc = []
         prev_level = 0
         for content in soup.find_all("a"):
