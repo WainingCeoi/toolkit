@@ -265,6 +265,10 @@ button { font: inherit; color: inherit; }
   padding: 16px;
 }
 .panel + .panel { margin-top: 14px; }
+/* …but not across station columns: the two cells of the input/run grid are
+   adjacent DOM siblings too, and the stacking margin was pushing the right
+   panel 14px below the left one. Stacks inside a column wrapper keep it. */
+.station > .panel + .panel { margin-top: 0; }
 
 .step {
   font-family: var(--mono);
