@@ -15,7 +15,6 @@ dependencies = [
     "ffmpeg-progress-yield>=1.1.3",
     "ffmpeg-python>=0.2.0",
     "lxml>=6.1.1",
-    "mineru[core]>=3.4.0",
     "pillow>=12.2.0",
     "pillow-heif>=1.4.0",
     "pymupdf>=1.27.2.3",
@@ -26,6 +25,13 @@ dependencies = [
     "selenium>=4.45.0",
     "webdriver-manager>=4.1.2",
 ]
+
+# Doc→Markdown pulls MinerU's ML stack (torch/transformers, ~1 GB). It's the
+# only tool that needs it, so it lives in an optional extra: `make install`
+# includes it, but a lean install (`uv sync`) and CI skip it, and the tool
+# reports "MinerU not installed" gracefully when it's absent.
+[project.optional-dependencies]
+docmd = ["mineru[core]>=3.4.0"]
 
 # ruff is DECLARED here on purpose: undeclared, `uv run ruff` silently falls back to whatever
 # ruff is on PATH, so two machines lint identical code to different results. httpx2 backs the

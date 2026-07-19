@@ -16,8 +16,11 @@ help:
 	@echo "make test      backend tests + lint + a frontend build check"
 	@echo "make clean     remove build artifacts and caches"
 
+# Full install includes the Doc→Markdown extra (MinerU's ML stack). For a lean
+# install without it, run `cd backend && uv sync` — Doc→Markdown then reports
+# the tool as unavailable and every other tool still works.
 install:
-	cd backend && uv sync
+	cd backend && uv sync --extra docmd
 	cd frontend && npm install
 
 # Development: both servers, one command, one Ctrl-C. Vite proxies /api -> :$(PORT).
@@ -54,12 +57,13 @@ frontend:
 # Tests first: `&&` short-circuits, so ordering decides what you learn when it fails.
 # Explicit `src tests` paths, not a bare `ruff check`: an explicit path overrides `exclude`,
 # so a stray ignore can't quietly shrink the gate, and a bad `cd` fails loudly with E902.
+# `ruff format --check` is enforced too, so drift fails the gate instead of piling up.
 test:
-	cd backend && uv run --frozen pytest -q && uv run --frozen ruff check src tests
+	cd backend && uv run --frozen pytest -q && uv run --frozen ruff check src tests && uv run --frozen ruff format --check src tests
 	cd frontend && npm run build
 
 lint:
-	cd backend && uv run --frozen ruff check src tests
+	cd backend && uv run --frozen ruff check src tests && uv run --frozen ruff format --check src tests
 
 clean:
 	rm -rf frontend/dist
