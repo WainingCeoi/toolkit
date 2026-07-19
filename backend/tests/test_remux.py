@@ -11,14 +11,13 @@ from fastapi.testclient import TestClient
 
 from toolkit_api.jobs import FINISHED_STATES
 from toolkit_api.main import create_app
-from toolkit_api.routers import remux as remux_router
 from toolkit_engine import remux
 
 
 @pytest.fixture
 def tool_client(app_state):
+    # create_app already wires every /api router (don't re-include here).
     app = create_app(state=app_state)
-    app.include_router(remux_router.router, prefix="/api")
     with TestClient(app) as c:
         yield c
 

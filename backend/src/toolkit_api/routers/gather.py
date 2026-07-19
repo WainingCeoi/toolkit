@@ -71,9 +71,7 @@ def start_gather(req: GatherStartIn, jobs: JobsDep) -> JobStartedOut:
                 tgt.mkdir(parents=True, exist_ok=True)
             except OSError as e:
                 # e.g. the typed target (or one of its parents) is a file
-                raise RuntimeError(
-                    f"❌ Cannot create the target folder: {e}"
-                ) from e
+                raise RuntimeError(f"❌ Cannot create the target folder: {e}") from e
 
             job.set_message(f"Moving… 0/{len(files)}")
 

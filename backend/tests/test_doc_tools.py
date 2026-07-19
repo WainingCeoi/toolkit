@@ -18,16 +18,13 @@ from lxml import etree
 
 from toolkit_api.jobs import FINISHED_STATES
 from toolkit_api.main import create_app
-from toolkit_api.routers import docmd as docmd_router
-from toolkit_api.routers import docpdf as docpdf_router
 from toolkit_engine import docmd, docpdf
 
 
 @pytest.fixture
 def tool_client(app_state):
+    # create_app already wires every /api router (don't re-include here).
     app = create_app(state=app_state)
-    app.include_router(docpdf_router.router, prefix="/api")
-    app.include_router(docmd_router.router, prefix="/api")
     with TestClient(app) as c:
         yield c
 
@@ -176,9 +173,7 @@ def test_docpdf_job_bundles_pdfs_into_zip_artifact(tool_client, monkeypatch, tmp
     src = make_docx(tmp_path / "report.docx")
     resp = tool_client.post(
         "/api/doc-to-pdf",
-        files={
-            "files": ("report.docx", src.read_bytes(), "application/octet-stream")
-        },
+        files={"files": ("report.docx", src.read_bytes(), "application/octet-stream")},
     )
     assert resp.status_code == 200
 

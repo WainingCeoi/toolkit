@@ -59,9 +59,7 @@ def scan_folder(src: Path, patterns: list[str]) -> tuple[list[str], list, int]:
     # Take sizes from the walk's own metadata instead of re-stat()ing every
     # match — one pass over the tree instead of two.
     entries = [
-        (str(src / entry.path), entry.st_size)
-        for entry in scanner
-        if entry.is_file
+        (str(src / entry.path), entry.st_size) for entry in scanner if entry.is_file
     ]
     entries.sort(key=lambda item: natural_sort_key(Path(item[0]).name))
     found = [path for path, _ in entries]
@@ -82,9 +80,7 @@ def delete_files(
     deleted, failed = [], []
     total = len(paths)
     with ThreadPoolExecutor() as executor:
-        for idx, (path, error) in enumerate(
-            executor.map(delete_file, paths), start=1
-        ):
+        for idx, (path, error) in enumerate(executor.map(delete_file, paths), start=1):
             if error is None:
                 deleted.append(path)
             else:

@@ -19,7 +19,7 @@ from fastapi.testclient import TestClient
 from PIL import Image
 
 from toolkit_api.main import create_app
-from toolkit_api.routers import imgpdf, webpdf
+from toolkit_api.routers import webpdf
 from toolkit_engine.webpdf import (
     BrowserSession,
     sanitize_filename,
@@ -34,9 +34,8 @@ NO_IMAGES_DETAIL = (
 
 @pytest.fixture
 def tool_client(app_state):
+    # create_app already wires every /api router (don't re-include here).
     app = create_app(state=app_state)
-    app.include_router(imgpdf.router, prefix="/api")
-    app.include_router(webpdf.router, prefix="/api")
     with TestClient(app) as c:
         yield c
 
@@ -127,6 +126,52 @@ def test_img_to_pdf_name_with_quote_is_well_formed(tool_client):
     assert resp.content.startswith(b"%PDF")
     # The inner double-quote must be backslash-escaped, not left bare.
     assert resp.headers["content-disposition"] == 'attachment; filename="a\\"b.pdf"'
+
+
+def test_images_to_pdf_orders_pages_naturally():
+    from toolkit_engine import imgpdf as imgpdf_engine
+
+    # Distinct page sizes let us read the order back from the PDF's /MediaBox.
+    def png(w, h):
+        buf = BytesIO()
+        Image.new("RGB", (w, h), "white").save(buf, format="PNG")
+        return buf.getvalue()
+
+    named = [("p10.png", png(10, 10)), ("p2.png", png(20, 20))]
+    pdf = imgpdf_engine.images_to_pdf_bytes(named)
+    # p2 (natural-first) must be page 1 -> its 20x20 box appears before 10x10.
+    boxes = [tuple(map(float, m.decode().split())) for m in _mediaboxes(pdf)]
+    assert boxes[0][2:] == (20.0, 20.0)
+
+
+def test_images_to_pdf_rejects_decompression_bomb(monkeypatch):
+    from toolkit_engine import imgpdf as imgpdf_engine
+
+    monkeypatch.setattr(imgpdf_engine, "MAX_PIXELS", 100)  # 4x4=16 ok; 20x20=400 not
+    big = BytesIO()
+    Image.new("RGB", (20, 20), "white").save(big, format="PNG")
+    with pytest.raises(ValueError, match="too large"):
+        imgpdf_engine.images_to_pdf_bytes([("big.png", big.getvalue())])
+
+
+def test_read_uploads_enforces_size_cap():
+    from fastapi import HTTPException, UploadFile
+
+    from toolkit_api.uploads import read_uploads
+
+    small = UploadFile(filename="a.bin", file=BytesIO(b"x" * 10))
+    assert read_uploads([small], max_total=100) == [b"x" * 10]
+
+    small.file.seek(0)
+    with pytest.raises(HTTPException) as exc:
+        read_uploads([small], max_total=5)
+    assert exc.value.status_code == 413
+
+
+def _mediaboxes(pdf_bytes):
+    import re
+
+    return re.findall(rb"/MediaBox\s*\[\s*([0-9.\s]+?)\]", pdf_bytes)
 
 
 # =======================================================

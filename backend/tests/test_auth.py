@@ -26,24 +26,18 @@ def test_api_requires_token_when_set(secured_client):
 
 
 def test_bearer_header_unlocks(secured_client):
-    resp = secured_client.get(
-        "/api/health", headers={"Authorization": "Bearer s3cret"}
-    )
+    resp = secured_client.get("/api/health", headers={"Authorization": "Bearer s3cret"})
     assert resp.status_code == 200
 
 
 def test_cookie_unlocks(secured_client):
     # EventSource can't set headers, so the cookie path must authenticate too.
-    resp = secured_client.get(
-        "/api/health", headers={"Cookie": "toolkit_auth=s3cret"}
-    )
+    resp = secured_client.get("/api/health", headers={"Cookie": "toolkit_auth=s3cret"})
     assert resp.status_code == 200
 
 
 def test_wrong_token_is_rejected(secured_client):
-    resp = secured_client.get(
-        "/api/health", headers={"Authorization": "Bearer nope"}
-    )
+    resp = secured_client.get("/api/health", headers={"Authorization": "Bearer nope"})
     assert resp.status_code == 401
 
 

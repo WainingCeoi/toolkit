@@ -40,7 +40,7 @@ def _run(cmd: list[str]) -> str | None:
         proc = subprocess.run(
             cmd, capture_output=True, text=True, timeout=5, check=False
         )
-    except (OSError, subprocess.SubprocessError):
+    except OSError, subprocess.SubprocessError:
         return None
     if proc.returncode != 0:
         return None

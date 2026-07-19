@@ -11,16 +11,14 @@ from fastapi.testclient import TestClient
 
 from toolkit_api.jobs import FINISHED_STATES
 from toolkit_api.main import create_app
-from toolkit_api.routers import gather as gather_router
-from toolkit_api.routers import purge as purge_router
 from toolkit_engine import gather, purge
 
 
 @pytest.fixture
 def tool_client(app_state):
+    # create_app already wires every /api router — don't re-include them here
+    # (that would hide a wiring regression in main.py).
     app = create_app(state=app_state)
-    app.include_router(gather_router.router, prefix="/api")
-    app.include_router(purge_router.router, prefix="/api")
     with TestClient(app) as c:
         yield c
 
@@ -291,6 +289,74 @@ def test_purge_delete_rejects_traversal_escape(tool_client, tmp_path):
     )
     assert resp.status_code == 400
     assert (tmp_path / "secret.txt").exists()
+
+
+def test_purge_delete_reports_per_file_failures(tool_client, tmp_path, monkeypatch):
+    # A real delete failure on one path must land in failed[] with {name, error}
+    # while the other succeeds — the destructive op's partial-failure contract.
+    folder = tmp_path / "cache"
+    folder.mkdir()
+    good = folder / "a.log"
+    bad = folder / "b.log"
+    good.write_text("a")
+    bad.write_text("b")
+
+    real_unlink = Path.unlink
+
+    def flaky_unlink(self, *args, **kwargs):
+        if self.name == "b.log":
+            raise PermissionError("locked")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", flaky_unlink)
+
+    resp = tool_client.post(
+        "/api/purge/delete",
+        json={"folder": str(folder), "files": [str(good), str(bad)]},
+    )
+    assert resp.status_code == 200
+    snap = wait_for_job(tool_client, resp.json()["job_id"])
+    assert snap["state"] == "done"
+    assert snap["result"]["deleted"] == [str(good)]
+    assert snap["result"]["failed"] == [{"name": "b.log", "error": "locked"}]
+
+
+def test_gather_reports_per_file_move_failures(tool_client, tmp_path, monkeypatch):
+    # One of two matches fails to move — failed[] must carry {name, error} and
+    # the run still completes with the other moved.
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "a.mkv").write_bytes(b"a")
+    (src / "b.mkv").write_bytes(b"b")
+    tgt = tmp_path / "tgt"
+
+    import shutil as _shutil
+
+    real_move = _shutil.move
+
+    def flaky_move(source, dest, *args, **kwargs):
+        if Path(source).name == "b.mkv":
+            raise OSError("cross-device link failed")
+        return real_move(source, dest, *args, **kwargs)
+
+    monkeypatch.setattr(gather.shutil, "move", flaky_move)
+
+    resp = tool_client.post(
+        "/api/gather/start",
+        json={
+            "source": str(src),
+            "target": str(tgt),
+            "categories": ["Video"],
+            "custom": "",
+        },
+    )
+    assert resp.status_code == 200
+    snap = wait_for_job(tool_client, resp.json()["job_id"])
+    assert snap["state"] == "done"
+    assert snap["result"]["moved"] == ["a.mkv"]
+    assert snap["result"]["failed"] == [
+        {"name": "b.mkv", "error": "cross-device link failed"}
+    ]
 
 
 def test_purge_scan_rejects_catch_all_only_patterns(tool_client, tmp_path):

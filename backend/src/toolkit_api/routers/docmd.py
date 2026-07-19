@@ -109,9 +109,7 @@ def convert(
         failed_by_idx = {idx: error for idx, _name, error in failed}
         for idx in range(len(named)):
             if idx in failed_by_idx:
-                job.update_item(
-                    idx, pct=100, state="failed", error=failed_by_idx[idx]
-                )
+                job.update_item(idx, pct=100, state="failed", error=failed_by_idx[idx])
             else:
                 job.update_item(idx, pct=100, state="done")
 

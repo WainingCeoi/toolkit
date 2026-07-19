@@ -33,9 +33,7 @@ def images_to_pdf_bytes(named_files: list[tuple[str, bytes]]) -> bytes:
         image = Image.open(BytesIO(data))
         w, h = image.size
         if w * h > MAX_PIXELS:
-            raise ValueError(
-                f"Image is too large to process ({w}×{h} pixels)."
-            )
+            raise ValueError(f"Image is too large to process ({w}×{h} pixels).")
         images.append(image.convert("RGB"))
 
     buffer = BytesIO()

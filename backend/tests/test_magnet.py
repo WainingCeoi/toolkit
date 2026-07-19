@@ -20,8 +20,8 @@ from toolkit_engine import magnet as magnet_engine
 
 @pytest.fixture
 def tool_client(app_state):
+    # create_app already wires every /api router (don't re-include here).
     app = create_app(state=app_state)
-    app.include_router(magnet_router.router, prefix="/api")
     with TestClient(app) as c:
         yield c
 
@@ -465,9 +465,7 @@ def test_scrape_magnets_should_stop_returns_partial_results(monkeypatch):
         completed["n"] += 1
         return completed["n"] >= 3  # stop after 3 completed results
 
-    successful, failed = magnet_engine.scrape_magnets(
-        urls, should_stop=should_stop
-    )
+    successful, failed = magnet_engine.scrape_magnets(urls, should_stop=should_stop)
     total = len(successful) + len(failed)
     assert total <= 3
     assert total < len(urls)  # aborted well before the full fan-out finished

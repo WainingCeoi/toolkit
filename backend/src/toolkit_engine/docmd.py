@@ -174,9 +174,7 @@ def convert_batch(named_files, options, on_progress, mineru_cmd):
                 done.append(name)
             else:
                 reason = (result.stderr or result.stdout or "").strip()
-                failed.append(
-                    (idx, name, reason[-2000:] or "no Markdown produced")
-                )
+                failed.append((idx, name, reason[-2000:] or "no Markdown produced"))
 
         archive.close()
         if done:

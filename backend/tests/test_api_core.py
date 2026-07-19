@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import shutil
+import threading
 import time
 
-from toolkit_api.jobs import FINISHED_STATES
+from toolkit_api.jobs import FINISHED_STATES, JobRegistry
+from toolkit_api.main import create_app
 from toolkit_engine import docmd
 
 
@@ -117,3 +119,80 @@ def test_artifact_roundtrip(client, app_state):
     assert resp.status_code == 200
     assert resp.content.startswith(b"PK")
     assert "result.zip" in resp.headers["content-disposition"]
+
+
+def test_all_api_routers_are_wired(app_state):
+    # Guards against a router silently dropped from create_app's include list.
+    # Included routers are nested wrappers in app.routes, so read the flattened
+    # path list from the OpenAPI schema.
+    app = create_app(state=app_state)
+    paths = set(app.openapi()["paths"].keys())
+    expected = {
+        "/api/tools",
+        "/api/health",
+        "/api/fs/pick-folder",
+        "/api/jobs/{job_id}",
+        "/api/jobs/{job_id}/events",
+        "/api/jobs/{job_id}/cancel",
+        "/api/artifacts/{artifact_id}",
+        "/api/magnet/config",
+        "/api/magnet/auto",
+        "/api/magnet/manual",
+        "/api/magnet/dedupe",
+        "/api/remux/scan",
+        "/api/remux/subtitles",
+        "/api/remux/start",
+        "/api/gather/start",
+        "/api/purge/scan",
+        "/api/purge/delete",
+        "/api/img-to-pdf",
+        "/api/webpdf/open",
+        "/api/webpdf/status",
+        "/api/webpdf/capture",
+        "/api/webpdf/close",
+        "/api/doc-to-pdf",
+        "/api/doc-to-markdown",
+        "/api/doc-to-markdown/health",
+        "/api/subs/generate",
+        "/api/subs/history",
+        "/sub/{sub_id}",
+    }
+    assert expected <= paths, f"unwired routes: {expected - paths}"
+
+
+def _wait_finished(reg, job_id, timeout=2.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        job = reg.get(job_id)
+        if job is not None and job.state in FINISHED_STATES:
+            return
+        time.sleep(0.01)
+    raise AssertionError(f"job {job_id} did not finish")
+
+
+def test_registry_evicts_oldest_finished_over_cap():
+    reg = JobRegistry(max_jobs=3)
+    ids = []
+    for _ in range(5):
+        job = reg.submit("quick", [], lambda job: {})
+        _wait_finished(reg, job.id)  # finished before the next submit
+        ids.append(job.id)
+    # Eviction runs on submit: after 5 submits with cap 3, only the newest 3
+    # finished jobs remain; the oldest two are dropped.
+    present = [i for i in ids if reg.get(i) is not None]
+    assert present == ids[-3:]
+
+
+def test_registry_never_evicts_a_running_job():
+    reg = JobRegistry(max_jobs=2)
+    release = threading.Event()
+    running = reg.submit("blocker", [], lambda job: release.wait(3.0) or {})
+    try:
+        for _ in range(5):
+            job = reg.submit("quick", [], lambda job: {})
+            _wait_finished(reg, job.id)
+        # The running job outlives every finished job past the cap.
+        assert reg.get(running.id) is not None
+        assert reg.get(running.id).state == "running"
+    finally:
+        release.set()

@@ -55,6 +55,18 @@ class Store:
         conn.row_factory = sqlite3.Row
         return conn
 
+    def close(self) -> None:
+        """Release the in-memory keepalive connection (no-op for file stores)."""
+        if self._keepalive is not None:
+            self._keepalive.close()
+            self._keepalive = None
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
+
     def save_subscription(
         self,
         *,

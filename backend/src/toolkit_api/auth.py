@@ -41,8 +41,8 @@ async def require_auth(request: Request) -> None:
     token = auth_token()
     if not token:
         return  # gate disabled — loopback / dev / tests
-    supplied = _bearer(
-        request.headers.get("Authorization", "")
-    ) or request.cookies.get(COOKIE_NAME, "")
+    supplied = _bearer(request.headers.get("Authorization", "")) or request.cookies.get(
+        COOKIE_NAME, ""
+    )
     if not (supplied and secrets.compare_digest(supplied, token)):
         raise HTTPException(status_code=401, detail="Authentication required.")

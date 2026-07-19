@@ -120,8 +120,7 @@ def scrape_magnets(
     executor = ThreadPoolExecutor()
     try:
         future_to_idx = {
-            executor.submit(get_magnet_link, url): idx
-            for idx, url in enumerate(urls)
+            executor.submit(get_magnet_link, url): idx for idx, url in enumerate(urls)
         }
         for count, future in enumerate(as_completed(future_to_idx), start=1):
             result = future.result()

@@ -81,8 +81,7 @@ def delete_files(req: PurgeDeleteIn, jobs: JobsDep) -> JobStartedOut:
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    "❌ Refusing to delete a path outside the "
-                    f"scanned folder: {raw}"
+                    f"❌ Refusing to delete a path outside the scanned folder: {raw}"
                 ),
             )
         files.append(str(candidate))

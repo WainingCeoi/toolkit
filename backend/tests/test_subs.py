@@ -8,7 +8,6 @@ import pytest
 from fastapi.testclient import TestClient
 
 from toolkit_api.main import create_app
-from toolkit_api.routers import subs
 
 TROJAN_LINK = "trojan://s3cret-pass@origin.example.com:443#US"
 
@@ -16,12 +15,11 @@ TROJAN_LINK = "trojan://s3cret-pass@origin.example.com:443#US"
 @pytest.fixture
 def tool_client(app_state, monkeypatch):
     # Pin the URL host so no mDNS/LAN discovery runs, and start token-free
-    # (individual tests opt in to SUB_ACCESS_TOKEN).
+    # (individual tests opt in to SUB_ACCESS_TOKEN). create_app already wires
+    # both the /api and public /sub routers — don't re-include them here.
     monkeypatch.setenv("SUB_PUBLIC_HOST", "mac.local")
     monkeypatch.delenv("SUB_ACCESS_TOKEN", raising=False)
     app = create_app(state=app_state)
-    app.include_router(subs.router, prefix="/api")
-    app.include_router(subs.public_router)
     with TestClient(app) as c:
         yield c
 
