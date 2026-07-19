@@ -442,6 +442,10 @@ def _render_vmess_uri(node: dict) -> str:
         "fp": node.get("fp") or "",
         "alpn": ",".join(node.get("alpn") or []),
     }
+    # Carry skip-cert-verify through the raw export too (clash/surge already do);
+    # otherwise a skip-cert-verify node silently breaks in raw/base64.
+    if node.get("allow_insecure"):
+        payload["allowInsecure"] = "1"
     return "vmess://" + _b64encode_utf8(
         json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     )
@@ -545,7 +549,19 @@ def _clash_proxy(node: dict) -> dict:
             proxy["alpn"] = list(node["alpn"])
         if node.get("fp"):
             proxy["client-fingerprint"] = node["fp"]
-        proxy["skip-cert-verify"] = bool(node.get("allow_insecure"))
+        # REALITY needs its public-key/short-id or mihomo can't complete the
+        # handshake. Emit reality-opts (from the parsed query params) rather than
+        # a plain-TLS proxy that silently fails to connect.
+        if node.get("security") == "reality":
+            params = node.get("params") or {}
+            pbk = str(params.get("pbk", "")).strip()
+            if pbk:
+                proxy["reality-opts"] = {
+                    "public-key": pbk,
+                    "short-id": str(params.get("sid", "")).strip(),
+                }
+        else:
+            proxy["skip-cert-verify"] = bool(node.get("allow_insecure"))
     proxy["network"] = node.get("network") or "tcp"
     net = node.get("network")
     if net == "ws":

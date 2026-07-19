@@ -74,11 +74,15 @@ def build_ffmpeg_cmd(
     return ["ffmpeg"] + stream.get_args()
 
 
-def run_remux_task(task, progress_state, lock):
+def run_remux_task(task, progress_state, lock, ff_registry=None):
     """
     Worker executed in a thread. The heavy lifting happens in the external
     ffmpeg process, so threads avoid the GIL while leaving Streamlit's widget
     updates on the main thread. Progress is reported into a shared dict.
+
+    The task's FfmpegProgress is published into ``ff_registry`` (under ``lock``)
+    so the batch loop can kill a running ffmpeg on cancellation instead of
+    waiting out a possibly-hung process.
     """
     task_id = task["task_id"]
     title = Path(task["input_video"]).name
@@ -91,6 +95,9 @@ def run_remux_task(task, progress_state, lock):
             task["sub_lang"],
         )
         ff = FfmpegProgress(cmd)
+        if ff_registry is not None:
+            with lock:
+                ff_registry[task_id] = ff
 
         # Report progress to the shared dict so the main thread can update bars
         for progress in ff.run_command_with_progress():
@@ -102,6 +109,10 @@ def run_remux_task(task, progress_state, lock):
         return {"task_id": task_id, "title": title, "success": True, "error": None}
     except Exception as e:
         return {"task_id": task_id, "title": title, "success": False, "error": str(e)}
+    finally:
+        if ff_registry is not None:
+            with lock:
+                ff_registry.pop(task_id, None)
 
 
 # =======================================================
@@ -172,6 +183,7 @@ def run_remux_batch(tasks: list[dict], max_workers: int, job) -> list[dict]:
     """
     # Shared progress dict updated by worker threads, polled by this thread
     progress_state = {t["task_id"]: 0.0 for t in tasks}
+    ff_registry: dict = {}  # task_id -> live FfmpegProgress (for cancel-kill)
     lock = threading.Lock()
 
     for i in range(len(tasks)):
@@ -179,15 +191,24 @@ def run_remux_batch(tasks: list[dict], max_workers: int, job) -> list[dict]:
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = [
-            executor.submit(run_remux_task, t, progress_state, lock) for t in tasks
+            executor.submit(run_remux_task, t, progress_state, lock, ff_registry)
+            for t in tasks
         ]
         # Poll the shared dict and refresh the items until every task is done
         while not all(f.done() for f in futures):
             if job.cancelled:
-                # Best-effort: drop tasks that have not started yet; running
-                # ffmpeg processes finish their current file.
+                # Drop tasks that have not started yet, AND kill the ffmpeg
+                # processes already running — otherwise a hung ffmpeg would keep
+                # this loop (and the whole job) alive forever, uncancellable.
                 for f in futures:
                     f.cancel()
+                with lock:
+                    live = list(ff_registry.values())
+                for ff in live:
+                    try:
+                        ff.quit()
+                    except Exception:
+                        pass  # already exited between snapshot and kill
             with lock:
                 snapshot = dict(progress_state)
             for i, t in enumerate(tasks):

@@ -35,7 +35,17 @@ async def job_events(job_id: str, jobs: JobsDep) -> EventSourceResponse:
         while True:
             job = jobs.get(job_id)
             if job is None:  # evicted mid-stream — tell the client to stop
-                yield {"event": "done", "data": json.dumps({"state": "failed"})}
+                yield {
+                    "event": "done",
+                    "data": json.dumps(
+                        {
+                            "state": "failed",
+                            "items": [],
+                            "message": "",
+                            "error": "This job is no longer available.",
+                        }
+                    ),
+                }
                 return
             snap = job.snapshot()
             if snap["state"] in FINISHED_STATES:

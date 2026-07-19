@@ -127,21 +127,52 @@ export function saveBlob(blob, filename) {
 
 export const artifactUrl = (id) => `${BASE}/artifacts/${id}`
 
+const TERMINAL_STATES = new Set(['done', 'failed', 'cancelled'])
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+
+// Fallback when the SSE stream drops mid-job: poll the status endpoint until
+// the job reaches a terminal state, then resolve from that. Rejects only if the
+// job can't be reached at all (e.g. it was evicted -> 404).
+async function pollJob(jobId, onSnapshot, maxTries = 1200) {
+  for (let i = 0; i < maxTries; i++) {
+    const snap = await request(`/jobs/${jobId}`)
+    onSnapshot(snap)
+    if (TERMINAL_STATES.has(snap.state)) return snap
+    await sleep(500)
+  }
+  throw new Error('Timed out waiting for the job to finish.')
+}
+
 // Follow a job's SSE progress stream. Calls onSnapshot(snapshot) for every
-// progress frame and resolves with the final snapshot on the terminal frame.
+// progress frame and resolves with the final snapshot on the terminal frame. A
+// transient disconnect is NOT fatal — it falls back to polling so a running
+// job is never stranded as "failed" (matters most under LAN hosting).
 export function followJob(jobId, onSnapshot) {
   return new Promise((resolve, reject) => {
     const es = new EventSource(`${BASE}/jobs/${jobId}/events`)
+    let settled = false
+    const finish = (final) => {
+      if (settled) return
+      settled = true
+      onSnapshot(final)
+      resolve(final)
+    }
     es.addEventListener('progress', (e) => onSnapshot(JSON.parse(e.data)))
     es.addEventListener('done', (e) => {
       es.close()
-      const final = JSON.parse(e.data)
-      onSnapshot(final)
-      resolve(final)
+      finish(JSON.parse(e.data))
     })
     es.onerror = () => {
       es.close()
-      reject(new Error('Lost connection to the job stream.'))
+      if (settled) return
+      pollJob(jobId, onSnapshot)
+        .then(finish)
+        .catch((err) => {
+          if (!settled) {
+            settled = true
+            reject(err)
+          }
+        })
     }
   })
 }

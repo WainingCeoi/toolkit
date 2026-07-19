@@ -188,7 +188,7 @@ def test_start_refuses_all_empty_stream_map(tool_client, monkeypatch):
 def test_start_runs_batch_and_reports_results(tool_client, tmp_path, monkeypatch):
     monkeypatch.setattr("shutil.which", lambda cmd: "/opt/fake/ffmpeg")
 
-    def fake_run_remux_task(task, progress_state, lock):
+    def fake_run_remux_task(task, progress_state, lock, ff_registry=None):
         with lock:
             progress_state[task["task_id"]] = 100.0
         title = Path(task["input_video"]).name
@@ -236,7 +236,7 @@ def test_start_cancel_keeps_partial_report(
     started = threading.Event()
     release = threading.Event()
 
-    def fake_run_remux_task(task, progress_state, lock):
+    def fake_run_remux_task(task, progress_state, lock, ff_registry=None):
         # The running ffmpeg finishes its current file; block until cancelled.
         title = Path(task["input_video"]).name
         started.set()

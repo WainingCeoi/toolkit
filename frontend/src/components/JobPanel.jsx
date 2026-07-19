@@ -1,7 +1,7 @@
 // Live view of one job: message line, per-item LED bars, terminal states.
 // Pure render over the snapshot the jobs context keeps fresh via SSE.
 
-import React from 'react'
+import React, { useState } from 'react'
 import { api } from '../api'
 import Button from './Button'
 
@@ -16,18 +16,22 @@ export function LedBar({ pct, state }) {
 }
 
 export default function JobPanel({ snapshot, children }) {
+  const [cancelError, setCancelError] = useState(null)
   if (!snapshot) return null
-  const { state, message, items, error, id } = snapshot
+  const { state, message, items = [], error, id } = snapshot
+  const cancel = () =>
+    api.cancelJob(id).catch((err) => setCancelError(err.message || 'Cancel failed.'))
   return (
     <div>
       {state === 'running' && (
         <div className="row" style={{ justifyContent: 'space-between' }}>
           <div className="job-message">{message || 'Working…'}</div>
-          <Button variant="ghost" size="sm" onClick={() => api.cancelJob(id)}>
+          <Button variant="ghost" size="sm" onClick={cancel}>
             Cancel
           </Button>
         </div>
       )}
+      {cancelError && <div className="note error">{cancelError}</div>}
       {state !== 'running' && message && <div className="job-message">{message}</div>}
       {items.map((item, i) => (
         <div className="job-item" key={i}>

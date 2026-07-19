@@ -130,7 +130,7 @@ def generate(req: GenerateIn, request: Request, store: StoreDep) -> Subscription
             "counts": counts,
             "nodes": expanded["nodes"],
         }
-        store.save_subscription(
+        stored_id = store.save_subscription(
             id=sub_id,
             source_hash=source_hash,
             payload=json.dumps(payload, ensure_ascii=False),
@@ -139,6 +139,10 @@ def generate(req: GenerateIn, request: Request, store: StoreDep) -> Subscription
             node_count=len(expanded["nodes"]),
             created_at=created_at,
         )
+        # A concurrent identical request may have stored first — return the id
+        # that actually persisted rather than our discarded freshly-minted one.
+        if stored_id != sub_id:
+            sub_id, dedup = stored_id, True
     return SubscriptionOut(
         sub_id=sub_id,
         dedup=dedup,

@@ -153,7 +153,16 @@ class BrowserSession:
 
         service = Service(ChromeDriverManager().install())
         driver = webdriver.Chrome(service=service)
-        driver.get(url)
+        # If navigation fails, quit the just-launched driver before propagating —
+        # otherwise an orphaned Chrome + chromedriver leaks for the session.
+        try:
+            driver.get(url)
+        except Exception:
+            try:
+                driver.quit()
+            except Exception:
+                pass
+            raise
         self._driver = driver
         self.url = url
 

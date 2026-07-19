@@ -78,7 +78,9 @@ def create_app(state: AppState | None = None) -> FastAPI:
     async def lifespan(app: FastAPI):
         app.state.state = state or build_state()
         yield
-        # Session-scoped resources die with the process.
+        # Session-scoped resources die with the process. Cancel in-flight jobs
+        # first so their children (ffmpeg, …) are cleaned up before teardown.
+        app.state.state.jobs.shutdown()
         if app.state.state.browser is not None:
             app.state.state.browser.shutdown()
         app.state.state.artifacts.cleanup()

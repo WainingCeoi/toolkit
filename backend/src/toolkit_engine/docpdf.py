@@ -190,7 +190,13 @@ def convert_batch(named_files, on_progress, soffice):
         # bundle the produced PDFs into an in-memory zip.
         if jobs:
             on_progress(50, f"Converting {len(jobs)} file(s) with LibreOffice…")
-            result = batch_to_pdf(soffice, [job[0] for job in jobs], out_dir)
+            # A LibreOffice timeout must not fail the whole job — bundle whatever
+            # PDFs it produced before dying and mark the rest failed.
+            try:
+                result = batch_to_pdf(soffice, [job[0] for job in jobs], out_dir)
+                stderr = result.stderr.strip()
+            except subprocess.TimeoutExpired:
+                stderr = "LibreOffice timed out"
             buffer = io.BytesIO()
             with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
                 for i, (cleaned, arcname, name) in enumerate(jobs):
@@ -206,9 +212,7 @@ def convert_batch(named_files, on_progress, soffice):
                         # cleaned stem is "{idx}_{stem}" — recover the input
                         # index so per-item state is keyed correctly.
                         idx = int(cleaned.stem.split("_", 1)[0])
-                        failed.append(
-                            (idx, name, result.stderr.strip() or "no PDF produced")
-                        )
+                        failed.append((idx, name, stderr or "no PDF produced"))
             if done:
                 zip_bytes = buffer.getvalue()
 

@@ -9,8 +9,15 @@ const KEY = 'toolkit-theme'
 export const MODES = ['auto', 'light', 'dark']
 
 export function getStoredMode() {
-  const stored = localStorage.getItem(KEY)
-  return MODES.includes(stored) ? stored : 'auto'
+  // localStorage can throw when storage is blocked (private mode, strict
+  // cookie settings) — fall back to 'auto' rather than white-screening, the
+  // same defensive pattern index.html already uses for this key.
+  try {
+    const stored = localStorage.getItem(KEY)
+    return MODES.includes(stored) ? stored : 'auto'
+  } catch {
+    return 'auto'
+  }
 }
 
 export function applyMode(mode) {
@@ -28,7 +35,11 @@ export function useTheme() {
   const [mode, setModeState] = useState(getStoredMode)
 
   const setMode = useCallback((next) => {
-    localStorage.setItem(KEY, next)
+    try {
+      localStorage.setItem(KEY, next)
+    } catch {
+      /* storage blocked — apply for this session without persisting */
+    }
     applyMode(next)
     setModeState(next)
   }, [])

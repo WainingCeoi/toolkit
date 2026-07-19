@@ -17,13 +17,14 @@ function Dock() {
     <div className="dock">
       {entries.length === 0 && <span className="dock-empty">NO ACTIVE JOBS</span>}
       {entries.map(([id, { snapshot, toolPath }]) => {
-        const total = snapshot.items.length
-        const done = snapshot.items.filter((i) => i.state === 'done').length
+        const items = snapshot.items ?? []
+        const total = items.length
+        const done = items.filter((i) => i.state === 'done').length
         const pct =
           snapshot.state === 'done'
             ? 100
             : total > 0
-              ? Math.round(snapshot.items.reduce((s, i) => s + i.pct, 0) / total)
+              ? Math.round(items.reduce((s, i) => s + i.pct, 0) / total)
               : null
         return (
           <Link key={id} className="dock-job" to={toolPath}>
@@ -65,12 +66,32 @@ function Dock() {
 
 export default function Layout() {
   const [categories, setCategories] = useState([])
+  const [toolsError, setToolsError] = useState(null)
   const [filter, setFilter] = useState('')
   const [open, setOpen] = useState(false)
   const searchRef = useRef(null)
 
+  // Load the tool catalog; on failure keep an error note and retry when the
+  // window regains focus, instead of dead-ending on a permanently empty rail.
   useEffect(() => {
-    api.tools().then(setCategories).catch(() => setCategories([]))
+    let cancelled = false
+    const load = () =>
+      api
+        .tools()
+        .then((cats) => {
+          if (cancelled) return
+          setCategories(cats)
+          setToolsError(null)
+        })
+        .catch((err) => {
+          if (!cancelled) setToolsError(err.message)
+        })
+    load()
+    window.addEventListener('focus', load)
+    return () => {
+      cancelled = true
+      window.removeEventListener('focus', load)
+    }
   }, [])
 
   useEffect(() => {
@@ -111,6 +132,11 @@ export default function Layout() {
       <NavLink to="/" end className={({ isActive }) => `rail-link ${isActive ? 'active' : ''}`} onClick={() => setOpen(false)}>
         <span className="emoji">🏠</span> Home
       </NavLink>
+      {toolsError && categories.length === 0 && (
+        <div className="rail-cat" style={{ color: 'var(--red)' }}>
+          backend unreachable — retrying…
+        </div>
+      )}
       {shown.map((cat) => (
         <React.Fragment key={cat.name}>
           <div className="rail-cat">{cat.name}</div>

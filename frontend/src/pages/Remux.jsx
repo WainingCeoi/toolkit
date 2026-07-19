@@ -35,6 +35,7 @@ export default function Remux() {
   const [useExternalSub, setUseExternalSub] = useState(false)
   const [subFolder, setSubFolder] = useState('')
   const [matches, setMatches] = useState([]) // [{video, subtitle|null}]
+  const [matchesReady, setMatchesReady] = useState(true) // false while (re)fetching
   const [subError, setSubError] = useState(null)
 
   // 04 — output & run
@@ -76,13 +77,17 @@ export default function Remux() {
   }
 
   // Auto-preview subtitle matches whenever the folder or selection changes.
+  // matchesReady gates Start so a run can't fire with a stale/empty map while
+  // this debounced fetch is still in flight.
   useEffect(() => {
     if (!useExternalSub) {
       setMatches([])
       setSubError(null)
+      setMatchesReady(true)
       return undefined
     }
     let stale = false
+    setMatchesReady(false)
     const timer = setTimeout(async () => {
       try {
         // Empty subtitle folder falls back to the source folder (old page rule).
@@ -93,11 +98,13 @@ export default function Remux() {
         if (!stale) {
           setMatches(m)
           setSubError(null)
+          setMatchesReady(true)
         }
       } catch (err) {
         if (!stale) {
           setMatches([])
           setSubError(err.message)
+          setMatchesReady(true)
         }
       }
     }, 300)
@@ -429,10 +436,11 @@ export default function Remux() {
           <Button
             variant="primary"
             onClick={startRemux}
-            disabled={running}
+            disabled={running || (useExternalSub && !matchesReady)}
+            loading={useExternalSub && !matchesReady}
             style={{ width: '100%' }}
           >
-            🚀 Start remuxing
+            {useExternalSub && !matchesReady ? 'Matching subtitles…' : '🚀 Start remuxing'}
           </Button>
           <div style={{ ...hintStyle, marginTop: 8 }}>
             Lossless stream copy — one LED bar per file below.

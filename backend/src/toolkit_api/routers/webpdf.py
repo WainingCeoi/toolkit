@@ -86,9 +86,12 @@ def close_browser(state: StateDep) -> StatusOut:
 
 @router.post("/capture", response_model=CaptureOut)
 def capture(state: StateDep, artifacts: ArtifactsDep) -> CaptureOut:
-    if not _session_open(state):
-        raise HTTPException(status_code=409, detail="No browser session is open.")
-    session = state.browser
+    # Read the single browser slot under the lock (matching open/close), then do
+    # the slow scrape/build work outside it.
+    with state.browser_lock:
+        if not _session_open(state):
+            raise HTTPException(status_code=409, detail="No browser session is open.")
+        session = state.browser
     url = session.url or ""
     try:
         page_source = session.page_source()

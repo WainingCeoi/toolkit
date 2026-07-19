@@ -6,6 +6,7 @@ import Layout from './Layout'
 import Home from './Home'
 import { JobsProvider } from './jobs'
 import AuthGate from './components/AuthGate'
+import ErrorBoundary from './components/ErrorBoundary'
 import { getAuthToken, setAuthToken } from './api'
 
 // Re-affirm the auth cookie from a stored token on boot, so the same-origin
@@ -46,9 +47,11 @@ const router = createHashRouter([
 
 createRoot(document.getElementById('root')).render(
   <React.StrictMode>
-    <JobsProvider>
-      <RouterProvider router={router} />
-      <AuthGate />
-    </JobsProvider>
+    <ErrorBoundary>
+      <JobsProvider>
+        <RouterProvider router={router} />
+        <AuthGate />
+      </JobsProvider>
+    </ErrorBoundary>
   </React.StrictMode>,
 )

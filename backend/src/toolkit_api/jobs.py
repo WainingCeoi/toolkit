@@ -12,6 +12,7 @@ run exactly one worker (see host.py).
 from __future__ import annotations
 
 import threading
+import time
 import uuid
 from collections import OrderedDict
 from collections.abc import Callable
@@ -92,12 +93,20 @@ class Job:
 
 
 class JobRegistry:
-    """Creates jobs, runs their workers in daemon threads, keeps the last N."""
+    """Creates jobs, runs their workers in daemon threads, keeps the last N.
 
-    def __init__(self, max_jobs: int = 50):
+    Workers run on daemon threads so a long child process (a 30-min MinerU run)
+    never blocks process exit, but concurrency is capped by a semaphore so a
+    burst of submits can't spawn threads without bound. shutdown() cancels
+    in-flight jobs on teardown so their children (ffmpeg, …) get cleaned up.
+    """
+
+    def __init__(self, max_jobs: int = 50, max_workers: int = 8):
         self._jobs: OrderedDict[str, Job] = OrderedDict()
         self._lock = threading.Lock()
         self._max_jobs = max_jobs
+        self._slots = threading.BoundedSemaphore(max_workers)
+        self._threads: set[threading.Thread] = set()
 
     def submit(
         self,
@@ -116,15 +125,45 @@ class JobRegistry:
             self._evict_finished()
 
         def run() -> None:
+            # Cap concurrent execution; a queued job stays 'running' until a slot
+            # frees (a single user never hits the bound in practice).
+            self._slots.acquire()
             try:
                 result = worker(job)
             except Exception as exc:  # noqa: BLE001 — surfaced to the client
                 job._fail(str(exc))
             else:
                 job._finish(result)
+            finally:
+                self._slots.release()
+                with self._lock:
+                    self._threads.discard(threading.current_thread())
 
-        threading.Thread(target=run, name=f"job-{tool}", daemon=True).start()
+        thread = threading.Thread(target=run, name=f"job-{tool}", daemon=True)
+        with self._lock:
+            self._threads.add(thread)
+        thread.start()
         return job
+
+    def shutdown(self, timeout: float = 3.0) -> None:
+        """Cancel in-flight jobs and briefly join their workers (teardown).
+
+        Setting the cancel flag lets cooperative workers stop and clean up their
+        children (e.g. remux kills its ffmpeg processes); the bounded join gives
+        them a moment before the daemon threads die with the process.
+        """
+        with self._lock:
+            jobs = list(self._jobs.values())
+            threads = list(self._threads)
+        for job in jobs:
+            if job.state not in FINISHED_STATES:
+                job._cancel.set()
+        deadline = time.monotonic() + timeout
+        for thread in threads:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            thread.join(remaining)
 
     def get(self, job_id: str) -> Job | None:
         with self._lock:
