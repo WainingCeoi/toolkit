@@ -18,10 +18,11 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from .auth import require_auth
 from .routers import (
     docmd,
     docpdf,
@@ -91,19 +92,26 @@ def create_app(state: AppState | None = None) -> FastAPI:
         allow_headers=["*"],
     )
 
-    app.include_router(meta.router, prefix="/api")
-    app.include_router(fs.router, prefix="/api")
-    app.include_router(jobs.router, prefix="/api")
-    app.include_router(magnet.router, prefix="/api")
-    app.include_router(remux.router, prefix="/api")
-    app.include_router(gather.router, prefix="/api")
-    app.include_router(purge.router, prefix="/api")
-    app.include_router(imgpdf.router, prefix="/api")
-    app.include_router(webpdf.router, prefix="/api")
-    app.include_router(docpdf.router, prefix="/api")
-    app.include_router(docmd.router, prefix="/api")
-    app.include_router(subs.router, prefix="/api")
-    # Public subscription route for proxy clients: GET /sub/{id} (no /api).
+    # Every /api router carries the optional shared-secret gate (a no-op unless
+    # APP_AUTH_TOKEN is set — see auth.py; make host sets it before binding the LAN).
+    api_auth = [Depends(require_auth)]
+    for api_router in (
+        meta.router,
+        fs.router,
+        jobs.router,
+        magnet.router,
+        remux.router,
+        gather.router,
+        purge.router,
+        imgpdf.router,
+        webpdf.router,
+        docpdf.router,
+        docmd.router,
+        subs.router,
+    ):
+        app.include_router(api_router, prefix="/api", dependencies=api_auth)
+    # Public subscription route for proxy clients: GET /sub/{id} (no /api, no
+    # app gate — it carries its own SUB_ACCESS_TOKEN for token-gated fetches).
     app.include_router(subs.public_router)
 
     # Serve the built frontend from this same server, if present (make start /

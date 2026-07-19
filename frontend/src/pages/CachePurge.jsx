@@ -91,21 +91,24 @@ export default function CachePurge() {
 
   function runDelete() {
     setError(null)
-    start(() => api.purgeDelete(scan.files))
+    start(() => api.purgeDelete(scan.folder, scan.files))
   }
 
-  // Once a delete job finishes, the previewed list no longer exists on disk —
-  // clear the scan so the stale table can't be deleted twice.
+  // Once a delete job reaches any terminal state the previewed list no longer
+  // reflects disk (a cancelled run still deleted part of it), so clear the scan
+  // so the stale table can't be deleted again.
   const clearedFor = useRef(null)
   useEffect(() => {
-    if (snapshot?.state === 'done' && clearedFor.current !== snapshot.id) {
+    const terminal = ['done', 'cancelled', 'failed'].includes(snapshot?.state)
+    if (terminal && clearedFor.current !== snapshot.id) {
       clearedFor.current = snapshot.id
       setScan(null)
       setConfirm(false)
     }
   }, [snapshot])
 
-  const result = snapshot?.state === 'done' ? snapshot.result : null
+  // A cancelled run deliberately returns what it already deleted — render it too.
+  const result = ['done', 'cancelled'].includes(snapshot?.state) ? snapshot.result : null
   const preview = current ? scan.files.slice(0, PREVIEW_LIMIT) : []
 
   return (

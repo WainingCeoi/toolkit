@@ -29,6 +29,7 @@ class PurgeScanOut(BaseModel):
 
 
 class PurgeDeleteIn(BaseModel):
+    folder: str
     files: list[str]
 
 
@@ -60,9 +61,31 @@ def scan_folder(req: PurgeScanIn) -> PurgeScanOut:
 
 @router.post("/delete", response_model=JobStartedOut)
 def delete_files(req: PurgeDeleteIn, jobs: JobsDep) -> JobStartedOut:
-    # The client sends back the exact previewed list from /scan — the same
-    # contract as the page's confirm checkbox over its scan results.
-    files = list(req.files)
+    # The client sends back the previewed list from /scan plus the folder it was
+    # scanned from. Confine the (irreversible) delete to that tree server-side:
+    # every path must be absolute and resolve to a file under the scanned folder,
+    # so a tampered or arbitrary path list can't reach files outside it.
+    base = Path(req.folder).expanduser()
+    if not base.is_absolute() or not base.is_dir():
+        raise HTTPException(
+            status_code=400, detail="❌ Invalid or missing scan folder."
+        )
+    base_resolved = base.resolve()
+    files: list[str] = []
+    for raw in req.files:
+        candidate = Path(raw).expanduser()
+        resolved = candidate.resolve()
+        if not candidate.is_absolute() or not (
+            resolved == base_resolved or base_resolved in resolved.parents
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "❌ Refusing to delete a path outside the "
+                    f"scanned folder: {raw}"
+                ),
+            )
+        files.append(str(candidate))
 
     def worker(job: Job) -> dict | None:
         job.set_message("Deleting…")

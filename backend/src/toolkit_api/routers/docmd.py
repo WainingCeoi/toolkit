@@ -15,6 +15,7 @@ from fastapi import APIRouter, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
 from toolkit_engine import docmd
+from toolkit_engine.fsutil import dedupe_filenames
 
 from ..deps import StateDep
 from ..schemas import JobStartedOut
@@ -76,7 +77,13 @@ def convert(
         )
 
     # Uploads are request-scoped — read every file before returning.
-    named = [(upload.filename, upload.file.read()) for upload in files]
+    # Disambiguate duplicate basenames so two same-named uploads don't collide
+    # to one tree in the result zip (dropping one output on extraction).
+    unique_names = dedupe_filenames([upload.filename for upload in files])
+    named = [
+        (name, upload.file.read())
+        for name, upload in zip(unique_names, files, strict=True)
+    ]
     options = {
         "backend": backend,
         "method": method,

@@ -198,7 +198,7 @@ export default function FileGatherer() {
           </Button>
           {error && <div className="note error">{error}</div>}
           <JobPanel snapshot={snapshot}>
-            {snapshot?.state === 'done' && snapshot.result && (
+            {['done', 'cancelled'].includes(snapshot?.state) && snapshot.result && (
               <GatherResult result={snapshot.result} />
             )}
           </JobPanel>

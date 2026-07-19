@@ -216,7 +216,9 @@ def test_purge_scan_and_delete_end_to_end(tool_client, tmp_path):
     assert body["errors"] == []
     assert body["rejected_tokens"] == ["*"]  # catch-all ignored, not applied
 
-    resp = tool_client.post("/api/purge/delete", json={"files": body["files"]})
+    resp = tool_client.post(
+        "/api/purge/delete", json={"folder": str(folder), "files": body["files"]}
+    )
     assert resp.status_code == 200
     snap = wait_for_job(tool_client, resp.json()["job_id"])
     assert snap["state"] == "done"
@@ -243,7 +245,10 @@ def test_purge_delete_cancel_keeps_partial_report(
 
     resp = tool_client.post(
         "/api/purge/delete",
-        json={"files": [str(tmp_path / "a.log"), str(tmp_path / "b.log")]},
+        json={
+            "folder": str(tmp_path),
+            "files": [str(tmp_path / "a.log"), str(tmp_path / "b.log")],
+        },
     )
     assert resp.status_code == 200
     job_id = resp.json()["job_id"]
@@ -257,6 +262,35 @@ def test_purge_delete_cancel_keeps_partial_report(
     assert snap["result"] is not None
     assert snap["result"]["deleted"] == [str(tmp_path / "a.log")]
     assert snap["result"]["failed"] == []
+
+
+def test_purge_delete_rejects_path_outside_scanned_folder(tool_client, tmp_path):
+    folder = tmp_path / "cache"
+    folder.mkdir()
+    outside = tmp_path / "secret.txt"
+    outside.write_text("do not delete me")
+
+    resp = tool_client.post(
+        "/api/purge/delete",
+        json={"folder": str(folder), "files": [str(outside)]},
+    )
+    assert resp.status_code == 400
+    assert "outside the scanned folder" in resp.json()["detail"]
+    assert outside.exists()
+
+
+def test_purge_delete_rejects_traversal_escape(tool_client, tmp_path):
+    folder = tmp_path / "cache"
+    folder.mkdir()
+    escape = folder / ".." / "secret.txt"
+    (tmp_path / "secret.txt").write_text("do not delete me")
+
+    resp = tool_client.post(
+        "/api/purge/delete",
+        json={"folder": str(folder), "files": [str(escape)]},
+    )
+    assert resp.status_code == 400
+    assert (tmp_path / "secret.txt").exists()
 
 
 def test_purge_scan_rejects_catch_all_only_patterns(tool_client, tmp_path):

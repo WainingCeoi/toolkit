@@ -308,7 +308,9 @@ export default function MagnetScraper() {
               {error && <div className="note error">{error}</div>}
               {snapshot ? (
                 <JobPanel snapshot={snapshot}>
-                  {snapshot.state === 'done' && <ScrapeResult result={snapshot.result} />}
+                  {['done', 'cancelled'].includes(snapshot.state) && (
+                    <ScrapeResult result={snapshot.result} />
+                  )}
                 </JobPanel>
               ) : (
                 !error && <div className="note info">No scrape yet — magnets land here.</div>

@@ -11,6 +11,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, UploadFile
 
 from toolkit_engine import docpdf
+from toolkit_engine.fsutil import dedupe_filenames
 
 from ..deps import StateDep
 from ..schemas import JobStartedOut
@@ -46,7 +47,13 @@ def convert(state: StateDep, files: list[UploadFile] | None = None) -> JobStarte
         )
 
     # Uploads are request-scoped — read every file before returning.
-    named = [(upload.filename, upload.file.read()) for upload in files]
+    # Disambiguate duplicate basenames so two same-named uploads don't collide
+    # to one entry in the result zip (dropping one PDF on extraction).
+    unique_names = dedupe_filenames([upload.filename for upload in files])
+    named = [
+        (name, upload.file.read())
+        for name, upload in zip(unique_names, files, strict=True)
+    ]
 
     def worker(job):
         def on_progress(pct, text):

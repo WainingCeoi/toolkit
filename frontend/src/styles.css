@@ -594,3 +594,29 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; gap: 6
 .filelist button { background: none; border: 0; color: var(--red); cursor: pointer; font: 11px var(--mono); }
 
 .qr { background: #fff; padding: 10px; border-radius: var(--radius-s); display: inline-block; }
+
+/* ---------- auth gate (LAN host unlock) ---------- */
+.auth-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: var(--scrim);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  backdrop-filter: blur(2px);
+}
+.auth-card {
+  width: 100%;
+  max-width: 380px;
+  background: var(--panel);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius);
+  padding: 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.auth-card h2 { margin: 0; font-size: 18px; color: var(--text); }
+.auth-card p { margin: 0; font-size: 13px; color: var(--muted); line-height: 1.5; }

@@ -37,7 +37,9 @@ export default function JobPanel({ snapshot, children }) {
         </div>
       ))}
       {state === 'failed' && <div className="note error">{error}</div>}
-      {state === 'cancelled' && <div className="note warn">Run cancelled.</div>}
+      {state === 'cancelled' && (
+        <div className="note warn">Run cancelled — showing partial results.</div>
+      )}
       {children /* tool-specific result rendering */}
     </div>
   )

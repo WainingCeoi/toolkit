@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import ipaddress
 import os
+import secrets
 import socket
 import subprocess
 import sys
@@ -122,9 +123,15 @@ def lan_ip() -> str | None:
 
 def free_port(host: str, base: int, tries: int = PORT_TRIES) -> int:
     """First port >= ``base`` that actually binds on ``host`` (real bind test)."""
+    # Bind with the family the host actually resolves to — an AF_INET-only probe
+    # aborts for an IPv6 host like ::1 (which _LOOPBACK explicitly supports).
+    try:
+        family = socket.getaddrinfo(host, base, type=socket.SOCK_STREAM)[0][0]
+    except OSError:
+        family = socket.AF_INET
     last_err: OSError | None = None
     for port in range(base, base + tries):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        with socket.socket(family, socket.SOCK_STREAM) as sock:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
                 sock.bind((host, port))
@@ -137,8 +144,29 @@ def free_port(host: str, base: int, tries: int = PORT_TRIES) -> int:
     )
 
 
+def _ensure_auth_token(local_only: bool) -> str | None:
+    """Ensure APP_AUTH_TOKEN is set for a LAN bind; return it (None if local-only).
+
+    A user-pinned APP_AUTH_TOKEN wins (stable across restarts); otherwise a fresh
+    random token is minted and exported so the app process (same process, one
+    worker, no reload) reads it per request. Loopback binds need no token.
+    """
+    if local_only:
+        return None
+    token = os.environ.get("APP_AUTH_TOKEN", "").strip()
+    if not token:
+        token = secrets.token_urlsafe(9)
+        os.environ["APP_AUTH_TOKEN"] = token
+    return token
+
+
 def _print_banner(
-    host: str, port: int, base: int, name: str | None, ip: str | None
+    host: str,
+    port: int,
+    base: int,
+    name: str | None,
+    ip: str | None,
+    token: str | None,
 ) -> None:
     local_only = host in _LOOPBACK
     lines = [_BAR, "  🧰 Toolkit — one-command host", _BAR]
@@ -159,13 +187,18 @@ def _print_banner(
     if not local_only:
         lines += [
             "  ⚠  EXPOSED ON THE LAN (bound to 0.0.0.0 — every device on this Wi-Fi):",
-            "     • This app has NO authentication, and its tools move and PERMANENTLY",
-            "       DELETE files on this Mac — anyone on the network gets full access.",
-            "       Run it only on a Wi-Fi you trust.",
+            "     • Its tools move and PERMANENTLY DELETE files on this Mac.",
             "     • Plain HTTP (no TLS) — appropriate for a trusted LAN only.",
             "     • Restrict to this machine with:  HOST=127.0.0.1 make host",
-            _BAR,
         ]
+        if token:
+            lines += [
+                _BAR,
+                "  🔑 Access token (enter once in the browser to unlock the tools):",
+                f"       {token}",
+                "     Pin your own with:  APP_AUTH_TOKEN=<secret> make host",
+            ]
+        lines.append(_BAR)
     print("\n".join(lines), flush=True)
 
 
@@ -182,7 +215,8 @@ def main() -> None:
     local_only = host in _LOOPBACK
     name = None if local_only else mdns_name()
     ip = None if local_only else lan_ip()
-    _print_banner(host, port, base, name, ip)
+    token = _ensure_auth_token(local_only)
+    _print_banner(host, port, base, name, ip, token)
 
     # Import here so the banner (and any port error) prints before the heavy
     # app import builds the shared state. workers=1 / no reload: one process,

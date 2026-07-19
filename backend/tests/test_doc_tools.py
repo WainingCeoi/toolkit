@@ -331,7 +331,8 @@ def test_docpdf_duplicate_names_get_index_correct_states(
 
     def fake_batch_to_pdf(soffice, docx_paths, out_dir):
         for p in docx_paths:
-            if Path(p).stem == "1_a":  # only the second cleaned file renders
+            # Cleaned files are named "{idx}_{stem}" — render only index 1.
+            if Path(p).stem.startswith("1_"):
                 (Path(out_dir) / f"{Path(p).stem}.pdf").write_bytes(b"%PDF stub")
         return subprocess.CompletedProcess([], 0, stdout="", stderr="boom")
 

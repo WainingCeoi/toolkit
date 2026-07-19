@@ -126,7 +126,8 @@ export default function Remux() {
     start(() => api.remuxStart(payload))
   }
 
-  const result = snapshot?.state === 'done' ? snapshot.result : null
+  // A cancelled run returns the tasks that already finished — render them too.
+  const result = ['done', 'cancelled'].includes(snapshot?.state) ? snapshot.result : null
 
   return (
     <div>

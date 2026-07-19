@@ -5,6 +5,13 @@ import './styles.css'
 import Layout from './Layout'
 import Home from './Home'
 import { JobsProvider } from './jobs'
+import AuthGate from './components/AuthGate'
+import { getAuthToken, setAuthToken } from './api'
+
+// Re-affirm the auth cookie from a stored token on boot, so the same-origin
+// EventSource carries it even if only localStorage survived (no-op when unset).
+const savedToken = getAuthToken()
+if (savedToken) setAuthToken(savedToken)
 
 // Hash routing keeps deep links working under the single-origin static mount
 // without any server-side fallback config.
@@ -41,6 +48,7 @@ createRoot(document.getElementById('root')).render(
   <React.StrictMode>
     <JobsProvider>
       <RouterProvider router={router} />
+      <AuthGate />
     </JobsProvider>
   </React.StrictMode>,
 )

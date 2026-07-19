@@ -143,6 +143,35 @@ def start(req: StartIn, jobs: JobsDep) -> JobStartedOut:
             status_code=400, detail=f"❌ Cannot create the output folder: {e}"
         ) from e
 
+    # ffmpeg's -y overwrite plus its string-only same-file guard would let an
+    # output that resolves to the source (e.g. the picker returns the canonical
+    # /private/tmp form of a source typed as /tmp) truncate the input to zero.
+    # Reject that, and reject duplicate output basenames that would clobber each
+    # other, before any task runs.
+    out_resolved = out_path.resolve()
+    seen_outputs: set[str] = set()
+    for video in req.selected:
+        name = Path(video).name
+        dest = out_resolved / name
+        if dest == Path(video).expanduser().resolve():
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "❌ The output folder resolves to a source file's location — "
+                    f"remuxing would overwrite the input ({name}). "
+                    "Choose a different output folder."
+                ),
+            )
+        if str(dest) in seen_outputs:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"❌ Two selected videos share the output name '{name}'. "
+                    "Remux them separately or rename one."
+                ),
+            )
+        seen_outputs.add(str(dest))
+
     # Build the task list
     tasks = []
     for idx, video in enumerate(req.selected):
