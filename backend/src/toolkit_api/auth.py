@@ -1,14 +1,15 @@
 """Optional shared-secret gate for the /api surface.
 
-Off by default: when ``APP_AUTH_TOKEN`` is empty — ``make dev`` / ``make start``,
-the test suite, any loopback run — :func:`require_auth` is a no-op, so the local
-single-user flow needs no token and nothing changes.
+Off by default, including for LAN hosting: when ``APP_AUTH_TOKEN`` is empty —
+``make dev`` / ``make start`` / ``make host``, the test suite — :func:`require_auth`
+is a no-op, so every client (including a phone on the Wi-Fi) reaches the tools
+with no unlock step. Nothing mints a token automatically.
 
-``make host`` sets ``APP_AUTH_TOKEN`` (generating a random one if the user hasn't
-pinned it in the env) *before* it binds ``0.0.0.0``, so every ``/api`` request
-from the LAN must present the token: either the ``Authorization: Bearer <token>``
-header (what the fetch wrapper sends) or the ``toolkit_auth`` cookie (which the
-job-progress ``EventSource`` relies on, since it can't set headers). Comparison is
+Setting ``APP_AUTH_TOKEN`` yourself is the only thing that turns the gate on
+(e.g. ``APP_AUTH_TOKEN=<secret> make host``). Then every ``/api`` request must
+present it: either the ``Authorization: Bearer <token>`` header (what the fetch
+wrapper sends) or the ``toolkit_auth`` cookie (which the job-progress
+``EventSource`` relies on, since it can't set headers). Comparison is
 constant-time.
 
 The public ``/sub/{id}`` route keeps its own ``SUB_ACCESS_TOKEN`` gate and is

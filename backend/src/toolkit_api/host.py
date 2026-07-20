@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import ipaddress
 import os
-import secrets
 import socket
 import subprocess
 import sys
@@ -144,20 +143,17 @@ def free_port(host: str, base: int, tries: int = PORT_TRIES) -> int:
     )
 
 
-def _ensure_auth_token(local_only: bool) -> str | None:
-    """Ensure APP_AUTH_TOKEN is set for a LAN bind; return it (None if local-only).
+def _configured_auth_token(local_only: bool) -> str | None:
+    """The user-pinned APP_AUTH_TOKEN, if any (None when unset or local-only).
 
-    A user-pinned APP_AUTH_TOKEN wins (stable across restarts); otherwise a fresh
-    random token is minted and exported so the app process (same process, one
-    worker, no reload) reads it per request. Loopback binds need no token.
+    LAN hosting requires NO token by design: nothing is minted here, so a phone
+    on the Wi-Fi reaches the tools with no unlock step. Set APP_AUTH_TOKEN
+    yourself to opt into the gate (see auth.py) — that's the only thing that
+    turns it on.
     """
     if local_only:
         return None
-    token = os.environ.get("APP_AUTH_TOKEN", "").strip()
-    if not token:
-        token = secrets.token_urlsafe(9)
-        os.environ["APP_AUTH_TOKEN"] = token
-    return token
+    return os.environ.get("APP_AUTH_TOKEN", "").strip() or None
 
 
 def _print_banner(
@@ -187,17 +183,21 @@ def _print_banner(
     if not local_only:
         lines += [
             "  ⚠  EXPOSED ON THE LAN (bound to 0.0.0.0 — every device on this Wi-Fi):",
-            "     • Its tools move and PERMANENTLY DELETE files on this Mac.",
+            "     • NO authentication — anyone on this network gets full access,",
+            "       and its tools move and PERMANENTLY DELETE files on this Mac.",
+            "       Run it only on a Wi-Fi you trust.",
             "     • Plain HTTP (no TLS) — appropriate for a trusted LAN only.",
             "     • Restrict to this machine with:  HOST=127.0.0.1 make host",
         ]
         if token:
             lines += [
                 _BAR,
-                "  🔑 Access token (enter once in the browser to unlock the tools):",
+                "  🔑 Access token required (APP_AUTH_TOKEN is set):",
                 f"       {token}",
-                "     Pin your own with:  APP_AUTH_TOKEN=<secret> make host",
+                "     Unset it to drop the unlock step.",
             ]
+        else:
+            lines.append("     • Optional gate:  APP_AUTH_TOKEN=<secret> make host")
         lines.append(_BAR)
     print("\n".join(lines), flush=True)
 
@@ -215,7 +215,7 @@ def main() -> None:
     local_only = host in _LOOPBACK
     name = None if local_only else mdns_name()
     ip = None if local_only else lan_ip()
-    token = _ensure_auth_token(local_only)
+    token = _configured_auth_token(local_only)
     _print_banner(host, port, base, name, ip, token)
 
     # Import here so the banner (and any port error) prints before the heavy

@@ -94,8 +94,9 @@ def create_app(state: AppState | None = None) -> FastAPI:
         allow_headers=["*"],
     )
 
-    # Every /api router carries the optional shared-secret gate (a no-op unless
-    # APP_AUTH_TOKEN is set — see auth.py; make host sets it before binding the LAN).
+    # Every /api router carries the optional shared-secret gate — a no-op unless
+    # the user sets APP_AUTH_TOKEN themselves (see auth.py). LAN hosting needs
+    # no token by default.
     api_auth = [Depends(require_auth)]
     for api_router in (
         meta.router,

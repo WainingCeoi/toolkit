@@ -58,29 +58,38 @@ def test_free_port_ipv6_host_does_not_crash():
     assert isinstance(chosen, int)
 
 
-def test_ensure_auth_token_local_only_is_none(monkeypatch):
+def test_lan_host_requires_no_token_by_default(monkeypatch):
+    # The whole point: hosting on the LAN mints nothing, so a phone on the
+    # Wi-Fi reaches the tools with no unlock step.
     monkeypatch.delenv("APP_AUTH_TOKEN", raising=False)
-    assert host._ensure_auth_token(local_only=True) is None
+    assert host._configured_auth_token(local_only=False) is None
     assert "APP_AUTH_TOKEN" not in host.os.environ
 
 
-def test_ensure_auth_token_mints_and_exports_for_lan(monkeypatch):
-    monkeypatch.delenv("APP_AUTH_TOKEN", raising=False)
-    token = host._ensure_auth_token(local_only=False)
-    assert token and len(token) >= 8
-    assert host.os.environ["APP_AUTH_TOKEN"] == token
-
-
-def test_ensure_auth_token_honors_a_pinned_value(monkeypatch):
+def test_configured_auth_token_local_only_is_none(monkeypatch):
     monkeypatch.setenv("APP_AUTH_TOKEN", "pinned-secret")
-    assert host._ensure_auth_token(local_only=False) == "pinned-secret"
+    assert host._configured_auth_token(local_only=True) is None
 
 
-def test_banner_shows_token_when_hosting(capsys):
+def test_configured_auth_token_honors_a_pinned_value(monkeypatch):
+    # Setting it yourself is the only way to turn the gate on.
+    monkeypatch.setenv("APP_AUTH_TOKEN", "pinned-secret")
+    assert host._configured_auth_token(local_only=False) == "pinned-secret"
+
+
+def test_banner_warns_about_no_authentication_by_default(capsys):
+    host._print_banner("0.0.0.0", 8000, 8000, "mac.local", "192.168.1.5", None)
+    out = capsys.readouterr().out
+    assert "NO authentication" in out
+    assert "192.168.1.5" in out
+    assert "Access token required" not in out
+
+
+def test_banner_shows_token_only_when_one_is_pinned(capsys):
     host._print_banner("0.0.0.0", 8000, 8000, "mac.local", "192.168.1.5", "tok-123")
     out = capsys.readouterr().out
+    assert "Access token required" in out
     assert "tok-123" in out
-    assert "192.168.1.5" in out
 
 
 def test_banner_hides_token_when_local_only(capsys):
