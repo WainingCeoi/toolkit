@@ -143,26 +143,12 @@ def free_port(host: str, base: int, tries: int = PORT_TRIES) -> int:
     )
 
 
-def _configured_auth_token(local_only: bool) -> str | None:
-    """The user-pinned APP_AUTH_TOKEN, if any (None when unset or local-only).
-
-    LAN hosting requires NO token by design: nothing is minted here, so a phone
-    on the Wi-Fi reaches the tools with no unlock step. Set APP_AUTH_TOKEN
-    yourself to opt into the gate (see auth.py) — that's the only thing that
-    turns it on.
-    """
-    if local_only:
-        return None
-    return os.environ.get("APP_AUTH_TOKEN", "").strip() or None
-
-
 def _print_banner(
     host: str,
     port: int,
     base: int,
     name: str | None,
     ip: str | None,
-    token: str | None,
 ) -> None:
     local_only = host in _LOOPBACK
     lines = [_BAR, "  🧰 Toolkit — one-command host", _BAR]
@@ -188,17 +174,8 @@ def _print_banner(
             "       Run it only on a Wi-Fi you trust.",
             "     • Plain HTTP (no TLS) — appropriate for a trusted LAN only.",
             "     • Restrict to this machine with:  HOST=127.0.0.1 make host",
+            _BAR,
         ]
-        if token:
-            lines += [
-                _BAR,
-                "  🔑 Access token required (APP_AUTH_TOKEN is set):",
-                f"       {token}",
-                "     Unset it to drop the unlock step.",
-            ]
-        else:
-            lines.append("     • Optional gate:  APP_AUTH_TOKEN=<secret> make host")
-        lines.append(_BAR)
     print("\n".join(lines), flush=True)
 
 
@@ -215,8 +192,7 @@ def main() -> None:
     local_only = host in _LOOPBACK
     name = None if local_only else mdns_name()
     ip = None if local_only else lan_ip()
-    token = _configured_auth_token(local_only)
-    _print_banner(host, port, base, name, ip, token)
+    _print_banner(host, port, base, name, ip)
 
     # Import here so the banner (and any port error) prints before the heavy
     # app import builds the shared state. workers=1 / no reload: one process,

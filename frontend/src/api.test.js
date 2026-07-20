@@ -1,24 +1,12 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { api, artifactUrl, getAuthToken, setAuthToken } from './api'
+import { describe, it, expect, vi } from 'vitest'
+import { api, artifactUrl } from './api'
 
 describe('api helpers', () => {
-  beforeEach(() => {
-    localStorage.clear()
-    document.cookie = 'toolkit_auth=; path=/; max-age=0'
-  })
-
   it('builds artifact URLs under /api', () => {
     expect(artifactUrl('abc123')).toBe('/api/artifacts/abc123')
   })
 
-  it('round-trips the auth token through localStorage and cookie', () => {
-    setAuthToken('sekret')
-    expect(getAuthToken()).toBe('sekret')
-    expect(document.cookie).toContain('toolkit_auth=sekret')
-  })
-
-  it('sends a JSON body and attaches the auth header when set', async () => {
-    setAuthToken('tok')
+  it('sends a JSON body for POSTs', async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ job_id: 'j1' }), {
         status: 200,
@@ -33,11 +21,30 @@ describe('api helpers', () => {
     const [url, opts] = fetchMock.mock.calls[0]
     expect(url).toBe('/api/purge/delete')
     expect(opts.method).toBe('POST')
+    expect(opts.headers['Content-Type']).toBe('application/json')
     expect(JSON.parse(opts.body)).toEqual({
       folder: '/tmp/cache',
       files: ['/tmp/cache/a.log'],
     })
-    expect(opts.headers.Authorization).toBe('Bearer tok')
+    vi.unstubAllGlobals()
+  })
+
+  it('passes FormData through without a JSON content-type', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ job_id: 'j2' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const form = new FormData()
+    form.append('files', new Blob(['x']), 'a.docx')
+    await api.docToPdf(form)
+
+    const [, opts] = fetchMock.mock.calls[0]
+    expect(opts.body).toBe(form) // browser sets the multipart boundary
+    expect(opts.headers['Content-Type']).toBeUndefined()
     vi.unstubAllGlobals()
   })
 
@@ -53,14 +60,12 @@ describe('api helpers', () => {
     vi.unstubAllGlobals()
   })
 
-  it('dispatches an auth-required event on 401', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(new Response('', { status: 401 }))
+  it('falls back to status text when the error body is not JSON', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response('boom', { status: 500, statusText: 'Server Error' }))
     vi.stubGlobal('fetch', fetchMock)
-    const onAuth = vi.fn()
-    window.addEventListener('toolkit-auth-required', onAuth)
-    await expect(api.health()).rejects.toThrow(/Authentication required/)
-    expect(onAuth).toHaveBeenCalled()
-    window.removeEventListener('toolkit-auth-required', onAuth)
+    await expect(api.health()).rejects.toThrow(/500/)
     vi.unstubAllGlobals()
   })
 })

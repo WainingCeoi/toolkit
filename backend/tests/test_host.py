@@ -1,26 +1,12 @@
-"""LAN host launcher: LAN-address classification, port probing, auth token."""
+"""LAN host launcher: LAN-address classification, port probing, banner."""
 
 from __future__ import annotations
 
-import os
 import socket
 
 import pytest
 
 from toolkit_api import host
-
-
-@pytest.fixture(autouse=True)
-def _restore_auth_token():
-    # _ensure_auth_token exports APP_AUTH_TOKEN to the real environment (by
-    # design — the host process reads it). Restore it after each test so the
-    # token can't leak into later API tests as a spurious 401.
-    before = os.environ.get("APP_AUTH_TOKEN")
-    yield
-    if before is None:
-        os.environ.pop("APP_AUTH_TOKEN", None)
-    else:
-        os.environ["APP_AUTH_TOKEN"] = before
 
 
 @pytest.mark.parametrize(
@@ -58,42 +44,23 @@ def test_free_port_ipv6_host_does_not_crash():
     assert isinstance(chosen, int)
 
 
-def test_lan_host_requires_no_token_by_default(monkeypatch):
-    # The whole point: hosting on the LAN mints nothing, so a phone on the
-    # Wi-Fi reaches the tools with no unlock step.
-    monkeypatch.delenv("APP_AUTH_TOKEN", raising=False)
-    assert host._configured_auth_token(local_only=False) is None
-    assert "APP_AUTH_TOKEN" not in host.os.environ
-
-
-def test_configured_auth_token_local_only_is_none(monkeypatch):
-    monkeypatch.setenv("APP_AUTH_TOKEN", "pinned-secret")
-    assert host._configured_auth_token(local_only=True) is None
-
-
-def test_configured_auth_token_honors_a_pinned_value(monkeypatch):
-    # Setting it yourself is the only way to turn the gate on.
-    monkeypatch.setenv("APP_AUTH_TOKEN", "pinned-secret")
-    assert host._configured_auth_token(local_only=False) == "pinned-secret"
-
-
-def test_banner_warns_about_no_authentication_by_default(capsys):
-    host._print_banner("0.0.0.0", 8000, 8000, "mac.local", "192.168.1.5", None)
+def test_banner_warns_that_a_lan_bind_is_unauthenticated(capsys):
+    host._print_banner("0.0.0.0", 8000, 8000, "mac.local", "192.168.1.5")
     out = capsys.readouterr().out
     assert "NO authentication" in out
+    assert "EXPOSED ON THE LAN" in out
     assert "192.168.1.5" in out
-    assert "Access token required" not in out
+    assert "mac.local" in out
 
 
-def test_banner_shows_token_only_when_one_is_pinned(capsys):
-    host._print_banner("0.0.0.0", 8000, 8000, "mac.local", "192.168.1.5", "tok-123")
-    out = capsys.readouterr().out
-    assert "Access token required" in out
-    assert "tok-123" in out
-
-
-def test_banner_hides_token_when_local_only(capsys):
-    host._print_banner("127.0.0.1", 8000, 8000, None, None, None)
+def test_banner_omits_the_lan_warning_when_local_only(capsys):
+    host._print_banner("127.0.0.1", 8000, 8000, None, None)
     out = capsys.readouterr().out
     assert "local-only" in out
-    assert "Access token" not in out
+    assert "EXPOSED ON THE LAN" not in out
+
+
+def test_banner_flags_a_port_bump(capsys):
+    host._print_banner("127.0.0.1", 8001, 8000, None, None)
+    out = capsys.readouterr().out
+    assert "8000 was busy" in out

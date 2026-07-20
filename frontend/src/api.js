@@ -5,37 +5,6 @@
 
 const BASE = '/api'
 
-// Optional shared-secret auth. Empty unless the app is LAN-hosted (make host):
-// the token is attached as a Bearer header on fetches and mirrored to a cookie
-// so the same-origin EventSource (which can't set headers) authenticates too.
-const AUTH_KEY = 'toolkit-auth-token'
-
-export function getAuthToken() {
-  try {
-    return localStorage.getItem(AUTH_KEY) || ''
-  } catch {
-    return ''
-  }
-}
-
-export function setAuthToken(token) {
-  try {
-    localStorage.setItem(AUTH_KEY, token)
-  } catch {
-    /* storage blocked — the cookie below still carries it for this session */
-  }
-  document.cookie = `toolkit_auth=${encodeURIComponent(token)}; path=/; max-age=31536000; SameSite=Strict`
-}
-
-function authHeaders(headers = {}) {
-  const token = getAuthToken()
-  return token ? { ...headers, Authorization: `Bearer ${token}` } : headers
-}
-
-function onUnauthorized() {
-  window.dispatchEvent(new CustomEvent('toolkit-auth-required'))
-}
-
 async function request(path, { method = 'GET', body } = {}) {
   const opts = { method, headers: {} }
   if (body instanceof FormData) {
@@ -44,12 +13,7 @@ async function request(path, { method = 'GET', body } = {}) {
     opts.headers['Content-Type'] = 'application/json'
     opts.body = JSON.stringify(body)
   }
-  opts.headers = authHeaders(opts.headers)
   const res = await fetch(`${BASE}${path}`, opts)
-  if (res.status === 401) {
-    onUnauthorized()
-    throw new Error('Authentication required.')
-  }
   if (!res.ok) {
     let detail = ''
     try {
@@ -83,15 +47,7 @@ async function blobError(res) {
 // Binary POST (Image to PDF returns the file directly): resolves to a Blob +
 // suggested filename from Content-Disposition.
 async function requestBlob(path, formData) {
-  const res = await fetch(`${BASE}${path}`, {
-    method: 'POST',
-    body: formData,
-    headers: authHeaders(),
-  })
-  if (res.status === 401) {
-    onUnauthorized()
-    throw new Error('Authentication required.')
-  }
+  const res = await fetch(`${BASE}${path}`, { method: 'POST', body: formData })
   if (!res.ok) throw await blobError(res)
   return { blob: await res.blob(), filename: filenameFromDisposition(res, 'download') }
 }
@@ -100,11 +56,7 @@ async function requestBlob(path, formData) {
 // (e.g. Surge can't express vless nodes) surfaces its reason as an Error the
 // page can show inline instead of a broken browser download.
 async function fetchBlob(path, fallbackName) {
-  const res = await fetch(`${BASE}${path}`, { headers: authHeaders() })
-  if (res.status === 401) {
-    onUnauthorized()
-    throw new Error('Authentication required.')
-  }
+  const res = await fetch(`${BASE}${path}`)
   if (!res.ok) throw await blobError(res)
   return { blob: await res.blob(), filename: filenameFromDisposition(res, fallbackName) }
 }

@@ -18,11 +18,10 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from .auth import require_auth
 from .routers import (
     docmd,
     docpdf,
@@ -94,10 +93,6 @@ def create_app(state: AppState | None = None) -> FastAPI:
         allow_headers=["*"],
     )
 
-    # Every /api router carries the optional shared-secret gate — a no-op unless
-    # the user sets APP_AUTH_TOKEN themselves (see auth.py). LAN hosting needs
-    # no token by default.
-    api_auth = [Depends(require_auth)]
     for api_router in (
         meta.router,
         fs.router,
@@ -112,9 +107,9 @@ def create_app(state: AppState | None = None) -> FastAPI:
         docmd.router,
         subs.router,
     ):
-        app.include_router(api_router, prefix="/api", dependencies=api_auth)
-    # Public subscription route for proxy clients: GET /sub/{id} (no /api, no
-    # app gate — it carries its own SUB_ACCESS_TOKEN for token-gated fetches).
+        app.include_router(api_router, prefix="/api")
+    # Public subscription route for proxy clients: GET /sub/{id} (no /api). It
+    # carries its own SUB_ACCESS_TOKEN gate for token-gated fetches.
     app.include_router(subs.public_router)
 
     # Serve the built frontend from this same server, if present (make start /
