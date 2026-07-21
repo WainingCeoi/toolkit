@@ -1,11 +1,6 @@
-# Root .gitignore — WHOLE-REPO concerns ONLY.
-#
-# The rule: this file lists only what belongs to no single sub-project — OS noise, editor
-# state, agent scratch. Everything a sub-project owns lives in THAT sub-project's file:
-# backend/.gitignore (.venv, __pycache__, .env, data/) and frontend/.gitignore
-# (node_modules, dist). Don't restate them here.
+# Whole-repo only — sub-project rules live in backend/.gitignore and frontend/.gitignore.
 
-# macOS / Windows
+# OS
 .DS_Store
 Thumbs.db
 
@@ -14,10 +9,8 @@ Thumbs.db
 .vscode/
 *.swp
 
-# Agent / assistant scratch
+# Agent scratch
 .claude/
 
-# Legacy: the Streamlit-era root .env still exists on disk with real values
-# (backend/.env is the live config now). Guarded here so it can never be
-# committed by accident; delete the file and this line together.
+# Legacy Streamlit-era root .env (backend/.env is the live config)
 /.env

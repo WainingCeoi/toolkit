@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 from pathlib import Path
 
@@ -108,9 +109,29 @@ def _soffice_available() -> bool:
     return Path("/Applications/LibreOffice.app/Contents/MacOS/soffice").exists()
 
 
+def disabled_slugs() -> set[str]:
+    """Tool slugs switched off for this machine via TOOLKIT_DISABLED_TOOLS.
+
+    Set it in backend/.env (comma- or space-separated slugs) to hide tools you
+    can't or don't want to run here — e.g. Doc to Markdown on an Intel Mac,
+    where MinerU's torch dependency has no macOS x86_64 wheel.
+    """
+    raw = os.environ.get("TOOLKIT_DISABLED_TOOLS", "")
+    return {slug.lower() for slug in raw.replace(",", " ").split()}
+
+
 @router.get("/tools", response_model=list[CategoryOut])
 def tools() -> list[CategoryOut]:
-    return CATEGORIES
+    """The nav + home manifest, minus any tool disabled for this machine."""
+    disabled = disabled_slugs()
+    if not disabled:
+        return CATEGORIES
+    kept = []
+    for category in CATEGORIES:
+        tools_left = [t for t in category.tools if t.slug not in disabled]
+        if tools_left:  # drop a category that ends up empty
+            kept.append(CategoryOut(name=category.name, tools=tools_left))
+    return kept
 
 
 @router.get("/health", response_model=HealthOut)

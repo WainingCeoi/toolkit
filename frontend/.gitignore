@@ -1,18 +1,17 @@
-# frontend/.gitignore — NODE/FRONTEND ONLY.
-#
-# Shared OS/editor/agent patterns live in the ROOT .gitignore; don't repeat them here. Paths
-# are relative to frontend/, so no `frontend/` prefix.
+# Frontend (Node). Paths are relative to frontend/.
 
 node_modules/
 
-# Vite build output. `make build` regenerates it; `make start` / `make host` serve it.
+# Build output
 dist/
 dist-ssr/
 
-# Local env overrides. Vite only exposes VITE_-prefixed vars to the browser — so a "secret"
-# in any .env here ships to every client that loads the page. Don't put one there.
+# Local env overrides (VITE_-prefixed vars ship to the browser — no secrets here)
 .env.local
 .env.*.local
+
+# Test output
+coverage/
 
 # Logs
 *.log

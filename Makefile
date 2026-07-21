@@ -5,6 +5,15 @@ SHELL := /bin/bash
 # Base API port. Override when :8000 is busy, e.g.:  make dev PORT=8010
 PORT ?= 8000
 
+# Optional backend extras. `docmd` pulls MinerU (Doc→Markdown), whose torch
+# dependency ships NO macOS x86_64 wheel — so it is skipped automatically on
+# Intel Macs, where installing it can only fail. Force either way:
+#   make install EXTRAS=docmd     (force on)
+#   make install EXTRAS=          (force off)
+EXTRAS ?= $(shell if [ "$$(uname -s)" = "Darwin" ] && [ "$$(uname -m)" = "x86_64" ]; \
+                  then echo ""; else echo "docmd"; fi)
+EXTRA_FLAGS := $(if $(strip $(EXTRAS)),--extra $(strip $(EXTRAS)),)
+
 .PHONY: help install dev backend frontend build start host test lint clean
 
 help:
@@ -16,11 +25,13 @@ help:
 	@echo "make test      backend tests + lint + a frontend build check"
 	@echo "make clean     remove build artifacts and caches"
 
-# Full install includes the Doc→Markdown extra (MinerU's ML stack). For a lean
-# install without it, run `cd backend && uv sync` — Doc→Markdown then reports
-# the tool as unavailable and every other tool still works.
 install:
-	cd backend && uv sync --extra docmd
+	@if [ -z "$(strip $(EXTRAS))" ]; then \
+	  echo "note: skipping the MinerU extra on this machine (no macOS x86_64 wheel)."; \
+	  echo "      Doc to Markdown will be unavailable; every other tool works."; \
+	  echo "      Hide it from the UI with TOOLKIT_DISABLED_TOOLS=doc-to-markdown in backend/.env"; \
+	fi
+	cd backend && uv sync $(EXTRA_FLAGS)
 	cd frontend && npm install
 
 # Development: both servers, one command, one Ctrl-C. Vite proxies /api -> :$(PORT).
