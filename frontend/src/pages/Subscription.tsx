@@ -41,9 +41,25 @@ export default function Subscription() {
     }
   }, [])
 
+  // Initial load. Inlined rather than calling refreshHistory() so state is only
+  // ever set from a promise callback, and so a response arriving after the page
+  // is closed is dropped instead of landing on an unmounted component.
   useEffect(() => {
-    refreshHistory()
-  }, [refreshHistory])
+    let cancelled = false
+    api
+      .subsHistory()
+      .then((items) => {
+        if (cancelled) return
+        setHistory(items)
+        setHistoryError(null)
+      })
+      .catch((err: Error) => {
+        if (!cancelled) setHistoryError(err.message)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   async function generate() {
     setBusy(true)

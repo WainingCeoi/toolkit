@@ -4,7 +4,7 @@ import { createHashRouter, RouterProvider } from 'react-router-dom'
 import './styles.css'
 import Layout from './Layout'
 import Home from './Home'
-import { JobsProvider } from './jobs'
+import { JobsProvider } from './JobsProvider'
 import ErrorBoundary from './components/ErrorBoundary'
 
 // Hash routing keeps deep links working under the single-origin static mount

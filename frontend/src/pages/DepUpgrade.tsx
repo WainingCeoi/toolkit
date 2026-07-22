@@ -3,7 +3,7 @@
 // upgrade + commit each. Scan runs as a tracked job (the syncs are slow +
 // cancellable); apply is a quick synchronous write, gated on your review.
 
-import { useEffect, useState, type CSSProperties } from 'react'
+import { useState, type CSSProperties } from 'react'
 import { api } from '../api'
 import { useToolJob } from '../jobs'
 import FolderField from '../components/FolderField'
@@ -60,10 +60,9 @@ function BumpTable({ bumps }: { bumps: Bump[] }) {
 }
 
 export default function DepUpgrade() {
-  const [folder, setFolder] = useState('')
   const [commitAfter, setCommitAfter] = useState(true)
   const [commitMessage, setCommitMessage] = useState(DEFAULT_COMMIT_MESSAGE)
-  const [scannedFolder, setScannedFolder] = useState<string | null>(null)
+  const [scannedThisMount, setScannedThisMount] = useState<string | null>(null)
   const [applying, setApplying] = useState(false)
   const [applyResult, setApplyResult] = useState<DepApplyResult | null>(null)
   const [applyError, setApplyError] = useState<string | null>(null)
@@ -71,21 +70,19 @@ export default function DepUpgrade() {
   const { start, snapshot, running, error, setError } = useToolJob<DepScanResult>('/tools/dep-upgrade')
 
   const result = snapshot?.state === 'done' ? snapshot.result : null
+
+  // Returning to the page restores the last scan from the jobs context, but the
+  // folder fields reset on unmount. Both are recovered from the restored root so
+  // the review isn't wrongly flagged "folder changed" and stays applyable —
+  // derived here rather than written back by an effect, which would have to
+  // render once with the wrong values before correcting them.
+  const [folder, setFolder] = useState(() => result?.root ?? '')
+  const scannedFolder = scannedThisMount ?? result?.root ?? null
+
   const targets = result?.targets ?? []
   const totalBumps = result?.total_bumps ?? 0
   const stale = result != null && scannedFolder !== folder
   const canApply = totalBumps > 0 && !stale && applyResult == null
-
-  // Returning to the page restores the last scan from the jobs context, but the
-  // folder fields reset on unmount. Rehydrate them from the scanned root so the
-  // restored review isn't wrongly flagged "folder changed" and stays applyable.
-  useEffect(() => {
-    const root = result?.root
-    if (root && scannedFolder === null) {
-      setScannedFolder(root)
-      setFolder((current) => current || root)
-    }
-  }, [result, scannedFolder])
 
   async function runScan() {
     setError(null)
@@ -94,7 +91,7 @@ export default function DepUpgrade() {
     // Mark the folder scanned only once the job actually starts — a rejected
     // scan must leave any prior scan flagged stale, not retarget Apply.
     const id = await start(() => api.depsScan(folder))
-    if (id) setScannedFolder(folder)
+    if (id) setScannedThisMount(folder)
   }
 
   async function runApply() {

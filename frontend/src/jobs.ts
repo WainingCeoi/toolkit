@@ -2,17 +2,14 @@
 // stays available app-wide — the bottom dock renders every tracked job, so
 // work keeps visibly running while you switch tools (the thing the old
 // Streamlit app structurally could not do).
+//
+// The context, its types, and the consumer hooks live here; <JobsProvider>
+// lives in its own module. Splitting them is what lets Fast Refresh work: a
+// module exporting both a component and other values is fully reloaded on every
+// edit instead of hot-swapped, which would drop the in-flight job state this
+// module exists to preserve.
 
-import {
-  createContext,
-  useCallback,
-  useContext,
-  useMemo,
-  useRef,
-  useState,
-  type ReactNode,
-} from 'react'
-import { followJob } from './api'
+import { createContext, useCallback, useContext, useMemo, useState } from 'react'
 import type { Job, JobStarted } from './types/api'
 
 /**
@@ -23,65 +20,18 @@ import type { Job, JobStarted } from './types/api'
  */
 export type AnyJob = Job<unknown>
 
-interface TrackedJob {
+export interface TrackedJob {
   snapshot: AnyJob
   toolPath: string
 }
 
-interface JobsContextValue {
+export interface JobsContextValue {
   jobs: Record<string, TrackedJob>
   track: (jobId: string, toolPath: string) => Promise<AnyJob | null>
   dismiss: (jobId: string) => void
 }
 
-const JobsContext = createContext<JobsContextValue | null>(null)
-
-// Defensive shape: an evicted-job SSE frame carries only { state }, so fill the
-// fields the dock and panels read (items/message/result/error) before storing.
-//
-// The assertion is load-bearing and cannot be avoided: the input is whatever
-// came off the wire, and no generic spread can prove to the checker that the
-// filled object satisfies the state-discriminated union. This is the boundary
-// where the wire shape is trusted; everything downstream is checked.
-function normalizeSnapshot(snapshot: Partial<AnyJob>): AnyJob {
-  return { items: [], message: '', result: null, error: null, ...snapshot } as AnyJob
-}
-
-export function JobsProvider({ children }: { children: ReactNode }) {
-  const [jobs, setJobs] = useState<Record<string, TrackedJob>>({}) // id -> {snapshot, toolPath}
-  const followed = useRef<Set<string>>(new Set())
-
-  const track = useCallback((jobId: string, toolPath: string): Promise<AnyJob | null> => {
-    if (followed.current.has(jobId)) return Promise.resolve(null)
-    followed.current.add(jobId)
-    const update = (snapshot: AnyJob) =>
-      setJobs((prev) => ({ ...prev, [jobId]: { snapshot: normalizeSnapshot(snapshot), toolPath } }))
-    return followJob<unknown>(jobId, update).catch((err: Error) => {
-      // A genuine failure (not a transient blip — followJob polls through
-      // those): mark it failed and drop it from `followed` so it can be
-      // re-tracked later.
-      followed.current.delete(jobId)
-      setJobs((prev) => {
-        const cur = prev[jobId]
-        if (!cur) return prev
-        const snap = { ...cur.snapshot, state: 'failed', error: err.message } as AnyJob
-        return { ...prev, [jobId]: { ...cur, snapshot: snap } }
-      })
-      throw err
-    })
-  }, [])
-
-  const dismiss = useCallback((jobId: string) => {
-    followed.current.delete(jobId)
-    setJobs((prev) => {
-      const next = { ...prev }
-      delete next[jobId]
-      return next
-    })
-  }, [])
-
-  return <JobsContext.Provider value={{ jobs, track, dismiss }}>{children}</JobsContext.Provider>
-}
+export const JobsContext = createContext<JobsContextValue | null>(null)
 
 export function useJobs(): JobsContextValue {
   const ctx = useContext(JobsContext)

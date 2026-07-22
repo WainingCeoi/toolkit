@@ -18,6 +18,10 @@ const baseName = (p: string): string => p.split('/').pop() ?? p
 
 const hintStyle: CSSProperties = { fontSize: 11.5, color: 'var(--faint)', marginTop: 4 }
 
+// Module-level so the "external subtitles off" render keeps a stable identity
+// and doesn't retrigger anything downstream that depends on `matches`.
+const EMPTY_MATCHES: SubtitleMatch[] = []
+
 export default function Remux() {
   // 01 — source folder + video selection
   const [folder, setFolder] = useState('')
@@ -40,9 +44,12 @@ export default function Remux() {
   // 03 — external subtitles
   const [useExternalSub, setUseExternalSub] = useState(false)
   const [subFolder, setSubFolder] = useState('')
-  const [matches, setMatches] = useState<SubtitleMatch[]>([])
-  const [matchesReady, setMatchesReady] = useState(true) // false while (re)fetching
-  const [subError, setSubError] = useState<string | null>(null)
+  const [fetched, setFetched] = useState<SubtitleMatch[]>([])
+  const [fetchError, setFetchError] = useState<string | null>(null)
+  // The inputs `fetched` was actually fetched for. Readiness is then a
+  // comparison against the current inputs (below) rather than a flag an effect
+  // has to keep in sync — so it cannot report ready for a stale match set.
+  const [loadedFor, setLoadedFor] = useState<string | null>(null)
 
   // 04 — output & run
   const [outFolder, setOutFolder] = useState('~/Desktop/🎬')
@@ -82,43 +89,53 @@ export default function Remux() {
     )
   }
 
+  // Identity of the inputs a match set would be fetched for; null when external
+  // subtitles are off and there is nothing to fetch. Empty subtitle folder falls
+  // back to the source folder (old page rule).
+  const subKey = useMemo(
+    () =>
+      useExternalSub
+        ? JSON.stringify([(subFolder || folder).trim(), selectedPaths])
+        : null,
+    [useExternalSub, subFolder, folder, selectedPaths],
+  )
+
+  // All three are derived, never written back from an effect: with external
+  // subtitles off there is nothing to match, and readiness is just "the loaded
+  // set belongs to the current inputs". matchesReady gates Start so a run can't
+  // fire with a stale/empty map while the debounced fetch below is in flight.
+  const matches = useExternalSub ? fetched : EMPTY_MATCHES
+  const subError = useExternalSub ? fetchError : null
+  const matchesReady = subKey === null || loadedFor === subKey
+
   // Auto-preview subtitle matches whenever the folder or selection changes.
-  // matchesReady gates Start so a run can't fire with a stale/empty map while
-  // this debounced fetch is still in flight.
   useEffect(() => {
-    if (!useExternalSub) {
-      setMatches([])
-      setSubError(null)
-      setMatchesReady(true)
-      return undefined
-    }
+    if (subKey === null) return undefined
     let stale = false
-    setMatchesReady(false)
     const timer = setTimeout(async () => {
       try {
-        // Empty subtitle folder falls back to the source folder (old page rule).
         const { matches: m } = await api.remuxSubtitles(
           (subFolder || folder).trim(),
           selectedPaths,
         )
-        if (!stale) {
-          setMatches(m)
-          setSubError(null)
-          setMatchesReady(true)
-        }
+        if (stale) return
+        setFetched(m)
+        setFetchError(null)
       } catch (err) {
-        if (!stale) {
-          setMatches([])
-          setSubError((err as Error).message)
-          setMatchesReady(true)
-        }
+        if (stale) return
+        setFetched([])
+        setFetchError((err as Error).message)
+      } finally {
+        // Marks these inputs resolved either way — a failed lookup is still an
+        // answer, and Start must not stay blocked on it forever.
+        if (!stale) setLoadedFor(subKey)
       }
     }, 300)
     return () => {
       stale = true
       clearTimeout(timer)
     }
-  }, [useExternalSub, subFolder, folder, selectedPaths])
+  }, [subKey, subFolder, folder, selectedPaths])
 
   function startRemux() {
     const payload: RemuxStartPayload = {
