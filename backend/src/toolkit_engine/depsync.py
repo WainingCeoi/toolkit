@@ -9,9 +9,12 @@ every ``pyproject.toml`` (uv) and ``package.json`` (npm), and for each:
   range to the latest published version, preserving its ^/~ operator.
 
 Rewrites are surgical text edits (never a re-serialize) so comments and
-formatting survive. Each manifest is committed on its own with just its manifest
-+ lockfile. Pure logic, no FastAPI; the router feeds ``on_message``/
-``is_cancelled`` in from a Job so sync progress streams and can be cancelled.
+formatting survive. After each rewrite the lockfile is re-resolved (``uv lock`` /
+``npm install --package-lock-only``) so the manifest and its lock always land in
+the same commit agreeing with each other. Every changed file across every
+manifest is committed together. Pure logic, no FastAPI; the router feeds
+``on_message``/``is_cancelled`` in from a Job so sync progress streams and can be
+cancelled.
 """
 
 from __future__ import annotations
@@ -208,6 +211,32 @@ def _stream(
     return proc.returncode == 0, "\n".join(lines)
 
 
+_LOCK_TIMEOUT = 300
+
+
+def _lock_refresh(cmd: list[str], folder: str, tool: str) -> tuple[bool, str]:
+    """Run a lockfile-only resolve in ``folder``. Returns (ok, output).
+
+    A timeout is reported as a failure rather than raised: apply rolls back on a
+    False, whereas an escaping TimeoutExpired would abort the request with the
+    manifest already rewritten and nothing restored.
+    """
+    exe = shutil.which(cmd[0])
+    if exe is None:
+        return False, f"❌ {tool} is not installed or not on PATH."
+    try:
+        proc = subprocess.run(
+            [exe, *cmd[1:]],
+            cwd=folder,
+            capture_output=True,
+            text=True,
+            timeout=_LOCK_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        return False, f"timed out after {_LOCK_TIMEOUT}s"
+    return proc.returncode == 0, f"{proc.stdout}\n{proc.stderr}"
+
+
 # --------------------------------------------------------------------------- #
 # uv (pyproject.toml + uv.lock)                                                #
 # --------------------------------------------------------------------------- #
@@ -222,6 +251,19 @@ def run_uv_sync(folder, on_message=None, is_cancelled=None) -> tuple[bool, str]:
     if uv is None:
         return False, "❌ uv is not installed or not on PATH."
     return _stream([uv, "sync", "-U"], folder, on_message, is_cancelled)
+
+
+def uv_lock_refresh(folder: str) -> tuple[bool, str]:
+    """Re-resolve uv.lock against the just-rewritten pyproject.toml.
+
+    Required, not cosmetic: uv.lock records the *declared* specifiers under
+    ``[package.metadata] requires-dist``, so raising a floor makes the lock
+    stale even when every resolved version stays identical — and when the
+    resolution is unchanged the file is byte-identical, so a commit would carry
+    the manifest alone and leave the lock behind. ``uv lock`` rewrites that
+    metadata without touching the virtualenv.
+    """
+    return _lock_refresh(["uv", "lock"], folder, "uv")
 
 
 def resolved_versions(folder: str) -> tuple[dict[str, str], str | None]:
@@ -476,17 +518,7 @@ def npm_latest(folder: str) -> tuple[dict[str, str], str | None]:
 def npm_lock_refresh(folder: str) -> tuple[bool, str]:
     """Resolve package-lock.json for the current package.json without installing
     node_modules — fast, and all apply needs to commit a consistent lock."""
-    npm = shutil.which("npm")
-    if npm is None:
-        return False, "❌ npm is not installed or not on PATH."
-    proc = subprocess.run(
-        [npm, "install", "--package-lock-only"],
-        cwd=folder,
-        capture_output=True,
-        text=True,
-        timeout=300,
-    )
-    return proc.returncode == 0, f"{proc.stdout}\n{proc.stderr}"
+    return _lock_refresh(["npm", "install", "--package-lock-only"], folder, "npm")
 
 
 def _semver_release(version: str) -> tuple[int, int, int]:
@@ -721,8 +753,8 @@ def _npm_write_with_retry(
 
 
 def write_manifest(manifest: Manifest) -> dict:
-    """Recompute and write one manifest (npm: refresh its lock too). No commit —
-    the caller commits every changed file from every manifest together."""
+    """Recompute and write one manifest, then re-resolve its lockfile. No commit
+    — the caller commits every changed file from every manifest together."""
     folder = str(manifest.path.parent)
     result = {
         "rel": manifest.rel,
@@ -758,7 +790,10 @@ def write_manifest(manifest: Manifest) -> dict:
 
     if manifest.kind == "uv":
         apply_uv_bumps(manifest.path, bumps)
-        applied, skipped, err = bumps, [], None
+        ok, log = uv_lock_refresh(folder)
+        applied, skipped, err = (
+            (bumps, [], None) if ok else ([], [], f"uv lock failed:\n{_tail(log)}")
+        )
     else:
         applied, skipped, err = _npm_write_with_retry(
             manifest.path, folder, bumps, originals[str(manifest.path)]

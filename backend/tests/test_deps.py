@@ -11,6 +11,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import time
+from pathlib import Path
 
 import pytest
 
@@ -408,13 +409,83 @@ def test_commit_paths_nothing_to_commit(tmp_path):
 # --------------------------------------------------------------------------- #
 
 
-def test_write_manifest_uv_writes_without_committing(tmp_path):
+def _fake_locks(monkeypatch, uv_ok=True):
+    """Stub both lockfile resolvers — the real ones shell out and hit the network.
+
+    The uv stub rewrites uv.lock the way a real ``uv lock`` does, so a test can
+    prove the *refreshed* lock is what reaches the commit.
+    """
+
+    def fake_uv_lock(folder):
+        if not uv_ok:
+            return False, "error: no solution found"
+        lock = Path(folder) / "uv.lock"
+        lock.write_text(
+            lock.read_text(encoding="utf-8") + "\n# relocked\n", encoding="utf-8"
+        )
+        return True, "Resolved 3 packages"
+
+    monkeypatch.setattr(depsync, "uv_lock_refresh", fake_uv_lock)
+    monkeypatch.setattr(depsync, "npm_latest", lambda folder: (LATEST, None))
+    monkeypatch.setattr(depsync, "npm_lock_refresh", lambda folder: (True, "ok"))
+
+
+def test_write_manifest_uv_writes_without_committing(tmp_path, monkeypatch):
     root = _uv_project(tmp_path / "proj")
+    _fake_locks(monkeypatch)
     manifest = depsync.Manifest(root / "pyproject.toml", "uv", "pyproject.toml")
     result = depsync.write_manifest(manifest)
     assert result["written"] == 3 and result["error"] is None
     assert '"fastapi>=0.115.0"' in (root / "pyproject.toml").read_text(encoding="utf-8")
     assert [p.name for p in result["changed"]] == ["pyproject.toml", "uv.lock"]
+
+
+def test_write_manifest_uv_relocks_after_raising_the_floors(tmp_path, monkeypatch):
+    """uv.lock records the declared specifiers under [package.metadata]
+    requires-dist, so rewriting pyproject.toml without re-locking leaves a lock
+    that disagrees with the manifest it ships beside."""
+    root = _uv_project(tmp_path / "proj")
+    _fake_locks(monkeypatch)
+    manifest = depsync.Manifest(root / "pyproject.toml", "uv", "pyproject.toml")
+
+    result = depsync.write_manifest(manifest)
+
+    assert result["error"] is None
+    lock_text = (root / "uv.lock").read_text(encoding="utf-8")
+    assert "# relocked" in lock_text  # re-resolved, not just carried along
+
+
+def test_write_manifest_uv_relocks_after_writing_not_before(tmp_path, monkeypatch):
+    """Order matters: re-locking before the rewrite would regenerate the lock
+    from the old floors and change nothing."""
+    root = _uv_project(tmp_path / "proj")
+    seen = {}
+
+    def spy(folder):
+        seen["pyproject"] = (root / "pyproject.toml").read_text(encoding="utf-8")
+        return True, "ok"
+
+    monkeypatch.setattr(depsync, "uv_lock_refresh", spy)
+    manifest = depsync.Manifest(root / "pyproject.toml", "uv", "pyproject.toml")
+    depsync.write_manifest(manifest)
+
+    assert '"fastapi>=0.115.0"' in seen["pyproject"]  # already bumped when re-locked
+
+
+def test_write_manifest_uv_rolls_back_when_relock_fails(tmp_path, monkeypatch):
+    root = _uv_project(tmp_path / "proj")
+    original = (root / "pyproject.toml").read_text(encoding="utf-8")
+    original_lock = (root / "uv.lock").read_text(encoding="utf-8")
+    _fake_locks(monkeypatch, uv_ok=False)
+    manifest = depsync.Manifest(root / "pyproject.toml", "uv", "pyproject.toml")
+
+    result = depsync.write_manifest(manifest)
+
+    assert result["error"] and "uv lock failed" in result["error"]
+    assert result["written"] == 0 and result["changed"] == []
+    # Neither file may be left half-upgraded.
+    assert (root / "pyproject.toml").read_text(encoding="utf-8") == original
+    assert (root / "uv.lock").read_text(encoding="utf-8") == original_lock
 
 
 def test_write_manifest_npm_skips_peer_conflicts_and_keeps_the_rest(
@@ -537,8 +608,7 @@ def test_apply_makes_one_combined_commit(client, tmp_path, monkeypatch):
     _init_git(repo)
     _git(repo, "add", "-A")
     _git(repo, "commit", "-qm", "init")
-    monkeypatch.setattr(depsync, "npm_latest", lambda folder: (LATEST, None))
-    monkeypatch.setattr(depsync, "npm_lock_refresh", lambda folder: (True, "ok"))
+    _fake_locks(monkeypatch)
 
     r = client.post("/api/deps/apply", json={"folder": str(repo), "commit": True})
     assert r.status_code == 200
@@ -567,15 +637,34 @@ def _committed_monorepo(root):
     return root
 
 
-def _fake_npm(monkeypatch):
-    monkeypatch.setattr(depsync, "npm_latest", lambda folder: (LATEST, None))
-    monkeypatch.setattr(depsync, "npm_lock_refresh", lambda folder: (True, "ok"))
+@requires_git
+def test_apply_commits_the_relocked_uv_lock(client, tmp_path, monkeypatch):
+    """The reported bug: pyproject.toml lands in the commit and uv.lock does not.
+
+    It happens whenever the scan's ``uv sync -U`` changed no resolved version —
+    the lock is then byte-identical, ``git add`` stages nothing for it, and the
+    commit carries the manifest alone with a lock that still names the old
+    floors. Re-locking during apply is what puts it back in the commit.
+    """
+    repo = _committed_monorepo(tmp_path / "repo")
+    _fake_locks(monkeypatch)
+
+    r = client.post("/api/deps/apply", json={"folder": str(repo), "commit": True})
+    assert r.status_code == 200
+
+    changed = _git(repo, "show", "--name-only", "--format=", "HEAD").stdout.split()
+    assert "backend/uv.lock" in changed
+    assert "backend/pyproject.toml" in changed
+    # And the lock is genuinely part of the diff, not merely staged unchanged.
+    diff = _git(repo, "show", "HEAD", "--", "backend/uv.lock").stdout
+    assert "+# relocked" in diff
+    assert _git(repo, "status", "--porcelain").stdout == ""  # nothing left behind
 
 
 @requires_git
 def test_apply_uses_a_custom_commit_message(client, tmp_path, monkeypatch):
     repo = _committed_monorepo(tmp_path / "repo")
-    _fake_npm(monkeypatch)
+    _fake_locks(monkeypatch)
     r = client.post(
         "/api/deps/apply",
         json={"folder": str(repo), "commit": True, "message": "chore: friday bump"},
@@ -587,7 +676,7 @@ def test_apply_uses_a_custom_commit_message(client, tmp_path, monkeypatch):
 @requires_git
 def test_apply_falls_back_to_default_message_when_blank(client, tmp_path, monkeypatch):
     repo = _committed_monorepo(tmp_path / "repo")
-    _fake_npm(monkeypatch)
+    _fake_locks(monkeypatch)
     r = client.post(
         "/api/deps/apply", json={"folder": str(repo), "commit": True, "message": "   "}
     )
