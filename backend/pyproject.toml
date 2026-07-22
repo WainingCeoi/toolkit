@@ -10,7 +10,6 @@ dependencies = [
     "python-multipart>=0.0.32",
     "sse-starlette>=3.4.6",
     "python-dotenv>=1.2.2",
-    # --- engine (carried over from the Streamlit app) ---
     "beautifulsoup4>=4.15.0",
     "ffmpeg-progress-yield>=1.1.3",
     "ffmpeg-python>=0.2.0",
@@ -27,28 +26,21 @@ dependencies = [
     "webdriver-manager>=4.1.2",
 ]
 
-# Doc→Markdown pulls MinerU's ML stack (torch/transformers, ~1 GB). It's the
-# only tool that needs it, so it lives in an optional extra: `make install`
-# includes it, but a lean install (`uv sync`) and CI skip it, and the tool
-# reports "MinerU not installed" gracefully when it's absent.
+# MinerU's ML stack is ~1 GB and only Doc→Markdown needs it, so it stays optional:
+# `make install` includes it, a lean `uv sync` skips it, and the tool reports
+# "MinerU not installed" rather than failing.
 [project.optional-dependencies]
 docmd = ["mineru[core]>=3.4.4"]
 
-# ruff is DECLARED here on purpose: undeclared, `uv run ruff` silently falls back to whatever
-# ruff is on PATH, so two machines lint identical code to different results. httpx backs the
-# fastapi TestClient: starlette imports it by that exact name, so the similarly-named httpx2
-# does NOT satisfy it — with only httpx2 declared, importing TestClient fails and every API
-# test errors during collection.
+# ruff is declared, not taken from PATH, so two machines lint identically.
 [dependency-groups]
-dev = ["pytest>=9.1.1", "httpx>=0.28.1", "ruff>=0.15.22"]
+dev = ["pytest>=9.1.1", "httpx2>=2.7.0", "ruff>=0.15.22"]
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
-# `src/` is the source root: the lifted subgen engine, the extracted toolkit_engine modules,
-# and the toolkit_api web layer. `sources = ["src"]` strips the prefix so all three install at
-# the wheel root and import cleanly.
+# `sources = ["src"]` strips the prefix so all three packages land at the wheel root.
 [tool.hatch.build.targets.wheel]
 sources = ["src"]
 only-include = ["src/subgen", "src/toolkit_engine", "src/toolkit_api"]
@@ -56,23 +48,17 @@ only-include = ["src/subgen", "src/toolkit_engine", "src/toolkit_api"]
 [tool.uv]
 package = true
 
-# One command runs the whole suite: `uv run pytest` (from backend/). Warnings are errors so new
-# code can't introduce a deprecation unnoticed; add narrow, message-pinned ignores only for
-# third-party deprecations already fixed upstream.
+# Warnings are errors, so a new deprecation can't slip in unnoticed.
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 filterwarnings = ["error"]
 
-# The PEP 8 gate. line-length 88 is this repo's existing convention (the engine already passes
-# it). It stays at [tool.ruff] top level, where both the linter and the formatter read it.
 [tool.ruff]
 line-length = 88
 target-version = "py314"
 
-# `preview = true` is what makes E1xx/E2xx/E3xx (the classic PEP 8 body) actually fire — the
-# family shorthand `select = ["E"]` is a silent no-op for those without it.
-# E/W/F/B/I were the old repo's selection (the lifted engine is already clean under them);
-# W and N complete the PEP 8 gate for the new code.
+# `preview` is what makes E1xx/E2xx/E3xx fire — without it `select = ["E"]`
+# silently matches none of them.
 [tool.ruff.lint]
 preview = true
 select = ["E", "W", "F", "N", "B", "I"]
