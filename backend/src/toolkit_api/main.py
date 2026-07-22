@@ -23,6 +23,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from .routers import (
+    depsync,
     docmd,
     docpdf,
     fs,
@@ -106,6 +107,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
         docpdf.router,
         docmd.router,
         subs.router,
+        depsync.router,
     ):
         app.include_router(api_router, prefix="/api")
     # Public subscription route for proxy clients: GET /sub/{id} (no /api). It

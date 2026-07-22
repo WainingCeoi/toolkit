@@ -178,6 +178,8 @@ def test_all_api_routers_are_wired(app_state):
         "/api/doc-to-markdown/health",
         "/api/subs/generate",
         "/api/subs/history",
+        "/api/deps/scan",
+        "/api/deps/apply",
         "/sub/{sub_id}",
     }
     assert expected <= paths, f"unwired routes: {expected - paths}"
