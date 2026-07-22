@@ -5,8 +5,8 @@ Two phases keep the review-then-apply contract:
   and, per manifest, syncs (uv sync -U / npm install) and returns the proposed
   bumps for review.
 - POST /deps/apply is synchronous — per manifest it recomputes from the synced
-  state (server-authoritative), rewrites the manifest, refreshes the npm lock,
-  and commits that manifest + its lockfile on its own.
+  state (server-authoritative) and rewrites the manifest, then commits every
+  changed manifest + lockfile together in a single commit.
 """
 
 from __future__ import annotations
@@ -27,6 +27,10 @@ _NO_MANIFESTS = (
     "❌ No pyproject.toml or package.json found under that folder "
     "(node_modules, .venv, .git, and build dirs are skipped)."
 )
+_NOT_A_REPO = (
+    "❌ Not a git repository — uncheck “commit after applying” to write without "
+    "committing, or run `git init` there first."
+)
 
 
 class ScanIn(BaseModel):
@@ -46,20 +50,29 @@ class BumpOut(BaseModel):
     major: bool
 
 
+class SkippedOut(BaseModel):
+    name: str
+    reason: str
+
+
 class TargetResultOut(BaseModel):
     rel: str
     kind: str
     written: int
     bumps: list[BumpOut]
-    committed: bool
-    commit_sha: str | None = None
+    skipped: list[SkippedOut]
     error: str | None = None
+
+
+class CommitOut(BaseModel):
+    sha: str | None = None
+    files: list[str]
 
 
 class ApplyOut(BaseModel):
     results: list[TargetResultOut]
+    commits: list[CommitOut]
     written_total: int
-    committed_count: int
 
 
 @router.post("/scan", response_model=JobStartedOut)
@@ -106,7 +119,43 @@ def apply(req: ApplyIn) -> ApplyOut:
     if not manifests:
         raise HTTPException(status_code=400, detail=_NO_MANIFESTS)
 
-    results = [depsync.apply_manifest(manifest, req.commit) for manifest in manifests]
+    # Check git up front, so a non-repo never leaves manifests edited.
+    if req.commit:
+        for manifest in manifests:
+            if depsync.git_root(str(manifest.path.parent)) is None:
+                raise HTTPException(status_code=400, detail=_NOT_A_REPO)
+
+    results = [depsync.write_manifest(manifest) for manifest in manifests]
+    commits: list[dict] = []
+
+    if req.commit:
+        # One commit per repo (normally exactly one) covering every changed file.
+        groups: dict[str, list[Path]] = {}
+        for result in results:
+            for path in result["changed"]:
+                root = depsync.git_root(str(path.parent))
+                if root:
+                    groups.setdefault(root, []).append(path)
+
+        commit_error = None
+        for root, paths in groups.items():
+            sha, rels, git_err = depsync.commit_paths(
+                root, depsync.COMMIT_SUBJECT, paths
+            )
+            if git_err:
+                commit_error = git_err
+                break
+            commits.append({"sha": sha, "files": rels})
+
+        if commit_error:
+            # All-or-nothing: nothing lands unless the commit lands.
+            for result in results:
+                depsync.restore(result["originals"])
+                result["written"] = 0
+                result["bumps"] = []
+                result["error"] = f"{commit_error} (rolled back)"
+            commits = []
+
     return ApplyOut(
         results=[
             TargetResultOut(
@@ -114,12 +163,11 @@ def apply(req: ApplyIn) -> ApplyOut:
                 kind=r["kind"],
                 written=r["written"],
                 bumps=[BumpOut(**b) for b in r["bumps"]],
-                committed=r["committed"],
-                commit_sha=r["commit_sha"],
+                skipped=[SkippedOut(**s) for s in r["skipped"]],
                 error=r["error"],
             )
             for r in results
         ],
+        commits=[CommitOut(**c) for c in commits],
         written_total=sum(r["written"] for r in results),
-        committed_count=sum(1 for r in results if r["committed"]),
     )

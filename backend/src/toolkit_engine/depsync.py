@@ -566,70 +566,73 @@ def apply_npm_bumps(package_json_path: Path, bumps: list[Bump]) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def is_git_repo(folder: str) -> bool:
+COMMIT_SUBJECT = "chore(deps): update dependencies"
+
+
+def git_root(folder: str) -> str | None:
+    """The repo root containing ``folder``, or None if it isn't a git repo."""
     proc = subprocess.run(
-        ["git", "-C", folder, "rev-parse", "--is-inside-work-tree"],
+        ["git", "-C", folder, "rev-parse", "--show-toplevel"],
         capture_output=True,
         text=True,
     )
-    return proc.returncode == 0 and proc.stdout.strip() == "true"
+    if proc.returncode != 0:
+        return None
+    return proc.stdout.strip() or None
 
 
-def commit_subject(manifest: Manifest) -> str:
-    """A concise, trailer-free conventional-commit subject (no body)."""
-    parent = Path(manifest.rel).parent
-    label = parent.name or "project"  # "backend", "frontend", or "project"
-    return f"chore(deps): update {label} dependencies"
+def commit_paths(
+    repo_root: str, message: str, paths: list[Path]
+) -> tuple[str | None, list[str], str | None]:
+    """Commit exactly ``paths``, together, in one commit. (sha, rels, error).
 
-
-def commit_files(
-    folder: str, message: str, files: list[str]
-) -> tuple[str | None, str | None]:
-    """Commit only ``files`` (relative to ``folder``). Returns (short_sha, error).
-
-    Each file is staged individually — so a freshly-created (untracked) lock is
+    Each path is staged individually — so a freshly-created (untracked) lock is
     included and a gitignored one is skipped rather than aborting. The commit is
-    path-limited to exactly those staged files, so any other staged or unstaged
-    work in the repo is neither committed nor touched.
+    path-limited to those staged files, so any other staged or unstaged work in
+    the repo is neither committed nor touched.
     """
-    base = Path(folder)
-    staged: list[str] = []
-    for name in files:
-        if not (base / name).is_file():
+    rels: list[str] = []
+    for path in paths:
+        if not path.is_file():
             continue
+        try:
+            rel = str(path.relative_to(repo_root))
+        except ValueError:
+            continue  # outside this repo
         added = subprocess.run(
-            ["git", "-C", folder, "add", "--", name],
+            ["git", "-C", repo_root, "add", "--", rel],
             capture_output=True,
             text=True,
         )
         if added.returncode == 0:  # a gitignored file fails here and is skipped
-            staged.append(name)
+            rels.append(rel)
 
-    nothing = "❌ Nothing to commit — the manifest and lockfile are unchanged."
-    if not staged:
-        return None, nothing
+    nothing = "❌ Nothing to commit — the manifests and lockfiles are unchanged."
+    if not rels:
+        return None, [], nothing
     diff = subprocess.run(
-        ["git", "-C", folder, "diff", "--cached", "--quiet", "--", *staged]
+        ["git", "-C", repo_root, "diff", "--cached", "--quiet", "--", *rels]
     )
     if diff.returncode == 0:  # 0 == no staged changes for these paths
-        return None, nothing
+        return None, [], nothing
 
     commit = subprocess.run(
-        ["git", "-C", folder, "commit", "-m", message, "--", *staged],
+        ["git", "-C", repo_root, "commit", "-m", message, "--", *rels],
         capture_output=True,
         text=True,
     )
     if commit.returncode != 0:
         return (
             None,
+            [],
             f"❌ git commit failed: {commit.stderr.strip() or commit.stdout.strip()}",
         )
     sha = subprocess.run(
-        ["git", "-C", folder, "rev-parse", "--short", "HEAD"],
+        ["git", "-C", repo_root, "rev-parse", "--short", "HEAD"],
         capture_output=True,
         text=True,
     )
-    return sha.stdout.strip() or None, None
+    return sha.stdout.strip() or None, rels, None
 
 
 # --------------------------------------------------------------------------- #
@@ -637,6 +640,7 @@ def commit_files(
 # --------------------------------------------------------------------------- #
 
 _LOCKS = {"uv": "uv.lock", "npm": "package-lock.json"}
+_NPM_RETRY_ROUNDS = 3
 
 
 def scan_manifest(manifest: Manifest, on_message=None, is_cancelled=None) -> dict:
@@ -672,18 +676,63 @@ def scan_manifest(manifest: Manifest, on_message=None, is_cancelled=None) -> dic
     return out
 
 
-def apply_manifest(manifest: Manifest, commit: bool) -> dict:
-    """Recompute, write, (npm: refresh the lock,) and optionally commit one
-    manifest. Atomic when committing: a commit failure rolls the files back."""
+def _eresolve_culprits(log: str, candidates: set[str]) -> set[str]:
+    """Which of the packages we bumped does npm name in its ERESOLVE report."""
+    found = set()
+    for name in candidates:
+        # npm writes each package as "<name>@<spec>"; anchoring on the preceding
+        # character keeps "eslint" from matching "eslint-plugin-react@...".
+        if re.search(r'(?:^|[\s/"])' + re.escape(name) + r"@", log):
+            found.add(name)
+    return found
+
+
+def _npm_write_with_retry(
+    package_json_path: Path, folder: str, bumps: list[Bump], original: str
+) -> tuple[list[Bump], list[dict], str | None]:
+    """Write the npm bumps and refresh the lock, backing out any package npm
+    reports as an unresolvable peer conflict and retrying with the rest.
+
+    Upgrading everything to latest can produce a graph npm rightly refuses — a
+    new major of a tool whose plugins still pin the old one (eslint 10 vs
+    plugins on eslint 9). Rather than failing the whole manifest, drop the
+    conflicting packages and upgrade the remainder. (applied, skipped, error).
+    """
+    remaining = list(bumps)
+    skipped: list[dict] = []
+    for _ in range(_NPM_RETRY_ROUNDS):
+        package_json_path.write_text(original, encoding="utf-8")
+        if not remaining:
+            return [], skipped, None
+        apply_npm_bumps(package_json_path, remaining)
+        ok, log = npm_lock_refresh(folder)
+        if ok:
+            return remaining, skipped, None
+        culprits = _eresolve_culprits(log, {b.name for b in remaining})
+        if not culprits:
+            return [], skipped, f"npm lock refresh failed:\n{_tail(log)}"
+        skipped.extend(
+            {"name": b.name, "reason": "peer-dependency conflict"}
+            for b in remaining
+            if b.name in culprits
+        )
+        remaining = [b for b in remaining if b.name not in culprits]
+    return [], skipped, "npm could not resolve these upgrades after several tries."
+
+
+def write_manifest(manifest: Manifest) -> dict:
+    """Recompute and write one manifest (npm: refresh its lock too). No commit —
+    the caller commits every changed file from every manifest together."""
     folder = str(manifest.path.parent)
     result = {
         "rel": manifest.rel,
         "kind": manifest.kind,
         "written": 0,
         "bumps": [],
-        "committed": False,
-        "commit_sha": None,
+        "skipped": [],
         "error": None,
+        "changed": [],
+        "originals": {},
     }
 
     if manifest.kind == "uv":
@@ -698,54 +747,42 @@ def apply_manifest(manifest: Manifest, commit: bool) -> dict:
             result["error"] = err
             return result
         bumps = compute_npm_bumps(manifest.path, latest)
-
     if not bumps:
-        return result  # written stays 0
-    if commit and not is_git_repo(folder):
-        result["error"] = (
-            "❌ Not a git repository — uncheck commit to write without committing, "
-            "or run `git init` there first."
-        )
         return result
 
-    files = [manifest.path.name, _LOCKS[manifest.kind]]
-    originals = {
-        f: (
-            (Path(folder) / f).read_text(encoding="utf-8")
-            if (Path(folder) / f).is_file()
-            else None
-        )
-        for f in files
+    lock = Path(folder) / _LOCKS[manifest.kind]
+    originals: dict[str, str | None] = {
+        str(manifest.path): manifest.path.read_text(encoding="utf-8"),
+        str(lock): lock.read_text(encoding="utf-8") if lock.is_file() else None,
     }
 
     if manifest.kind == "uv":
         apply_uv_bumps(manifest.path, bumps)
+        applied, skipped, err = bumps, [], None
     else:
-        apply_npm_bumps(manifest.path, bumps)
-        ok, log = npm_lock_refresh(folder)
-        if not ok:
-            _restore(folder, originals)
-            result["error"] = f"npm lock refresh failed:\n{_tail(log)}"
-            return result
+        applied, skipped, err = _npm_write_with_retry(
+            manifest.path, folder, bumps, originals[str(manifest.path)]
+        )
+    result["skipped"] = skipped
+    if err:
+        restore(originals)
+        result["error"] = err
+        return result
+    if not applied:  # every bump was backed out — nothing actually changed
+        restore(originals)
+        return result
 
-    if commit:
-        sha, git_err = commit_files(folder, commit_subject(manifest), files)
-        if git_err:
-            _restore(folder, originals)
-            result["error"] = f"{git_err} (rolled back — fix the git issue and retry.)"
-            return result
-        result["committed"] = True
-        result["commit_sha"] = sha
-
-    result["written"] = len(bumps)
-    result["bumps"] = [bump_dict(b) for b in bumps]
+    result["written"] = len(applied)
+    result["bumps"] = [bump_dict(b) for b in applied]
+    result["changed"] = [manifest.path] + ([lock] if lock.is_file() else [])
+    result["originals"] = originals
     return result
 
 
-def _restore(folder: str, originals: dict[str, str | None]) -> None:
+def restore(originals: dict[str, str | None]) -> None:
     """Undo writes: restore each captured file, or delete one we newly created."""
-    for name, text in originals.items():
-        path = Path(folder) / name
+    for path_str, text in originals.items():
+        path = Path(path_str)
         if text is None:
             path.unlink(missing_ok=True)
         else:

@@ -334,25 +334,13 @@ def test_apply_npm_bumps_tolerates_spacing(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
-# git: subject + path-limited commit                                          #
+# git: combined, path-limited commit                                          #
 # --------------------------------------------------------------------------- #
 
 
-def test_commit_subject_labels_by_folder():
-    def m(rel):
-        from pathlib import Path
-
-        return depsync.Manifest(Path("/x") / rel, "uv", rel)
-
-    assert depsync.commit_subject(m("backend/pyproject.toml")) == (
-        "chore(deps): update backend dependencies"
-    )
-    assert depsync.commit_subject(m("frontend/package.json")) == (
-        "chore(deps): update frontend dependencies"
-    )
-    assert depsync.commit_subject(m("pyproject.toml")) == (
-        "chore(deps): update project dependencies"
-    )
+def test_commit_subject_is_a_plain_conventional_subject():
+    assert depsync.COMMIT_SUBJECT == "chore(deps): update dependencies"
+    assert "\n" not in depsync.COMMIT_SUBJECT  # a subject only, never a body
 
 
 def _git(repo, *args):
@@ -361,72 +349,114 @@ def _git(repo, *args):
     )
 
 
-def _init_repo(repo, track_lock=True):
-    _uv_project(repo)
+def _init_git(repo):
     _git(repo, "init", "-q")
     _git(repo, "config", "user.email", "t@example.com")
     _git(repo, "config", "user.name", "Test")
     _git(repo, "config", "commit.gpgsign", "false")
+    return repo
+
+
+def _init_repo(repo, track_lock=True):
+    _uv_project(repo)
+    _init_git(repo)
     _git(repo, "add", "-A" if track_lock else "pyproject.toml")
     _git(repo, "commit", "-qm", "init")
     return repo
 
 
 @requires_git
-def test_commit_files_includes_untracked_lock_and_skips_unrelated(tmp_path):
+def test_git_root_finds_the_repo(tmp_path):
+    repo = _init_repo(tmp_path / "repo")
+    assert depsync.git_root(str(repo)) is not None
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    assert depsync.git_root(str(plain)) is None
+
+
+@requires_git
+def test_commit_paths_includes_untracked_lock_and_skips_unrelated(tmp_path):
     repo = _init_repo(tmp_path / "repo", track_lock=False)  # uv.lock untracked
     path = repo / "pyproject.toml"
     depsync.apply_uv_bumps(path, depsync.compute_uv_bumps(path, RESOLVED))
     (repo / "other.txt").write_text("wip\n", encoding="utf-8")
     _git(repo, "add", "other.txt")
 
-    sha, err = depsync.commit_files(
-        str(repo),
-        "chore(deps): update project dependencies",
-        ["pyproject.toml", "uv.lock"],
+    sha, rels, err = depsync.commit_paths(
+        str(repo), depsync.COMMIT_SUBJECT, [path, repo / "uv.lock"]
     )
     assert err is None and sha
+    assert sorted(rels) == ["pyproject.toml", "uv.lock"]  # untracked lock included
     files = sorted(
         _git(repo, "show", "--name-only", "--format=", "HEAD").stdout.split()
     )
-    assert files == ["pyproject.toml", "uv.lock"]  # untracked lock included
+    assert files == ["pyproject.toml", "uv.lock"]
     assert "A  other.txt" in _git(repo, "status", "--porcelain").stdout  # left staged
 
 
 @requires_git
-def test_commit_files_nothing_to_commit(tmp_path):
+def test_commit_paths_nothing_to_commit(tmp_path):
     repo = _init_repo(tmp_path / "repo")
-    sha, err = depsync.commit_files(str(repo), "msg", ["pyproject.toml", "uv.lock"])
-    assert sha is None and err and "Nothing to commit" in err
-
-
-# --------------------------------------------------------------------------- #
-# Orchestration: apply_manifest                                               #
-# --------------------------------------------------------------------------- #
-
-
-@requires_git
-def test_apply_manifest_uv_writes_and_commits(tmp_path):
-    repo = _init_repo(tmp_path / "repo")
-    manifest = depsync.Manifest(repo / "pyproject.toml", "uv", "pyproject.toml")
-    result = depsync.apply_manifest(manifest, commit=True)
-    assert result["written"] == 3 and result["committed"] and result["commit_sha"]
-    assert '"fastapi>=0.115.0"' in (repo / "pyproject.toml").read_text(encoding="utf-8")
-    assert (
-        "chore(deps): update project dependencies"
-        == _git(repo, "log", "-1", "--format=%s").stdout.strip()
+    sha, rels, err = depsync.commit_paths(
+        str(repo), depsync.COMMIT_SUBJECT, [repo / "pyproject.toml"]
     )
+    assert sha is None and rels == [] and err and "Nothing to commit" in err
 
 
-@requires_git
-def test_apply_manifest_rolls_back_on_commit_failure(tmp_path, monkeypatch):
-    repo = _init_repo(tmp_path / "repo")
-    original = (repo / "pyproject.toml").read_text(encoding="utf-8")
-    monkeypatch.setattr(depsync, "commit_files", lambda *a, **k: (None, "❌ boom"))
-    manifest = depsync.Manifest(repo / "pyproject.toml", "uv", "pyproject.toml")
-    result = depsync.apply_manifest(manifest, commit=True)
-    assert result["error"] and "rolled back" in result["error"]
-    assert (repo / "pyproject.toml").read_text(encoding="utf-8") == original  # restored
+# --------------------------------------------------------------------------- #
+# write_manifest + npm peer-conflict recovery                                 #
+# --------------------------------------------------------------------------- #
+
+
+def test_write_manifest_uv_writes_without_committing(tmp_path):
+    root = _uv_project(tmp_path / "proj")
+    manifest = depsync.Manifest(root / "pyproject.toml", "uv", "pyproject.toml")
+    result = depsync.write_manifest(manifest)
+    assert result["written"] == 3 and result["error"] is None
+    assert '"fastapi>=0.115.0"' in (root / "pyproject.toml").read_text(encoding="utf-8")
+    assert [p.name for p in result["changed"]] == ["pyproject.toml", "uv.lock"]
+
+
+def test_write_manifest_npm_skips_peer_conflicts_and_keeps_the_rest(
+    tmp_path, monkeypatch
+):
+    root = _npm_project(tmp_path / "web")
+    monkeypatch.setattr(depsync, "npm_latest", lambda folder: (LATEST, None))
+    calls = {"n": 0}
+
+    def fake_refresh(folder):
+        calls["n"] += 1
+        if calls["n"] == 1:  # npm ERESOLVE naming eslint as the conflict
+            return False, (
+                "npm error Could not resolve dependency:\n"
+                'npm error dev eslint@"^10.7.0" from the root project\n'
+                "npm error Conflicting peer dependency: eslint@10.7.0\n"
+            )
+        return True, "ok"
+
+    monkeypatch.setattr(depsync, "npm_lock_refresh", fake_refresh)
+    manifest = depsync.Manifest(root / "package.json", "npm", "package.json")
+    result = depsync.write_manifest(manifest)
+
+    assert result["error"] is None
+    assert [s["name"] for s in result["skipped"]] == ["eslint"]
+    assert "eslint" not in {b["name"] for b in result["bumps"]}
+    text = (root / "package.json").read_text(encoding="utf-8")
+    assert '"react": "^19.1.0"' in text  # everything else still upgraded
+    assert '"eslint": "^9.15.0"' in text  # the conflicting one left alone
+
+
+def test_write_manifest_npm_rolls_back_when_no_culprit_is_named(tmp_path, monkeypatch):
+    root = _npm_project(tmp_path / "web")
+    original = (root / "package.json").read_text(encoding="utf-8")
+    monkeypatch.setattr(depsync, "npm_latest", lambda folder: (LATEST, None))
+    monkeypatch.setattr(
+        depsync, "npm_lock_refresh", lambda folder: (False, "network is down")
+    )
+    manifest = depsync.Manifest(root / "package.json", "npm", "package.json")
+    result = depsync.write_manifest(manifest)
+    assert result["error"] and "npm lock refresh failed" in result["error"]
+    assert (root / "package.json").read_text(encoding="utf-8") == original
 
 
 # --------------------------------------------------------------------------- #
@@ -464,10 +494,8 @@ def test_scan_rejects_bad_folder_and_no_manifests(client, tmp_path):
     empty = tmp_path / "empty"
     empty.mkdir()
     r = client.post("/api/deps/scan", json={"folder": str(empty)})
-    assert (
-        r.status_code == 400
-        and "No pyproject.toml or package.json" in r.json()["detail"]
-    )
+    assert r.status_code == 400
+    assert "No pyproject.toml or package.json" in r.json()["detail"]
 
 
 def test_scan_returns_per_manifest_bumps(client, tmp_path, monkeypatch):
@@ -493,30 +521,39 @@ def test_apply_rejects_empty_folder(client):
     assert r.status_code == 400 and r.json()["detail"].startswith("❌")
 
 
+def test_apply_refuses_non_git_folder_before_writing(client, tmp_path):
+    root = _monorepo(tmp_path / "plain")
+    original = (root / "backend" / "pyproject.toml").read_text(encoding="utf-8")
+    r = client.post("/api/deps/apply", json={"folder": str(root), "commit": True})
+    assert r.status_code == 400 and "Not a git repository" in r.json()["detail"]
+    assert (root / "backend" / "pyproject.toml").read_text(
+        encoding="utf-8"
+    ) == original  # untouched
+
+
 @requires_git
-def test_apply_upgrades_both_ecosystems(client, tmp_path, monkeypatch):
-    repo = tmp_path / "repo"
-    _monorepo(repo)
-    _git(repo, "init", "-q")
-    _git(repo, "config", "user.email", "t@e.com")
-    _git(repo, "config", "user.name", "T")
-    _git(repo, "config", "commit.gpgsign", "false")
+def test_apply_makes_one_combined_commit(client, tmp_path, monkeypatch):
+    repo = _monorepo(tmp_path / "repo")
+    _init_git(repo)
     _git(repo, "add", "-A")
     _git(repo, "commit", "-qm", "init")
-    # npm bits are faked so no real npm runs.
     monkeypatch.setattr(depsync, "npm_latest", lambda folder: (LATEST, None))
     monkeypatch.setattr(depsync, "npm_lock_refresh", lambda folder: (True, "ok"))
 
     r = client.post("/api/deps/apply", json={"folder": str(repo), "commit": True})
     assert r.status_code == 200
     body = r.json()
-    assert body["written_total"] == 8 and body["committed_count"] == 2
-    results = {x["rel"]: x for x in body["results"]}
-    assert results["backend/pyproject.toml"]["committed"]
-    assert results["frontend/package.json"]["committed"]
+    assert body["written_total"] == 8
+    assert len(body["commits"]) == 1  # ONE combined commit, not one per manifest
+    assert sorted(body["commits"][0]["files"]) == [
+        "backend/pyproject.toml",
+        "backend/uv.lock",
+        "frontend/package.json",
+    ]
+    assert (
+        _git(repo, "log", "-1", "--format=%s").stdout.strip()
+        == "chore(deps): update dependencies"
+    )
     assert '"react": "^19.1.0"' in (repo / "frontend" / "package.json").read_text(
         encoding="utf-8"
     )
-    subjects = _git(repo, "log", "--format=%s", "-2").stdout
-    assert "chore(deps): update backend dependencies" in subjects
-    assert "chore(deps): update frontend dependencies" in subjects

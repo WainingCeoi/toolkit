@@ -215,10 +215,19 @@ export default function DepUpgrade() {
                     {r.error
                       ? r.error
                       : r.written === 0
-                        ? 'nothing to upgrade'
-                        : r.committed
-                          ? `upgraded ${r.written} and committed ${r.commit_sha}`
-                          : `upgraded ${r.written} (not committed)`}
+                        ? 'nothing upgraded'
+                        : `upgraded ${r.written}`}
+                    {r.skipped.length > 0 && (
+                      <div style={{ marginTop: 4, font: '11px var(--mono)' }}>
+                        skipped {r.skipped.map((s) => s.name).join(', ')} —{' '}
+                        {r.skipped[0].reason}
+                      </div>
+                    )}
+                  </div>
+                ))}
+                {applyResult.commits.map((c) => (
+                  <div key={c.sha} className="note ok" style={{ marginTop: 6 }}>
+                    Committed <strong>{c.sha}</strong> — {c.files.join(', ')}
                   </div>
                 ))}
               </div>
