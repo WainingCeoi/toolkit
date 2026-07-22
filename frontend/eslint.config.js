@@ -28,7 +28,7 @@ export default [
     languageOptions: { globals: { ...globals.node } },
   },
   {
-    files: ['src/**/*.{js,jsx,ts,tsx}'],
+    files: ['src/**/*.{ts,tsx}'],
     languageOptions: {
       ecmaVersion: 2023,
       sourceType: 'module',
@@ -68,7 +68,7 @@ export default [
     },
   },
   {
-    files: ['src/**/*.test.{js,jsx,ts,tsx}'],
+    files: ['src/**/*.test.{ts,tsx}'],
     languageOptions: {
       globals: {
         ...globals.browser,

@@ -22,9 +22,9 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
 
-    // Dropped in the final phase, once no .jsx/.js sources remain under src/.
-    "allowJs": true,
-    "checkJs": false
+    // No .js/.jsx remains under src/. Leaving allowJs off means a stray one
+    // cannot slip back in unchecked -- it becomes a build error instead.
+    "allowJs": false
   },
   "include": ["src"]
 }
