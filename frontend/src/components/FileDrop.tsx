@@ -1,17 +1,27 @@
 // Upload zone: click or drag files in, list them, remove one, clear on run.
 
-import React, { useRef, useState } from 'react'
+import { useRef, useState } from 'react'
 
-function fmtSize(bytes) {
+function fmtSize(bytes: number): string {
   if (bytes > 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`
   return `${Math.max(1, Math.round(bytes / 1024))} KB`
 }
 
-export default function FileDrop({ accept, files, onChange, hint }) {
-  const input = useRef(null)
+interface FileDropProps {
+  accept?: string
+  files: File[]
+  onChange: (files: File[]) => void
+  hint?: string
+}
+
+export default function FileDrop({ accept, files, onChange, hint }: FileDropProps) {
+  const input = useRef<HTMLInputElement>(null)
   const [drag, setDrag] = useState(false)
 
-  function addFiles(list) {
+  // FileList is null on an input the user dismissed without choosing; the JS
+  // version relied on Array.from(null) never being reached in practice.
+  function addFiles(list: FileList | null) {
+    if (!list) return
     onChange([...files, ...Array.from(list)])
   }
 
@@ -19,8 +29,8 @@ export default function FileDrop({ accept, files, onChange, hint }) {
     <div className="field">
       <div
         className={`filedrop ${drag ? 'drag' : ''}`}
-        onClick={() => input.current.click()}
-        onKeyDown={(e) => e.key === 'Enter' && input.current.click()}
+        onClick={() => input.current?.click()}
+        onKeyDown={(e) => e.key === 'Enter' && input.current?.click()}
         role="button"
         tabIndex={0}
         onDragOver={(e) => {
@@ -50,7 +60,9 @@ export default function FileDrop({ accept, files, onChange, hint }) {
         <ul className="filelist">
           {files.map((f, i) => (
             <li key={`${f.name}-${i}`}>
-              <span>{f.name} · {fmtSize(f.size)}</span>
+              <span>
+                {f.name} · {fmtSize(f.size)}
+              </span>
               <button type="button" onClick={() => onChange(files.filter((_, j) => j !== i))}>
                 remove
               </button>

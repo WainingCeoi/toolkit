@@ -1,12 +1,12 @@
 // Fixed-height, copyable code block (the old pages' st.code contract).
 
-import React, { useState } from 'react'
+import { useState } from 'react'
 
 // navigator.clipboard only exists in secure contexts (https / localhost), so it
 // is undefined when the app is opened over plain HTTP on the LAN (make host).
 // Fall back to a hidden-textarea execCommand copy there, and surface failure
 // instead of throwing silently.
-async function copyText(text) {
+async function copyText(text: string): Promise<void> {
   if (navigator.clipboard?.writeText) {
     await navigator.clipboard.writeText(text)
     return
@@ -24,8 +24,10 @@ async function copyText(text) {
   }
 }
 
-export default function CodeBox({ text }) {
-  const [status, setStatus] = useState('idle') // idle | copied | failed
+type CopyStatus = 'idle' | 'copied' | 'failed'
+
+export default function CodeBox({ text }: { text: string }) {
+  const [status, setStatus] = useState<CopyStatus>('idle')
 
   async function copy() {
     try {

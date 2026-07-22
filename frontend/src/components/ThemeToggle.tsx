@@ -1,11 +1,10 @@
 // Three-way color-mode switch (Auto / Light / Dark), rendered as a small
 // segmented control in the rail. Auto follows the system.
 
-import React from 'react'
-import { useTheme, MODES } from '../theme'
+import { useTheme, MODES, type ThemeMode } from '../theme'
 
-const ICON = { auto: '◐', light: '☀', dark: '☾' }
-const LABEL = { auto: 'Auto', light: 'Light', dark: 'Dark' }
+const ICON: Record<ThemeMode, string> = { auto: '◐', light: '☀', dark: '☾' }
+const LABEL: Record<ThemeMode, string> = { auto: 'Auto', light: 'Light', dark: 'Dark' }
 
 export default function ThemeToggle() {
   const [mode, setMode] = useTheme()

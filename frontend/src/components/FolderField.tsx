@@ -2,13 +2,27 @@
 // Typing/pasting works everywhere; Browse opens the macOS chooser through the
 // backend (same machine as the server by design).
 
-import React, { useState } from 'react'
+import { useState } from 'react'
 import { api } from '../api'
 import Button from './Button'
 
-export default function FolderField({ label, value, onChange, placeholder, startDir }) {
+interface FolderFieldProps {
+  label: string
+  value: string
+  onChange: (path: string) => void
+  placeholder?: string
+  startDir?: string
+}
+
+export default function FolderField({
+  label,
+  value,
+  onChange,
+  placeholder,
+  startDir,
+}: FolderFieldProps) {
   const [busy, setBusy] = useState(false)
-  const [error, setError] = useState(null)
+  const [error, setError] = useState<string | null>(null)
 
   async function browse() {
     setBusy(true)
@@ -19,7 +33,7 @@ export default function FolderField({ label, value, onChange, placeholder, start
     } catch (err) {
       // Surface the failure instead of a dead button click (the dialog can't
       // open when the server isn't on this Mac's GUI session, etc.).
-      setError(err.message || 'Could not open the folder picker.')
+      setError((err as Error).message || 'Could not open the folder picker.')
     } finally {
       setBusy(false)
     }
@@ -40,7 +54,11 @@ export default function FolderField({ label, value, onChange, placeholder, start
           📂 Browse…
         </Button>
       </div>
-      {error && <div className="note error" style={{ marginTop: 6 }}>{error}</div>}
+      {error && (
+        <div className="note error" style={{ marginTop: 6 }}>
+          {error}
+        </div>
+      )}
     </div>
   )
 }

@@ -1,11 +1,12 @@
 // Live view of one job: message line, per-item LED bars, terminal states.
 // Pure render over the snapshot the jobs context keeps fresh via SSE.
 
-import React, { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { api } from '../api'
 import Button from './Button'
+import type { Job, JobItemState } from '../types/api'
 
-export function LedBar({ pct, state }) {
+export function LedBar({ pct, state }: { pct: number; state: JobItemState }) {
   const cls = state === 'done' ? 'done' : state === 'failed' ? 'failed' : ''
   const width = state === 'done' ? 100 : pct
   return (
@@ -15,12 +16,19 @@ export function LedBar({ pct, state }) {
   )
 }
 
-export default function JobPanel({ snapshot, children }) {
-  const [cancelError, setCancelError] = useState(null)
+interface JobPanelProps {
+  // Renders any tool's job, so the result shape is irrelevant here — this
+  // component only ever reads the envelope.
+  snapshot: Job<unknown> | null
+  children?: ReactNode
+}
+
+export default function JobPanel({ snapshot, children }: JobPanelProps) {
+  const [cancelError, setCancelError] = useState<string | null>(null)
   if (!snapshot) return null
   const { state, message, items = [], error, id } = snapshot
   const cancel = () =>
-    api.cancelJob(id).catch((err) => setCancelError(err.message || 'Cancel failed.'))
+    api.cancelJob(id).catch((err: Error) => setCancelError(err.message || 'Cancel failed.'))
   return (
     <div>
       {state === 'running' && (
