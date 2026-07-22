@@ -15,6 +15,13 @@
     // rendering tables, and every access would need a redundant guard.
     "noUncheckedIndexedAccess": false,
 
+    // Unused-code detection lives here, not in ESLint. The lint parser is
+    // Babel and has no type information, so its no-unused-vars cannot tell a
+    // type-only import from a dead one; tsc can. Dropping these would leave
+    // that gap genuinely uncovered.
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+
     "noEmit": true,
     "isolatedModules": true,
     "verbatimModuleSyntax": true,
