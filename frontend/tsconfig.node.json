@@ -12,11 +12,7 @@
     "noEmit": true,
     "isolatedModules": true,
     "verbatimModuleSyntax": true,
-    "skipLibCheck": true,
-
-    // Dropped once both config files are .ts (phase 1).
-    "allowJs": true,
-    "checkJs": false
+    "skipLibCheck": true
   },
-  "include": ["vite.config.*", "vitest.config.*"]
+  "include": ["vite.config.ts", "vitest.config.ts"]
 }

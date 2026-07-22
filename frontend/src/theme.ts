@@ -6,21 +6,30 @@
 import { useCallback, useEffect, useState } from 'react'
 
 const KEY = 'toolkit-theme'
-export const MODES = ['auto', 'light', 'dark']
+export const MODES = ['auto', 'light', 'dark'] as const
 
-export function getStoredMode() {
+export type ThemeMode = (typeof MODES)[number]
+
+// Narrows the arbitrary string localStorage hands back to a known mode; a
+// hand-edited or stale value falls through to 'auto' rather than being stamped
+// onto <html> as-is.
+function isMode(value: string | null): value is ThemeMode {
+  return value !== null && (MODES as readonly string[]).includes(value)
+}
+
+export function getStoredMode(): ThemeMode {
   // localStorage can throw when storage is blocked (private mode, strict
   // cookie settings) — fall back to 'auto' rather than white-screening, the
   // same defensive pattern index.html already uses for this key.
   try {
     const stored = localStorage.getItem(KEY)
-    return MODES.includes(stored) ? stored : 'auto'
+    return isMode(stored) ? stored : 'auto'
   } catch {
     return 'auto'
   }
 }
 
-export function applyMode(mode) {
+export function applyMode(mode: ThemeMode): void {
   const root = document.documentElement
   if (mode === 'auto') {
     // Remove the override so the prefers-color-scheme media query governs.
@@ -31,10 +40,12 @@ export function applyMode(mode) {
 }
 
 // Hook for the toggle: current mode + a setter that persists and applies.
-export function useTheme() {
-  const [mode, setModeState] = useState(getStoredMode)
+// The tuple return is explicit — inference would widen it to an array of the
+// union, and `const [mode, setMode] = useTheme()` would lose both types.
+export function useTheme(): [ThemeMode, (next: ThemeMode) => void] {
+  const [mode, setModeState] = useState<ThemeMode>(getStoredMode)
 
-  const setMode = useCallback((next) => {
+  const setMode = useCallback((next: ThemeMode) => {
     try {
       localStorage.setItem(KEY, next)
     } catch {
@@ -46,7 +57,7 @@ export function useTheme() {
 
   // Keep in sync if another tab changes the preference.
   useEffect(() => {
-    const onStorage = (e) => {
+    const onStorage = (e: StorageEvent) => {
       if (e.key === KEY) {
         const next = getStoredMode()
         applyMode(next)

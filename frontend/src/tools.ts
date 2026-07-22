@@ -1,6 +1,8 @@
 // Route path -> emoji, used by the dock; category accents for the home grid.
 
-export const TOOL_EMOJI = {
+// Indexed by arbitrary route path (the dock looks up whatever route is
+// active), so a plain string key — not a union of the literals below.
+export const TOOL_EMOJI: Record<string, string> = {
   '/tools/magnet-scraper': '🧲',
   '/tools/remux': '🎬',
   '/tools/web-images-to-pdf': '🌐',
@@ -13,7 +15,8 @@ export const TOOL_EMOJI = {
   '/tools/dep-upgrade': '📦',
 }
 
-export const CATEGORY_ACCENT = {
+// Likewise keyed by the category name the API returns.
+export const CATEGORY_ACCENT: Record<string, string> = {
   '🎬 Media': 'var(--amber)',
   '🗂️ Files & Tools': 'var(--teal)',
   '🌐 Network': 'var(--violet)',
