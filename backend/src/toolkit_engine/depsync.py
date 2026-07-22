@@ -270,25 +270,41 @@ def is_git_repo(folder: str) -> bool:
 def commit_bumps(folder: str, bumps: list[Bump]) -> tuple[str | None, str | None]:
     """Commit only ``pyproject.toml`` + ``uv.lock``. Returns (short_sha, error).
 
-    A path-limited commit takes just those two files' working-tree content, so
-    any other staged or unstaged work in the repo is neither committed nor
-    touched.
+    Each file is staged individually first — so a freshly-created (untracked)
+    uv.lock is included, and a gitignored one is simply skipped rather than
+    aborting the commit. The commit is then path-limited to exactly those
+    staged files, so any other staged or unstaged work in the repo is neither
+    committed nor touched.
     """
     base = Path(folder)
-    files = [f for f in ("pyproject.toml", "uv.lock") if (base / f).is_file()]
+    staged: list[str] = []
+    for name in ("pyproject.toml", "uv.lock"):
+        if not (base / name).is_file():
+            continue
+        added = subprocess.run(
+            ["git", "-C", folder, "add", "--", name],
+            capture_output=True,
+            text=True,
+        )
+        if added.returncode == 0:  # a gitignored file fails here and is skipped
+            staged.append(name)
+
+    nothing = "❌ Nothing to commit — pyproject.toml and uv.lock are unchanged."
+    if not staged:
+        return None, nothing
+    diff = subprocess.run(
+        ["git", "-C", folder, "diff", "--cached", "--quiet", "--", *staged],
+    )
+    if diff.returncode == 0:  # 0 == no staged changes for these paths
+        return None, nothing
+
     message = build_commit_message(bumps)
     commit = subprocess.run(
-        ["git", "-C", folder, "commit", "-m", message, "--", *files],
+        ["git", "-C", folder, "commit", "-m", message, "--", *staged],
         capture_output=True,
         text=True,
     )
     if commit.returncode != 0:
-        blob = f"{commit.stdout}\n{commit.stderr}".lower()
-        if "nothing to commit" in blob or "no changes added" in blob:
-            return (
-                None,
-                "❌ Nothing to commit — pyproject.toml and uv.lock are unchanged.",
-            )
         return (
             None,
             f"❌ git commit failed: {commit.stderr.strip() or commit.stdout.strip()}",

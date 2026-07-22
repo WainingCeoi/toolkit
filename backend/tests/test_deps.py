@@ -243,13 +243,15 @@ def _git(repo, *args):
     )
 
 
-def _init_repo(repo):
+def _init_repo(repo, track_lock=True):
     _write_project(repo)
     _git(repo, "init", "-q")
     _git(repo, "config", "user.email", "t@example.com")
     _git(repo, "config", "user.name", "Test")
     _git(repo, "config", "commit.gpgsign", "false")
-    _git(repo, "add", "-A")
+    # track_lock=False leaves uv.lock untracked, mirroring a real scan that just
+    # created it via `uv sync` before the project had ever committed a lock.
+    _git(repo, "add", "-A" if track_lock else "pyproject.toml")
     _git(repo, "commit", "-qm", "init")
     return repo
 
@@ -281,6 +283,39 @@ def test_commit_bumps_stages_only_the_two_files(tmp_path):
     assert files == ["pyproject.toml"]  # uv.lock unchanged here, so only this
     # The unrelated file is still sitting untracked, never committed.
     assert "?? untracked.txt" in _git(repo, "status", "--porcelain").stdout
+
+
+@requires_git
+def test_commit_bumps_includes_an_untracked_lock(tmp_path):
+    # A lock uv just created (never committed) must still land in the commit —
+    # `git commit -- uv.lock` alone would fail on the untracked pathspec.
+    repo = _init_repo(tmp_path / "repo", track_lock=False)
+    path = repo / "pyproject.toml"
+    bumps = depsync.compute_bumps(path, RESOLVED)
+    depsync.apply_bumps(path, bumps)
+
+    sha, err = depsync.commit_bumps(str(repo), bumps)
+    assert err is None and sha
+    files = _git(repo, "show", "--name-only", "--format=", "HEAD").stdout.split()
+    assert sorted(files) == ["pyproject.toml", "uv.lock"]
+
+
+@requires_git
+def test_commit_bumps_leaves_pre_staged_work_out(tmp_path):
+    repo = _init_repo(tmp_path / "repo")
+    path = repo / "pyproject.toml"
+    bumps = depsync.compute_bumps(path, RESOLVED)
+    depsync.apply_bumps(path, bumps)
+
+    # An unrelated file the user has already `git add`ed must NOT be swept in.
+    (repo / "other.py").write_text("x = 1\n", encoding="utf-8")
+    _git(repo, "add", "other.py")
+
+    sha, err = depsync.commit_bumps(str(repo), bumps)
+    assert err is None and sha
+    files = _git(repo, "show", "--name-only", "--format=", "HEAD").stdout.split()
+    assert files == ["pyproject.toml"]  # uv.lock unchanged here
+    assert "A  other.py" in _git(repo, "status", "--porcelain").stdout  # still staged
 
 
 @requires_git
