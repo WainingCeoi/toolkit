@@ -40,6 +40,7 @@ class ScanIn(BaseModel):
 class ApplyIn(BaseModel):
     folder: str
     commit: bool = True
+    message: str | None = None  # blank falls back to depsync.COMMIT_SUBJECT
 
 
 class BumpOut(BaseModel):
@@ -129,6 +130,7 @@ def apply(req: ApplyIn) -> ApplyOut:
     commits: list[dict] = []
 
     if req.commit:
+        subject = (req.message or "").strip() or depsync.COMMIT_SUBJECT
         # One commit per repo (normally exactly one) covering every changed file.
         groups: dict[str, list[Path]] = {}
         for result in results:
@@ -139,9 +141,7 @@ def apply(req: ApplyIn) -> ApplyOut:
 
         commit_error = None
         for root, paths in groups.items():
-            sha, rels, git_err = depsync.commit_paths(
-                root, depsync.COMMIT_SUBJECT, paths
-            )
+            sha, rels, git_err = depsync.commit_paths(root, subject, paths)
             if git_err:
                 commit_error = git_err
                 break

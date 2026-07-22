@@ -557,3 +557,40 @@ def test_apply_makes_one_combined_commit(client, tmp_path, monkeypatch):
     assert '"react": "^19.1.0"' in (repo / "frontend" / "package.json").read_text(
         encoding="utf-8"
     )
+
+
+def _committed_monorepo(root):
+    _monorepo(root)
+    _init_git(root)
+    _git(root, "add", "-A")
+    _git(root, "commit", "-qm", "init")
+    return root
+
+
+def _fake_npm(monkeypatch):
+    monkeypatch.setattr(depsync, "npm_latest", lambda folder: (LATEST, None))
+    monkeypatch.setattr(depsync, "npm_lock_refresh", lambda folder: (True, "ok"))
+
+
+@requires_git
+def test_apply_uses_a_custom_commit_message(client, tmp_path, monkeypatch):
+    repo = _committed_monorepo(tmp_path / "repo")
+    _fake_npm(monkeypatch)
+    r = client.post(
+        "/api/deps/apply",
+        json={"folder": str(repo), "commit": True, "message": "chore: friday bump"},
+    )
+    assert r.status_code == 200 and len(r.json()["commits"]) == 1
+    assert _git(repo, "log", "-1", "--format=%s").stdout.strip() == "chore: friday bump"
+
+
+@requires_git
+def test_apply_falls_back_to_default_message_when_blank(client, tmp_path, monkeypatch):
+    repo = _committed_monorepo(tmp_path / "repo")
+    _fake_npm(monkeypatch)
+    r = client.post(
+        "/api/deps/apply", json={"folder": str(repo), "commit": True, "message": "   "}
+    )
+    assert r.status_code == 200
+    subject = _git(repo, "log", "-1", "--format=%s").stdout.strip()
+    assert subject == depsync.COMMIT_SUBJECT

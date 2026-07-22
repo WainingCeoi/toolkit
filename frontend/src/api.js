@@ -185,8 +185,8 @@ export const api = {
 
   // dependency upgrader (scan runs as a job, apply is synchronous)
   depsScan: (folder) => request('/deps/scan', { method: 'POST', body: { folder } }),
-  depsApply: (folder, commit) =>
-    request('/deps/apply', { method: 'POST', body: { folder, commit } }),
+  depsApply: (folder, commit, message) =>
+    request('/deps/apply', { method: 'POST', body: { folder, commit, message } }),
 
   // optimized-ip subscription
   subsGenerate: (payload) => request('/subs/generate', { method: 'POST', body: payload }),

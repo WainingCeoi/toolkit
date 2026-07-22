@@ -10,7 +10,11 @@ import FolderField from '../components/FolderField'
 import JobPanel from '../components/JobPanel'
 import Button from '../components/Button'
 
+// Mirrors depsync.COMMIT_SUBJECT — the server falls back to it if this is blank.
+const DEFAULT_COMMIT_MESSAGE = 'chore(deps): update dependencies'
+
 const mono = { font: '11px var(--mono)', color: 'var(--faint)' }
+const caption = { font: '11px var(--mono)', color: 'var(--faint)', margin: '6px 0 0' }
 const change = { font: '12px var(--mono)' }
 const badge = {
   font: '10px var(--mono)',
@@ -57,6 +61,7 @@ function BumpTable({ bumps }) {
 export default function DepUpgrade() {
   const [folder, setFolder] = useState('')
   const [commitAfter, setCommitAfter] = useState(true)
+  const [commitMessage, setCommitMessage] = useState(DEFAULT_COMMIT_MESSAGE)
   const [scannedFolder, setScannedFolder] = useState(null)
   const [applying, setApplying] = useState(false)
   const [applyResult, setApplyResult] = useState(null)
@@ -94,7 +99,7 @@ export default function DepUpgrade() {
     setApplying(true)
     setApplyError(null)
     try {
-      setApplyResult(await api.depsApply(scannedFolder, commitAfter))
+      setApplyResult(await api.depsApply(scannedFolder, commitAfter, commitMessage))
     } catch (err) {
       setApplyError(err.message)
     } finally {
@@ -123,19 +128,30 @@ export default function DepUpgrade() {
             startDir={folder}
           />
 
-          <label className="check" style={{ margin: '12px 0 10px' }}>
+          <label className="check" style={{ margin: '12px 0 8px' }}>
             <input
               type="checkbox"
               checked={commitAfter}
               onChange={(e) => setCommitAfter(e.target.checked)}
             />
-            Commit each manifest + its lockfile after applying
+            Commit after applying
           </label>
 
-          <div className="note info">
-            Scanning runs <code>uv sync -U</code> / <code>npm install</code> in each
-            manifest's folder, updating its lockfile. Your review gates the manifest
-            rewrite and the commit.
+          <div className="field">
+            <label htmlFor="dep-commit-message">Commit message</label>
+            <input
+              id="dep-commit-message"
+              className="control"
+              value={commitMessage}
+              onChange={(e) => setCommitMessage(e.target.value)}
+              placeholder={DEFAULT_COMMIT_MESSAGE}
+              disabled={!commitAfter}
+              spellCheck={false}
+            />
+            <p style={caption}>
+              One commit covers every upgraded manifest and its lockfile. Blank
+              falls back to “{DEFAULT_COMMIT_MESSAGE}”.
+            </p>
           </div>
 
           <Button
