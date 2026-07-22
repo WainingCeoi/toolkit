@@ -1,18 +1,58 @@
-// Dependency Upgrader — point at a uv project, run `uv sync -U`, review the
-// lagging >= floors it turned up, then rewrite pyproject.toml and commit it
-// with uv.lock. Scan runs as a tracked job (uv sync is slow + cancellable);
-// apply is a quick synchronous write, gated on your review.
+// Dependency Upgrader — scan a project (incl. subfolders) for uv (pyproject.toml)
+// and npm (package.json) manifests, review the outdated deps per manifest, then
+// upgrade + commit each. Scan runs as a tracked job (the syncs are slow +
+// cancellable); apply is a quick synchronous write, gated on your review.
 
 import React, { useEffect, useState } from 'react'
 import { api } from '../api'
 import { useToolJob } from '../jobs'
 import FolderField from '../components/FolderField'
 import JobPanel from '../components/JobPanel'
-import CodeBox from '../components/CodeBox'
 import Button from '../components/Button'
 
 const mono = { font: '11px var(--mono)', color: 'var(--faint)' }
 const change = { font: '12px var(--mono)' }
+const badge = {
+  font: '10px var(--mono)',
+  textTransform: 'uppercase',
+  padding: '1px 6px',
+  borderRadius: 4,
+  border: '1px solid var(--edge)',
+  color: 'var(--muted)',
+  marginLeft: 8,
+}
+
+function BumpTable({ bumps }) {
+  return (
+    <div style={{ overflowX: 'auto' }}>
+      <table className="table">
+        <thead>
+          <tr>
+            <th scope="col">Package</th>
+            <th scope="col">Change</th>
+            <th scope="col">Section</th>
+          </tr>
+        </thead>
+        <tbody>
+          {bumps.map((b) => (
+            <tr key={`${b.table}:${b.name}`}>
+              <td>
+                {b.name}
+                {b.major && (
+                  <span style={{ color: 'var(--red-text)', fontWeight: 700, marginLeft: 6 }}>
+                    major
+                  </span>
+                )}
+              </td>
+              <td style={change}>{b.old} → {b.new}</td>
+              <td style={mono}>{b.table}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
 
 export default function DepUpgrade() {
   const [folder, setFolder] = useState('')
@@ -25,17 +65,18 @@ export default function DepUpgrade() {
   const { start, snapshot, running, error, setError } = useToolJob('/tools/dep-upgrade')
 
   const result = snapshot?.state === 'done' ? snapshot.result : null
-  const bumps = result?.bumps ?? []
+  const targets = result?.targets ?? []
+  const totalBumps = result?.total_bumps ?? 0
   const stale = result != null && scannedFolder !== folder
-  const applied = applyResult != null && applyResult.written > 0
+  const canApply = totalBumps > 0 && !stale && applyResult == null
 
   // Returning to the page restores the last scan from the jobs context, but the
-  // folder fields reset on unmount. Rehydrate them from the scan's own result so
-  // the restored bumps aren't wrongly flagged "folder changed" and stay applyable.
+  // folder fields reset on unmount. Rehydrate them from the scanned root so the
+  // restored review isn't wrongly flagged "folder changed" and stays applyable.
   useEffect(() => {
-    if (result?.folder && scannedFolder === null) {
-      setScannedFolder(result.folder)
-      setFolder((current) => current || result.folder)
+    if (result?.root && scannedFolder === null) {
+      setScannedFolder(result.root)
+      setFolder((current) => current || result.root)
     }
   }, [result, scannedFolder])
 
@@ -44,8 +85,7 @@ export default function DepUpgrade() {
     setApplyResult(null)
     setApplyError(null)
     // Mark the folder scanned only once the job actually starts — a rejected
-    // scan (e.g. no pyproject.toml) must leave the prior scan flagged stale, not
-    // silently retarget Apply at an unscanned folder.
+    // scan must leave any prior scan flagged stale, not retarget Apply.
     const id = await start(() => api.depsScan(folder))
     if (id) setScannedFolder(folder)
   }
@@ -66,10 +106,9 @@ export default function DepUpgrade() {
     <div>
       <div className="page-head"><h1>📦 Dependency Upgrader</h1></div>
       <p className="page-sub">
-        Point at a uv project. It runs <code>uv sync -U</code>, shows which
-        declared <code>&gt;=</code> floors are now behind, then — on your OK —
-        rewrites <code>pyproject.toml</code> and commits it with{' '}
-        <code>uv.lock</code>.
+        Scan a project for uv (<code>pyproject.toml</code>) and npm
+        (<code>package.json</code>) manifests — including subfolders — review the
+        outdated dependencies, then upgrade and commit each one.
       </p>
 
       <div className="station">
@@ -77,10 +116,10 @@ export default function DepUpgrade() {
           <div className="step"><span className="n">01</span><span>Project &amp; scan</span></div>
 
           <FolderField
-            label="uv project folder"
+            label="Project folder"
             value={folder}
             onChange={setFolder}
-            placeholder="/Users/you/my-project"
+            placeholder="/Users/you/my-monorepo"
             startDir={folder}
           />
 
@@ -90,13 +129,13 @@ export default function DepUpgrade() {
               checked={commitAfter}
               onChange={(e) => setCommitAfter(e.target.checked)}
             />
-            Commit pyproject.toml + uv.lock after applying
+            Commit each manifest + its lockfile after applying
           </label>
 
           <div className="note info">
-            Scanning runs <code>uv sync -U</code> in this folder, updating its{' '}
-            <code>uv.lock</code> and virtualenv. Your review gates only the{' '}
-            <code>pyproject.toml</code> rewrite and the commit.
+            Scanning runs <code>uv sync -U</code> / <code>npm install</code> in each
+            manifest's folder, updating its lockfile. Your review gates the manifest
+            rewrite and the commit.
           </div>
 
           <Button
@@ -116,92 +155,73 @@ export default function DepUpgrade() {
           <div className="step"><span className="n">02</span><span>Review &amp; apply</span></div>
 
           {!snapshot && (
-            <div className="note info">
-              Scan a uv project to see which floors are behind.
-            </div>
+            <div className="note info">Scan a project to see what's outdated.</div>
           )}
 
           <JobPanel snapshot={snapshot}>
-            {result && bumps.length === 0 && (
-              <div className="note ok">
-                Every declared <code>&gt;=</code> floor already matches the
-                resolved version — nothing to bump. 🎉
+            {result && targets.length === 0 && (
+              <div className="note info">
+                No uv or npm manifests found under that folder.
               </div>
             )}
 
-            {result && bumps.length > 0 && (
-              <>
-                <div className="note warn">
-                  {bumps.length} floor(s) behind the resolved versions.
-                  {bumps.some((b) => b.major) &&
-                    ' Includes a major-version jump — review before applying.'}
-                </div>
-
-                <div style={{ overflowX: 'auto' }}>
-                  <table className="table">
-                    <thead>
-                      <tr>
-                        <th scope="col">Package</th>
-                        <th scope="col">Change</th>
-                        <th scope="col">Section</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {bumps.map((b) => (
-                        <tr key={`${b.table}:${b.name}`}>
-                          <td>
-                            {b.name}
-                            {b.major && (
-                              <span
-                                style={{ color: 'var(--red-text)', fontWeight: 700, marginLeft: 6 }}
-                              >
-                                major
-                              </span>
-                            )}
-                          </td>
-                          <td style={change}>{b.old} → {b.new}</td>
-                          <td style={mono}>{b.table}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-
-                {stale ? (
-                  <div className="note warn" style={{ marginTop: 10 }}>
-                    Folder changed since this scan — re-scan before applying.
+            {result &&
+              targets.map((t) => (
+                <div key={t.rel} style={{ marginTop: 14 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', marginBottom: 6 }}>
+                    <strong style={{ font: '12px var(--mono)' }}>{t.rel}</strong>
+                    <span style={badge}>{t.kind}</span>
                   </div>
-                ) : (
-                  <Button
-                    variant="primary"
-                    onClick={runApply}
-                    loading={applying}
-                    disabled={applying || applied}
-                    style={{ marginTop: 12 }}
-                  >
-                    ✍️ Apply {bumps.length} bump(s){commitAfter ? ' & commit' : ''}
-                  </Button>
-                )}
-              </>
-            )}
+                  {t.error ? (
+                    <div className="note error">{t.error}</div>
+                  ) : t.bumps.length === 0 ? (
+                    <div className="note ok">Up to date.</div>
+                  ) : (
+                    <BumpTable bumps={t.bumps} />
+                  )}
+                </div>
+              ))}
+
+            {result &&
+              totalBumps > 0 &&
+              (stale ? (
+                <div className="note warn" style={{ marginTop: 12 }}>
+                  Folder changed since this scan — re-scan before applying.
+                </div>
+              ) : (
+                <Button
+                  variant="primary"
+                  onClick={runApply}
+                  loading={applying}
+                  disabled={!canApply}
+                  style={{ marginTop: 14 }}
+                >
+                  ✍️ Apply {totalBumps} upgrade(s){commitAfter ? ' & commit' : ''}
+                </Button>
+              ))}
 
             {applyError && <div className="note error">{applyError}</div>}
 
             {applyResult && (
-              <div className="note ok" style={{ marginTop: 10 }}>
-                {applyResult.written === 0
-                  ? applyResult.note
-                  : applyResult.committed
-                    ? `Wrote ${applyResult.written} floor(s) and committed ${applyResult.commit_sha}.`
-                    : `Wrote ${applyResult.written} floor(s) to pyproject.toml (not committed).`}
+              <div style={{ marginTop: 12 }}>
+                {applyResult.results.map((r) => (
+                  <div
+                    key={r.rel}
+                    className={`note ${r.error ? 'error' : 'ok'}`}
+                    style={{ marginTop: 6 }}
+                  >
+                    <strong>{r.rel}</strong>
+                    {' — '}
+                    {r.error
+                      ? r.error
+                      : r.written === 0
+                        ? 'nothing to upgrade'
+                        : r.committed
+                          ? `upgraded ${r.written} and committed ${r.commit_sha}`
+                          : `upgraded ${r.written} (not committed)`}
+                  </div>
+                ))}
               </div>
-            )}
-
-            {applyResult?.commit_message && (
-              <details className="expander" style={{ marginTop: 8 }}>
-                <summary>Commit message</summary>
-                <div className="body"><CodeBox text={applyResult.commit_message} /></div>
-              </details>
             )}
           </JobPanel>
         </div>

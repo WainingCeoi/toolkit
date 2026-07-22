@@ -15,7 +15,6 @@ export const TOOL_EMOJI = {
 
 export const CATEGORY_ACCENT = {
   '🎬 Media': 'var(--amber)',
-  '🗂️ Documents & Files': 'var(--teal)',
+  '🗂️ Files & Tools': 'var(--teal)',
   '🌐 Network': 'var(--violet)',
-  '🛠️ Developer': 'var(--sky)',
 }

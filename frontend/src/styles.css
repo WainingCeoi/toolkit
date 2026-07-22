@@ -22,7 +22,6 @@
   --teal: #3dd6b0;         /* success */
   --red: #ff6b5e;          /* failure / destructive */
   --violet: #a78bfa;       /* network category */
-  --sky: #56a8f5;          /* developer category */
   /* text-on-accent (dark ink on a saturated button — constant across modes) */
   --on-amber: #1a1204;
   --on-danger: #2b0703;

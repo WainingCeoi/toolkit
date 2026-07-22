@@ -1,11 +1,12 @@
-"""Dependency Upgrader: bump a uv project's lagging >= floors to what uv resolves.
+"""Dependency Upgrader: upgrade every uv/npm manifest under a folder, then commit.
 
-Two phases so the review-then-apply contract holds:
-- POST /deps/scan runs as a job — ``uv sync -U`` (long, cancellable) then reads
-  the resolved versions and returns the proposed floor bumps for review.
-- POST /deps/apply is synchronous — it recomputes the bumps from the now-synced
-  uv.lock (server-authoritative; the browser never sends a bump list to replay),
-  rewrites pyproject.toml, and optionally commits pyproject.toml + uv.lock.
+Two phases keep the review-then-apply contract:
+- POST /deps/scan runs as a job — walks the folder for pyproject.toml/package.json
+  and, per manifest, syncs (uv sync -U / npm install) and returns the proposed
+  bumps for review.
+- POST /deps/apply is synchronous — per manifest it recomputes from the synced
+  state (server-authoritative), rewrites the manifest, refreshes the npm lock,
+  and commits that manifest + its lockfile on its own.
 """
 
 from __future__ import annotations
@@ -21,6 +22,11 @@ from ..deps import JobsDep
 from ..schemas import JobStartedOut
 
 router = APIRouter(prefix="/deps", tags=["deps"])
+
+_NO_MANIFESTS = (
+    "❌ No pyproject.toml or package.json found under that folder "
+    "(node_modules, .venv, .git, and build dirs are skipped)."
+)
 
 
 class ScanIn(BaseModel):
@@ -40,48 +46,52 @@ class BumpOut(BaseModel):
     major: bool
 
 
-class ApplyOut(BaseModel):
+class TargetResultOut(BaseModel):
+    rel: str
+    kind: str
     written: int
     bumps: list[BumpOut]
     committed: bool
     commit_sha: str | None = None
-    commit_message: str | None = None
-    note: str | None = None
+    error: str | None = None
+
+
+class ApplyOut(BaseModel):
+    results: list[TargetResultOut]
+    written_total: int
+    committed_count: int
 
 
 @router.post("/scan", response_model=JobStartedOut)
 def scan(req: ScanIn, jobs: JobsDep) -> JobStartedOut:
-    pyproject, err = depsync.find_pyproject(req.folder)
+    manifests, err = depsync.find_manifests(req.folder)
     if err:
         raise HTTPException(status_code=400, detail=err)
-    if not depsync.uv_available():
-        raise HTTPException(
-            status_code=400, detail="❌ uv is not installed or not on PATH."
-        )
-    folder = str(Path(req.folder).expanduser())
+    if not manifests:
+        raise HTTPException(status_code=400, detail=_NO_MANIFESTS)
+    root = str(Path(req.folder).expanduser())
 
     def worker(job):
-        job.set_message("Running uv sync -U …")
-        ok, output = depsync.run_uv_sync(
-            folder,
-            on_message=job.set_message,
-            is_cancelled=lambda: job.cancelled,
-        )
+        targets = []
+        for manifest in manifests:
+            if job.cancelled:
+                return None
+            job.set_message(f"Scanning {manifest.rel} …")
+            targets.append(
+                depsync.scan_manifest(
+                    manifest,
+                    on_message=lambda line, rel=manifest.rel: job.set_message(
+                        f"{rel}: {line}"
+                    ),
+                    is_cancelled=lambda: job.cancelled,
+                )
+            )
         if job.cancelled:
             return None
-        if not ok:
-            tail = "\n".join(output.splitlines()[-15:])
-            raise RuntimeError(f"uv sync -U failed:\n{tail}")
-        job.set_message("Reading resolved versions …")
-        resolved, lock_err = depsync.resolved_versions(folder)
-        if lock_err:
-            raise RuntimeError(lock_err)
-        bumps = depsync.compute_bumps(pyproject, resolved)
         return {
-            "folder": folder,
-            "pyproject": str(pyproject),
-            "bumps": [depsync.bump_dict(b) for b in bumps],
-            "count": len(bumps),
+            "root": root,
+            "targets": targets,
+            "total_bumps": sum(len(t["bumps"]) for t in targets),
         }
 
     job = jobs.submit("dep-upgrade", [], worker)
@@ -90,64 +100,26 @@ def scan(req: ScanIn, jobs: JobsDep) -> JobStartedOut:
 
 @router.post("/apply", response_model=ApplyOut)
 def apply(req: ApplyIn) -> ApplyOut:
-    pyproject, err = depsync.find_pyproject(req.folder)
+    manifests, err = depsync.find_manifests(req.folder)
     if err:
         raise HTTPException(status_code=400, detail=err)
-    folder = str(Path(req.folder).expanduser())
+    if not manifests:
+        raise HTTPException(status_code=400, detail=_NO_MANIFESTS)
 
-    # Check git before writing anything, so a "not a repo" never leaves the file
-    # edited but uncommitted.
-    if req.commit and not depsync.is_git_repo(folder):
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "❌ Not a git repository — uncheck “commit after applying” to write "
-                "without committing, or run `git init` there first."
-            ),
-        )
-
-    resolved, lock_err = depsync.resolved_versions(folder)
-    if lock_err:
-        raise HTTPException(status_code=400, detail=lock_err)
-    bumps = depsync.compute_bumps(pyproject, resolved)
-    if not bumps:
-        return ApplyOut(
-            written=0,
-            bumps=[],
-            committed=False,
-            note=(
-                "Nothing to bump — every declared >= floor already matches "
-                "the resolved version."
-            ),
-        )
-
-    # When committing, keep the write atomic: capture the original so a commit
-    # failure can roll pyproject.toml back. Otherwise a failed commit would leave
-    # the floors written but uncommitted, and a retry would see nothing to bump.
-    before = pyproject.read_text(encoding="utf-8") if req.commit else None
-    depsync.apply_bumps(pyproject, bumps)
-
-    committed = False
-    sha: str | None = None
-    message: str | None = None
-    if req.commit:
-        sha, git_err = depsync.commit_bumps(folder, bumps)
-        if git_err:
-            pyproject.write_text(before, encoding="utf-8")  # roll back the edit
-            raise HTTPException(
-                status_code=500,
-                detail=(
-                    f"{git_err} pyproject.toml was left unchanged — "
-                    "fix the git issue and retry."
-                ),
-            )
-        committed = True
-        message = depsync.build_commit_message(bumps)
-
+    results = [depsync.apply_manifest(manifest, req.commit) for manifest in manifests]
     return ApplyOut(
-        written=len(bumps),
-        bumps=[BumpOut(**depsync.bump_dict(b)) for b in bumps],
-        committed=committed,
-        commit_sha=sha,
-        commit_message=message,
+        results=[
+            TargetResultOut(
+                rel=r["rel"],
+                kind=r["kind"],
+                written=r["written"],
+                bumps=[BumpOut(**b) for b in r["bumps"]],
+                committed=r["committed"],
+                commit_sha=r["commit_sha"],
+                error=r["error"],
+            )
+            for r in results
+        ],
+        written_total=sum(r["written"] for r in results),
+        committed_count=sum(1 for r in results if r["committed"]),
     )

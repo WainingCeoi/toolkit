@@ -21,13 +21,12 @@ def wait_for_job(client, job_id, timeout=5.0):
     raise AssertionError(f"job {job_id} did not finish within {timeout}s")
 
 
-def test_tools_manifest_has_ten_tools_in_four_categories(client):
+def test_tools_manifest_has_ten_tools_in_three_categories(client):
     categories = client.get("/api/tools").json()
     assert [c["name"] for c in categories] == [
         "🎬 Media",
-        "🗂️ Documents & Files",
+        "🗂️ Files & Tools",
         "🌐 Network",
-        "🛠️ Developer",
     ]
     assert sum(len(c["tools"]) for c in categories) == 10
 
@@ -46,11 +45,7 @@ def test_disabling_a_whole_category_drops_the_category(client, monkeypatch):
     # 🌐 Network holds only the subscription tool.
     monkeypatch.setenv("TOOLKIT_DISABLED_TOOLS", "subscription")
     categories = client.get("/api/tools").json()
-    assert [c["name"] for c in categories] == [
-        "🎬 Media",
-        "🗂️ Documents & Files",
-        "🛠️ Developer",
-    ]
+    assert [c["name"] for c in categories] == ["🎬 Media", "🗂️ Files & Tools"]
 
 
 def test_unset_disabled_tools_lists_everything(client, monkeypatch):

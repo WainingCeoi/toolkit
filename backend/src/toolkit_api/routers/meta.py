@@ -39,7 +39,7 @@ CATEGORIES = [
         ],
     ),
     CategoryOut(
-        name="🗂️ Documents & Files",
+        name="🗂️ Files & Tools",
         tools=[
             ToolOut(
                 slug="web-images-to-pdf",
@@ -84,6 +84,15 @@ CATEGORIES = [
                     "Recursively find and delete cache / junk files from a folder."
                 ),
             ),
+            ToolOut(
+                slug="dep-upgrade",
+                title="📦 Dependency Upgrader",
+                description=(
+                    "Scan a project for uv (pyproject.toml) and npm (package.json) "
+                    "manifests, review the outdated dependencies, then upgrade and "
+                    "commit each one."
+                ),
+            ),
         ],
     ),
     CategoryOut(
@@ -96,19 +105,6 @@ CATEGORIES = [
                     "Rewrite vmess/vless/trojan nodes with optimized Cloudflare IPs "
                     "and serve Shadowrocket / Clash / Surge subscriptions over your "
                     "LAN."
-                ),
-            ),
-        ],
-    ),
-    CategoryOut(
-        name="🛠️ Developer",
-        tools=[
-            ToolOut(
-                slug="dep-upgrade",
-                title="📦 Dependency Upgrader",
-                description=(
-                    "Point at a uv project: run uv sync -U, review the lagging >= "
-                    "floors, then rewrite pyproject.toml and commit it with uv.lock."
                 ),
             ),
         ],
