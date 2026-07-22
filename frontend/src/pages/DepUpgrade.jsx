@@ -3,7 +3,7 @@
 // with uv.lock. Scan runs as a tracked job (uv sync is slow + cancellable);
 // apply is a quick synchronous write, gated on your review.
 
-import React, { useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import { api } from '../api'
 import { useToolJob } from '../jobs'
 import FolderField from '../components/FolderField'
@@ -29,12 +29,25 @@ export default function DepUpgrade() {
   const stale = result != null && scannedFolder !== folder
   const applied = applyResult != null && applyResult.written > 0
 
-  function runScan() {
+  // Returning to the page restores the last scan from the jobs context, but the
+  // folder fields reset on unmount. Rehydrate them from the scan's own result so
+  // the restored bumps aren't wrongly flagged "folder changed" and stay applyable.
+  useEffect(() => {
+    if (result?.folder && scannedFolder === null) {
+      setScannedFolder(result.folder)
+      setFolder((current) => current || result.folder)
+    }
+  }, [result, scannedFolder])
+
+  async function runScan() {
     setError(null)
     setApplyResult(null)
     setApplyError(null)
-    setScannedFolder(folder)
-    start(() => api.depsScan(folder))
+    // Mark the folder scanned only once the job actually starts — a rejected
+    // scan (e.g. no pyproject.toml) must leave the prior scan flagged stale, not
+    // silently retarget Apply at an unscanned folder.
+    const id = await start(() => api.depsScan(folder))
+    if (id) setScannedFolder(folder)
   }
 
   async function runApply() {

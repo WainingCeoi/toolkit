@@ -121,6 +121,10 @@ def apply(req: ApplyIn) -> ApplyOut:
             ),
         )
 
+    # When committing, keep the write atomic: capture the original so a commit
+    # failure can roll pyproject.toml back. Otherwise a failed commit would leave
+    # the floors written but uncommitted, and a retry would see nothing to bump.
+    before = pyproject.read_text(encoding="utf-8") if req.commit else None
     depsync.apply_bumps(pyproject, bumps)
 
     committed = False
@@ -129,9 +133,13 @@ def apply(req: ApplyIn) -> ApplyOut:
     if req.commit:
         sha, git_err = depsync.commit_bumps(folder, bumps)
         if git_err:
+            pyproject.write_text(before, encoding="utf-8")  # roll back the edit
             raise HTTPException(
                 status_code=500,
-                detail=f"{git_err} (pyproject.toml was updated — commit it manually.)",
+                detail=(
+                    f"{git_err} pyproject.toml was left unchanged — "
+                    "fix the git issue and retry."
+                ),
             )
         committed = True
         message = depsync.build_commit_message(bumps)

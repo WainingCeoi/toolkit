@@ -431,3 +431,124 @@ def test_apply_reports_nothing_to_bump(client, tmp_path):
     body = r.json()
     assert body["written"] == 0 and body["committed"] is False
     assert "Nothing to bump" in body["note"]
+
+
+def test_apply_rejects_empty_folder(client):
+    # An empty/relative folder must never resolve to the server's own CWD.
+    r = client.post("/api/deps/apply", json={"folder": "", "commit": True})
+    assert r.status_code == 400 and r.json()["detail"].startswith("❌")
+
+
+@requires_git
+def test_apply_rolls_back_pyproject_when_commit_fails(client, tmp_path, monkeypatch):
+    repo = _init_repo(tmp_path / "repo")
+    original = (repo / "pyproject.toml").read_text(encoding="utf-8")
+    monkeypatch.setattr(
+        depsync, "commit_bumps", lambda *a, **k: (None, "❌ git commit failed: boom")
+    )
+    r = client.post("/api/deps/apply", json={"folder": str(repo), "commit": True})
+    assert r.status_code == 500 and "left unchanged" in r.json()["detail"]
+    # Rolled back: the file is byte-identical to before, so a retry re-bumps.
+    assert (repo / "pyproject.toml").read_text(encoding="utf-8") == original
+
+
+# --------------------------------------------------------------------------- #
+# Engine edge cases surfaced by adversarial review                            #
+# --------------------------------------------------------------------------- #
+
+
+def _single_dep_project(root, dep):
+    root.mkdir(parents=True, exist_ok=True)
+    body = (
+        f'[project]\nname = "x"\nversion = "0.1.0"\ndependencies = [\n    "{dep}",\n]\n'
+    )
+    (root / "pyproject.toml").write_text(body, encoding="utf-8")
+    return root / "pyproject.toml"
+
+
+def test_local_version_does_not_spuriously_bump(tmp_path):
+    # torch 2.1.0 resolved to a local build 2.1.0+cpu: public version unchanged,
+    # so no bump — and never a ">=2.1.0+cpu" (an invalid PEP 440 specifier).
+    path = _single_dep_project(tmp_path, "torch>=2.1.0")
+    assert depsync.compute_bumps(path, {"torch": "2.1.0+cpu"}) == []
+
+
+def test_local_version_bumps_to_public_only(tmp_path):
+    path = _single_dep_project(tmp_path, "torch>=2.1.0")
+    bumps = depsync.compute_bumps(path, {"torch": "2.2.0+cpu"})
+    assert len(bumps) == 1
+    assert bumps[0].new == ">=2.2.0"  # local "+cpu" segment stripped
+    assert "+cpu" not in bumps[0].raw_new
+
+
+def test_resolved_versions_drops_forked_packages(tmp_path):
+    # A forked resolution lists the same name at two versions — ambiguous, drop it.
+    (tmp_path / "uv.lock").write_text(
+        "version = 1\n"
+        '[[package]]\nname = "foo"\nversion = "1.5"\n'
+        '[[package]]\nname = "foo"\nversion = "2.0"\n'
+        '[[package]]\nname = "bar"\nversion = "3.0"\n',
+        encoding="utf-8",
+    )
+    resolved, err = depsync.resolved_versions(str(tmp_path))
+    assert err is None
+    assert "foo" not in resolved  # ambiguous fork left alone
+    assert resolved["bar"] == "3.0"
+
+
+def test_apply_bumps_never_touches_comments_or_unscanned_tables(tmp_path):
+    text = (
+        "[build-system]\n"
+        "requires = [\n"
+        '    "hatchling>=1.0.0",\n'  # unscanned table, byte-identical string
+        "]\n\n"
+        "[project]\n"
+        'name = "x"\n'
+        'version = "0.1.0"\n'
+        "dependencies = [\n"
+        '    # keep "hatchling>=1.0.0" in sync with the build backend\n'  # comment
+        '    "hatchling>=1.0.0",\n'
+        "]\n"
+    )
+    path = tmp_path / "pyproject.toml"
+    path.write_text(text, encoding="utf-8")
+    bumps = depsync.compute_bumps(path, {"hatchling": "1.25.0"})
+    assert [b.table for b in bumps] == ["project.dependencies"]  # only the dep
+
+    depsync.apply_bumps(path, bumps)
+    out = path.read_text(encoding="utf-8")
+    assert '    "hatchling>=1.25.0",\n]' in out  # the project dep bumped
+    assert 'requires = [\n    "hatchling>=1.0.0",' in out  # build-system untouched
+    assert '# keep "hatchling>=1.0.0" in sync' in out  # comment untouched
+
+
+def test_apply_bumps_rewrites_both_tables_across_quote_styles(tmp_path):
+    text = (
+        "[project]\n"
+        'name = "x"\n'
+        'version = "0.1.0"\n'
+        "dependencies = [\n"
+        '    "click>=8.0.0",\n'  # double-quoted
+        "]\n"
+        "[dependency-groups]\n"
+        "dev = [\n"
+        "    'click>=8.0.0',\n"  # same package, single-quoted
+        "]\n"
+    )
+    path = tmp_path / "pyproject.toml"
+    path.write_text(text, encoding="utf-8")
+    bumps = depsync.compute_bumps(path, {"click": "8.1.7"})
+    assert len(bumps) == 2  # one per table
+
+    depsync.apply_bumps(path, bumps)
+    out = path.read_text(encoding="utf-8")
+    assert '"click>=8.1.7",' in out  # double-quoted rewritten
+    assert "'click>=8.1.7'," in out  # single-quoted rewritten too
+    assert "8.0.0" not in out  # nothing stale left behind
+
+
+def test_find_pyproject_rejects_empty_and_relative(tmp_path):
+    _, err = depsync.find_pyproject("")
+    assert err and "No folder given" in err
+    _, err = depsync.find_pyproject("relative/path")
+    assert err and "absolute" in err

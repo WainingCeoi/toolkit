@@ -51,8 +51,17 @@ def bump_dict(bump: Bump) -> dict:
 
 
 def find_pyproject(folder: str) -> tuple[Path | None, str | None]:
-    """Locate the ``pyproject.toml`` at the folder root. Returns (path, error)."""
+    """Locate the ``pyproject.toml`` at the folder root. Returns (path, error).
+
+    The folder must be an absolute path (the picker returns one; ``~`` expands to
+    one). Empty or relative input is rejected so a stray ``""`` or ``"."`` can
+    never resolve to the server's own working directory and rewrite *its* repo.
+    """
+    if not folder or not folder.strip():
+        return None, "❌ No folder given."
     base = Path(folder).expanduser()
+    if not base.is_absolute():
+        return None, f"❌ Please give an absolute folder path, not: {folder}"
     if not base.is_dir():
         return None, f"❌ Not a folder: {folder}"
     path = base / "pyproject.toml"
@@ -141,11 +150,17 @@ def resolved_versions(folder: str) -> tuple[dict[str, str], str | None]:
         data = tomllib.loads(lock.read_text(encoding="utf-8"))
     except (OSError, tomllib.TOMLDecodeError) as exc:
         return {}, f"❌ Could not read uv.lock: {exc}"
-    versions: dict[str, str] = {}
+    # A forked resolution can list the same package at several versions, each
+    # under its own resolution-markers. We can't tell which one this machine
+    # installed, so such packages are ambiguous — collect all versions per name
+    # and drop any that resolved to more than one, leaving those floors alone
+    # rather than bumping to an arbitrary fork.
+    by_name: dict[str, set[str]] = {}
     for pkg in data.get("package", []):
         name, version = pkg.get("name"), pkg.get("version")
         if name and version:
-            versions[canonicalize_name(name)] = version
+            by_name.setdefault(canonicalize_name(name), set()).add(version)
+    versions = {name: v.pop() for name, v in by_name.items() if len(v) == 1}
     return versions, None
 
 
@@ -194,6 +209,12 @@ def _bump_for(table: str, req_str: str, resolved: dict[str, str]) -> Bump | None
         floor, target = Version(spec.version), Version(installed)
     except InvalidVersion:
         return None
+    # A local build tag (e.g. torch "2.1.0+cpu") is machine-specific and makes
+    # an INVALID ">=" specifier; bump to the public version only, and never on
+    # the local segment alone (a "+cpu" build is not an upgrade over 2.1.0).
+    if target.local is not None:
+        installed = target.public
+        target = Version(installed)
     if target <= floor:
         return None
 
@@ -227,22 +248,56 @@ def compute_bumps(pyproject_path: Path, resolved: dict[str, str]) -> list[Bump]:
     return bumps
 
 
+# The tables compute_bumps scans; apply_bumps only ever edits lines inside one
+# of these, so an identical "pkg>=x" string in [build-system], [tool.uv], or a
+# comment is never touched.
+_SCANNED_SECTIONS = {
+    "project",
+    "project.optional-dependencies",
+    "dependency-groups",
+}
+
+
+def _section_header(stripped: str) -> str | None:
+    """The table name if the line is a ``[section]`` header, else None."""
+    if stripped.startswith("[") and stripped.endswith("]") and "=" not in stripped:
+        return stripped.strip("[]").strip()
+    return None
+
+
 def apply_bumps(pyproject_path: Path, bumps: list[Bump]) -> None:
-    """Rewrite the floors in place by swapping the exact quoted requirement
-    strings — comments, alignment, and every other line stay untouched."""
-    text = pyproject_path.read_text(encoding="utf-8")
-    # Dedup by raw: the same requirement can appear in two tables and would
-    # otherwise be looked up again after the first replace already changed it.
+    """Rewrite the lagging floors in place, scoped to the three dependency
+    tables. Only the exact quoted requirement strings change — comments, other
+    tables ([build-system], [tool.uv], …), alignment, and every other byte stay
+    as-is. A requirement declared in two scanned tables is rewritten in both,
+    across single- and double-quoted forms."""
+    # Dedup by raw: the same requirement can legitimately appear in two tables;
+    # both on-disk occurrences are still rewritten (the walk visits every line).
     replacements = {b.raw: b.raw_new for b in bumps}
-    for raw, raw_new in replacements.items():
-        for quote in ('"', "'"):
-            needle = f"{quote}{raw}{quote}"
-            if needle in text:
-                text = text.replace(needle, f"{quote}{raw_new}{quote}")
-                break
-        else:
-            raise ValueError(f"could not locate {raw!r} in {pyproject_path.name}")
-    pyproject_path.write_text(text, encoding="utf-8")
+    lines = pyproject_path.read_text(encoding="utf-8").split("\n")
+    section: str | None = None
+    seen: set[str] = set()
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        header = _section_header(stripped)
+        if header is not None:
+            section = header
+            continue
+        if section not in _SCANNED_SECTIONS or stripped.startswith("#"):
+            continue  # never touch comments or unscanned tables
+        for raw, raw_new in replacements.items():
+            for quote in ('"', "'"):
+                token = f"{quote}{raw}{quote}"
+                if token in line:
+                    line = line.replace(token, f"{quote}{raw_new}{quote}")
+                    seen.add(raw)
+        lines[i] = line
+    missing = set(replacements) - seen
+    if missing:
+        raise ValueError(
+            f"could not locate {', '.join(sorted(missing))} in {pyproject_path.name}"
+        )
+    pyproject_path.write_text("\n".join(lines), encoding="utf-8")
 
 
 def build_commit_message(bumps: list[Bump]) -> str:
