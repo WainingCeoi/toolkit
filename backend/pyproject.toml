@@ -35,10 +35,12 @@ dependencies = [
 docmd = ["mineru[core]>=3.4.4"]
 
 # ruff is DECLARED here on purpose: undeclared, `uv run ruff` silently falls back to whatever
-# ruff is on PATH, so two machines lint identical code to different results. httpx2 backs the
-# fastapi TestClient in tests.
+# ruff is on PATH, so two machines lint identical code to different results. httpx backs the
+# fastapi TestClient: starlette imports it by that exact name, so the similarly-named httpx2
+# does NOT satisfy it — with only httpx2 declared, importing TestClient fails and every API
+# test errors during collection.
 [dependency-groups]
-dev = ["pytest>=9.1.1", "httpx2>=2.7.0", "ruff>=0.15.22"]
+dev = ["pytest>=9.1.1", "httpx>=0.28.1", "ruff>=0.15.22"]
 
 [build-system]
 requires = ["hatchling"]
