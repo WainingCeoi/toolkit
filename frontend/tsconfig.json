@@ -1,0 +1,30 @@
+{
+  // Application sources. Type checking is done by TypeScript 7 (`npm run
+  // typecheck`), never by the bundler: Vite/esbuild strips types without
+  // checking them, so `vite build` alone would happily ship broken types.
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "types": ["vite/client", "vitest/globals"],
+
+    "strict": true,
+    // Deliberately off: the tool pages index rows/columns by key when
+    // rendering tables, and every access would need a redundant guard.
+    "noUncheckedIndexedAccess": false,
+
+    "noEmit": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+
+    // Dropped in the final phase, once no .jsx/.js sources remain under src/.
+    "allowJs": true,
+    "checkJs": false
+  },
+  "include": ["src"]
+}

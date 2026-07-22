@@ -1,0 +1,22 @@
+{
+  // Build-time config files. These run under Node, not the browser, so they
+  // get Node globals (process.env.API_PORT in vite.config.ts) and no DOM lib.
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2023"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "types": ["node"],
+
+    "strict": true,
+    "noEmit": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "skipLibCheck": true,
+
+    // Dropped once both config files are .ts (phase 1).
+    "allowJs": true,
+    "checkJs": false
+  },
+  "include": ["vite.config.*", "vitest.config.*"]
+}

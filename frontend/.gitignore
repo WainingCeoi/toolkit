@@ -13,6 +13,9 @@ dist-ssr/
 # Test output
 coverage/
 
+# TypeScript incremental build metadata
+*.tsbuildinfo
+
 # Logs
 *.log
 npm-debug.log*

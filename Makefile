@@ -69,12 +69,18 @@ frontend:
 # Explicit `src tests` paths, not a bare `ruff check`: an explicit path overrides `exclude`,
 # so a stray ignore can't quietly shrink the gate, and a bad `cd` fails loudly with E902.
 # `ruff format --check` is enforced too, so drift fails the gate instead of piling up.
+#
+# The frontend gate used to be `npm run build` alone, which proves almost
+# nothing: Vite strips TypeScript types with esbuild WITHOUT checking them, so a
+# type-broken app builds clean. `typecheck` (TypeScript 7) is the real gate, and
+# lint/test were already written but never run in CI. Ordered cheapest-first.
 test:
 	cd backend && uv run --frozen pytest -q && uv run --frozen ruff check src tests && uv run --frozen ruff format --check src tests
-	cd frontend && npm run build
+	cd frontend && npm run typecheck && npm run lint && npm run test && npm run build
 
 lint:
 	cd backend && uv run --frozen ruff check src tests && uv run --frozen ruff format --check src tests
+	cd frontend && npm run typecheck && npm run lint
 
 clean:
 	rm -rf frontend/dist
