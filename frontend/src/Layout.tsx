@@ -9,6 +9,7 @@ import { LedBar } from './components/JobPanel'
 import Button from './components/Button'
 import ThemeToggle from './components/ThemeToggle'
 import { TOOL_EMOJI } from './tools'
+import type { Category } from './types/api'
 
 function Dock() {
   const { jobs, dismiss } = useJobs()
@@ -65,11 +66,11 @@ function Dock() {
 }
 
 export default function Layout() {
-  const [categories, setCategories] = useState([])
-  const [toolsError, setToolsError] = useState(null)
+  const [categories, setCategories] = useState<Category[]>([])
+  const [toolsError, setToolsError] = useState<string | null>(null)
   const [filter, setFilter] = useState('')
   const [open, setOpen] = useState(false)
-  const searchRef = useRef(null)
+  const searchRef = useRef<HTMLInputElement>(null)
 
   // Load the tool catalog; on failure keep an error note and retry when the
   // window regains focus, instead of dead-ending on a permanently empty rail.
@@ -83,7 +84,7 @@ export default function Layout() {
           setCategories(cats)
           setToolsError(null)
         })
-        .catch((err) => {
+        .catch((err: Error) => {
           if (!cancelled) setToolsError(err.message)
         })
     load()
@@ -95,8 +96,11 @@ export default function Layout() {
   }, [])
 
   useEffect(() => {
-    function onKey(e) {
-      if (e.key === '/' && !/input|textarea|select/i.test(e.target.tagName)) {
+    function onKey(e: KeyboardEvent) {
+      // e.target is EventTarget, which has no tagName; the guard exists to skip
+      // the shortcut while the user is typing in a field.
+      const target = e.target as HTMLElement | null
+      if (e.key === '/' && !/input|textarea|select/i.test(target?.tagName ?? '')) {
         e.preventDefault()
         searchRef.current?.focus()
       }
@@ -115,7 +119,12 @@ export default function Layout() {
 
   const rail = (
     <nav className={`rail ${open ? 'open' : ''}`}>
-      <Link to="/" className="brand" onClick={() => setOpen(false)} style={{ textDecoration: 'none' }}>
+      <Link
+        to="/"
+        className="brand"
+        onClick={() => setOpen(false)}
+        style={{ textDecoration: 'none' }}
+      >
         <span className="brand-name">🧰 Toolkit</span>
         <span className="brand-sub">media · files</span>
       </Link>
@@ -129,7 +138,12 @@ export default function Layout() {
         />
         <kbd>/</kbd>
       </div>
-      <NavLink to="/" end className={({ isActive }) => `rail-link ${isActive ? 'active' : ''}`} onClick={() => setOpen(false)}>
+      <NavLink
+        to="/"
+        end
+        className={({ isActive }) => `rail-link ${isActive ? 'active' : ''}`}
+        onClick={() => setOpen(false)}
+      >
         <span className="emoji">🏠</span> Home
       </NavLink>
       {toolsError && categories.length === 0 && (
@@ -162,11 +176,20 @@ export default function Layout() {
   return (
     <div className="frame">
       <div className="topbar">
-        <button type="button" onClick={() => setOpen(true)} aria-label="Open navigation">☰</button>
+        <button type="button" onClick={() => setOpen(true)} aria-label="Open navigation">
+          ☰
+        </button>
         <span className="brand-name">🧰 Toolkit</span>
       </div>
       {rail}
-      {open && <button type="button" className="scrim" onClick={() => setOpen(false)} aria-label="Close navigation" />}
+      {open && (
+        <button
+          type="button"
+          className="scrim"
+          onClick={() => setOpen(false)}
+          aria-label="Close navigation"
+        />
+      )}
       <main className="main">
         <Outlet />
       </main>

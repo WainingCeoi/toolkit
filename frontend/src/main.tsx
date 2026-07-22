@@ -39,7 +39,12 @@ const router = createHashRouter([
   },
 ])
 
-createRoot(document.getElementById('root')).render(
+// index.html always contains #root; a missing one is a build-time mistake, and
+// the JS version would have thrown the same way one line later.
+const rootElement = document.getElementById('root')
+if (!rootElement) throw new Error('#root is missing from index.html')
+
+createRoot(rootElement).render(
   <React.StrictMode>
     <ErrorBoundary>
       <JobsProvider>
