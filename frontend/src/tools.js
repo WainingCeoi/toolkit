@@ -10,10 +10,12 @@ export const TOOL_EMOJI = {
   '/tools/doc-to-markdown': '📝',
   '/tools/cache-purge': '🧹',
   '/tools/subscription': '🛰️',
+  '/tools/dep-upgrade': '📦',
 }
 
 export const CATEGORY_ACCENT = {
   '🎬 Media': 'var(--amber)',
   '🗂️ Documents & Files': 'var(--teal)',
   '🌐 Network': 'var(--violet)',
+  '🛠️ Developer': 'var(--sky)',
 }

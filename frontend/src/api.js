@@ -183,6 +183,11 @@ export const api = {
     request('/doc-to-markdown', { method: 'POST', body: formData }),
   docmdHealth: () => request('/doc-to-markdown/health'),
 
+  // dependency upgrader (scan runs as a job, apply is synchronous)
+  depsScan: (folder) => request('/deps/scan', { method: 'POST', body: { folder } }),
+  depsApply: (folder, commit) =>
+    request('/deps/apply', { method: 'POST', body: { folder, commit } }),
+
   // optimized-ip subscription
   subsGenerate: (payload) => request('/subs/generate', { method: 'POST', body: payload }),
   subsHistory: () => request('/subs/history'),

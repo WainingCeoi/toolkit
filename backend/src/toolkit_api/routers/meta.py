@@ -100,6 +100,19 @@ CATEGORIES = [
             ),
         ],
     ),
+    CategoryOut(
+        name="🛠️ Developer",
+        tools=[
+            ToolOut(
+                slug="dep-upgrade",
+                title="📦 Dependency Upgrader",
+                description=(
+                    "Point at a uv project: run uv sync -U, review the lagging >= "
+                    "floors, then rewrite pyproject.toml and commit it with uv.lock."
+                ),
+            ),
+        ],
+    ),
 ]
 
 

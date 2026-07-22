@@ -19,6 +19,7 @@ const pages = {
   'doc-to-markdown': lazy(() => import('./pages/DocToMarkdown')),
   'cache-purge': lazy(() => import('./pages/CachePurge')),
   subscription: lazy(() => import('./pages/Subscription')),
+  'dep-upgrade': lazy(() => import('./pages/DepUpgrade')),
 }
 
 const router = createHashRouter([
