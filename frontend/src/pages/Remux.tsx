@@ -1,25 +1,31 @@
 // Remux Processor — scan a folder for videos, configure tracks, optionally
 // attach external subtitles, then run a parallel lossless ffmpeg remux job.
 
-import React, { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type CSSProperties } from 'react'
 import { api } from '../api'
 import { useToolJob } from '../jobs'
 import Button from '../components/Button'
 import FolderField from '../components/FolderField'
 import JobPanel from '../components/JobPanel'
+import type {
+  RemuxResult,
+  RemuxStartPayload,
+  RemuxVideo,
+  SubtitleMatch,
+} from '../types/api'
 
-const baseName = (p) => p.split('/').pop()
+const baseName = (p: string): string => p.split('/').pop() ?? p
 
-const hintStyle = { fontSize: 11.5, color: 'var(--faint)', marginTop: 4 }
+const hintStyle: CSSProperties = { fontSize: 11.5, color: 'var(--faint)', marginTop: 4 }
 
 export default function Remux() {
   // 01 — source folder + video selection
   const [folder, setFolder] = useState('')
-  const [videos, setVideos] = useState([]) // [{path, name}] natural-sorted server-side
-  const [selected, setSelected] = useState([]) // paths
+  const [videos, setVideos] = useState<RemuxVideo[]>([]) // natural-sorted server-side
+  const [selected, setSelected] = useState<string[]>([]) // paths
   const [scanned, setScanned] = useState(false)
   const [scanning, setScanning] = useState(false)
-  const [scanError, setScanError] = useState(null)
+  const [scanError, setScanError] = useState<string | null>(null)
 
   // 02 — track configuration
   const [includeVideo, setIncludeVideo] = useState(true)
@@ -34,15 +40,15 @@ export default function Remux() {
   // 03 — external subtitles
   const [useExternalSub, setUseExternalSub] = useState(false)
   const [subFolder, setSubFolder] = useState('')
-  const [matches, setMatches] = useState([]) // [{video, subtitle|null}]
+  const [matches, setMatches] = useState<SubtitleMatch[]>([])
   const [matchesReady, setMatchesReady] = useState(true) // false while (re)fetching
-  const [subError, setSubError] = useState(null)
+  const [subError, setSubError] = useState<string | null>(null)
 
   // 04 — output & run
   const [outFolder, setOutFolder] = useState('~/Desktop/🎬')
   const [workers, setWorkers] = useState(4)
 
-  const { start, snapshot, running, error } = useToolJob('/tools/remux')
+  const { start, snapshot, running, error } = useToolJob<RemuxResult>('/tools/remux')
 
   const selectedSet = useMemo(() => new Set(selected), [selected])
   // Payload order follows the natural-sorted scan list, not click order.
@@ -64,13 +70,13 @@ export default function Remux() {
       setVideos([])
       setSelected([])
       setScanned(false)
-      setScanError(err.message)
+      setScanError((err as Error).message)
     } finally {
       setScanning(false)
     }
   }
 
-  function toggle(path) {
+  function toggle(path: string) {
     setSelected((prev) =>
       prev.includes(path) ? prev.filter((p) => p !== path) : [...prev, path],
     )
@@ -103,7 +109,7 @@ export default function Remux() {
       } catch (err) {
         if (!stale) {
           setMatches([])
-          setSubError(err.message)
+          setSubError((err as Error).message)
           setMatchesReady(true)
         }
       }
@@ -115,7 +121,7 @@ export default function Remux() {
   }, [useExternalSub, subFolder, folder, selectedPaths])
 
   function startRemux() {
-    const payload = {
+    const payload: RemuxStartPayload = {
       selected: selectedPaths,
       include_video: includeVideo,
       video_index: parseInt(videoIdx, 10) || 0,
@@ -126,7 +132,9 @@ export default function Remux() {
       subtitle_index: parseInt(subIdx, 10) || 0,
       sub_lang: subLang,
       use_external_sub: useExternalSub,
-      external_sub_map: Object.fromEntries(matches.map((m) => [m.video, m.subtitle])),
+      external_sub_map: Object.fromEntries(
+        matches.map((m): [string, string | null] => [m.video, m.subtitle]),
+      ),
       out_folder: outFolder,
       max_workers: workers,
     }
@@ -134,7 +142,10 @@ export default function Remux() {
   }
 
   // A cancelled run returns the tasks that already finished — render them too.
-  const result = ['done', 'cancelled'].includes(snapshot?.state) ? snapshot.result : null
+  const result =
+    snapshot && (snapshot.state === 'done' || snapshot.state === 'cancelled')
+      ? snapshot.result
+      : null
 
   return (
     <div>

@@ -3,10 +3,12 @@
 // The subs API is synchronous (no job), so this page manages its own
 // request state instead of useToolJob.
 
-import React, { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { api, saveBlob } from '../api'
 import Button from '../components/Button'
 import CodeBox from '../components/CodeBox'
+// Aliased: the default export below is also called Subscription.
+import type { Subscription as SubscriptionData, SubsHistoryItem } from '../types/api'
 
 const PREVIEW_COLS = ['name', 'type', 'server', 'port', 'host', 'sni', 'network', 'tls']
 
@@ -18,24 +20,24 @@ export default function Subscription() {
   const [keepHost, setKeepHost] = useState(true)
 
   // result panel
-  const [result, setResult] = useState(null)
-  const [error, setError] = useState(null)
+  const [result, setResult] = useState<SubscriptionData | null>(null)
+  const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   // per-target download failure (e.g. Surge can't express vless nodes) — the
   // old page showed the render reason on a disabled button; here it appears
   // inline under the download row.
-  const [dlError, setDlError] = useState(null)
+  const [dlError, setDlError] = useState<string | null>(null)
 
   // history (loads independently of any generate)
-  const [history, setHistory] = useState([])
-  const [historyError, setHistoryError] = useState(null)
+  const [history, setHistory] = useState<SubsHistoryItem[]>([])
+  const [historyError, setHistoryError] = useState<string | null>(null)
 
   const refreshHistory = useCallback(async () => {
     try {
       setHistory(await api.subsHistory())
       setHistoryError(null)
     } catch (err) {
-      setHistoryError(err.message)
+      setHistoryError((err as Error).message)
     }
   }, [])
 
@@ -57,45 +59,49 @@ export default function Subscription() {
       setDlError(null)
       refreshHistory()
     } catch (err) {
-      setError(err.message)
+      setError((err as Error).message)
     } finally {
       setBusy(false)
     }
   }
 
-  async function download(target) {
+  async function download(target: string) {
+    // The download row only renders inside `result &&`, so this cannot fire
+    // without one.
+    if (!result) return
     setDlError(null)
     try {
       const { blob, filename } = await api.subsDownload(result.sub_id, target)
       saveBlob(blob, filename)
     } catch (err) {
-      setDlError(`${target}: ${err.message}`)
+      setDlError(`${target}: ${(err as Error).message}`)
     }
   }
 
-  async function loadSub(id) {
+  async function loadSub(id: string) {
     setError(null)
     setDlError(null)
     try {
       setResult(await api.subsGet(id))
     } catch (err) {
-      setError(err.message) // "That subscription no longer exists."
+      setError((err as Error).message) // "That subscription no longer exists."
       refreshHistory()
     }
   }
 
-  async function deleteSub(id) {
+  async function deleteSub(id: string) {
     setError(null)
     try {
       await api.subsDelete(id)
       setResult((cur) => (cur && cur.sub_id === id ? null : cur))
       refreshHistory()
     } catch (err) {
-      setError(err.message)
+      setError((err as Error).message)
     }
   }
 
-  const count = (v) => (v === null || v === undefined ? '—' : v)
+  const count = (v: number | null | undefined): string | number =>
+    v === null || v === undefined ? '—' : v
 
   return (
     <div>
@@ -220,7 +226,7 @@ export default function Subscription() {
                         </tr>
                       </thead>
                       <tbody>
-                        {result.preview.map((node, i) => (
+                        {result.preview.map((node: Record<string, unknown>, i: number) => (
                           <tr key={i}>
                             {PREVIEW_COLS.map((col) => (
                               <td key={col}>

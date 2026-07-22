@@ -3,20 +3,21 @@
 // upgrade + commit each. Scan runs as a tracked job (the syncs are slow +
 // cancellable); apply is a quick synchronous write, gated on your review.
 
-import React, { useEffect, useState } from 'react'
+import { useEffect, useState, type CSSProperties } from 'react'
 import { api } from '../api'
 import { useToolJob } from '../jobs'
 import FolderField from '../components/FolderField'
 import JobPanel from '../components/JobPanel'
 import Button from '../components/Button'
+import type { Bump, DepApplyResult, DepScanResult } from '../types/api'
 
 // Mirrors depsync.COMMIT_SUBJECT — the server falls back to it if this is blank.
 const DEFAULT_COMMIT_MESSAGE = 'chore(deps): update dependencies'
 
-const mono = { font: '11px var(--mono)', color: 'var(--faint)' }
-const caption = { font: '11px var(--mono)', color: 'var(--faint)', margin: '6px 0 0' }
-const change = { font: '12px var(--mono)' }
-const badge = {
+const mono: CSSProperties = { font: '11px var(--mono)', color: 'var(--faint)' }
+const caption: CSSProperties = { font: '11px var(--mono)', color: 'var(--faint)', margin: '6px 0 0' }
+const change: CSSProperties = { font: '12px var(--mono)' }
+const badge: CSSProperties = {
   font: '10px var(--mono)',
   textTransform: 'uppercase',
   padding: '1px 6px',
@@ -26,7 +27,7 @@ const badge = {
   marginLeft: 8,
 }
 
-function BumpTable({ bumps }) {
+function BumpTable({ bumps }: { bumps: Bump[] }) {
   return (
     <div style={{ overflowX: 'auto' }}>
       <table className="table">
@@ -62,12 +63,12 @@ export default function DepUpgrade() {
   const [folder, setFolder] = useState('')
   const [commitAfter, setCommitAfter] = useState(true)
   const [commitMessage, setCommitMessage] = useState(DEFAULT_COMMIT_MESSAGE)
-  const [scannedFolder, setScannedFolder] = useState(null)
+  const [scannedFolder, setScannedFolder] = useState<string | null>(null)
   const [applying, setApplying] = useState(false)
-  const [applyResult, setApplyResult] = useState(null)
-  const [applyError, setApplyError] = useState(null)
+  const [applyResult, setApplyResult] = useState<DepApplyResult | null>(null)
+  const [applyError, setApplyError] = useState<string | null>(null)
 
-  const { start, snapshot, running, error, setError } = useToolJob('/tools/dep-upgrade')
+  const { start, snapshot, running, error, setError } = useToolJob<DepScanResult>('/tools/dep-upgrade')
 
   const result = snapshot?.state === 'done' ? snapshot.result : null
   const targets = result?.targets ?? []
@@ -79,9 +80,10 @@ export default function DepUpgrade() {
   // folder fields reset on unmount. Rehydrate them from the scanned root so the
   // restored review isn't wrongly flagged "folder changed" and stays applyable.
   useEffect(() => {
-    if (result?.root && scannedFolder === null) {
-      setScannedFolder(result.root)
-      setFolder((current) => current || result.root)
+    const root = result?.root
+    if (root && scannedFolder === null) {
+      setScannedFolder(root)
+      setFolder((current) => current || root)
     }
   }, [result, scannedFolder])
 
@@ -96,12 +98,16 @@ export default function DepUpgrade() {
   }
 
   async function runApply() {
+    // Unreachable while the Apply button is gated on canApply, which
+    // requires a completed scan; the guard is what lets the call site stay
+    // honest about scannedFolder being nullable rather than asserting.
+    if (scannedFolder === null) return
     setApplying(true)
     setApplyError(null)
     try {
       setApplyResult(await api.depsApply(scannedFolder, commitAfter, commitMessage))
     } catch (err) {
-      setApplyError(err.message)
+      setApplyError((err as Error).message)
     } finally {
       setApplying(false)
     }

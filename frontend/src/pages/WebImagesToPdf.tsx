@@ -4,17 +4,18 @@
 // poll keeps the page honest about the single browser session, even if the
 // page was reloaded or Chrome was closed by hand.
 
-import React, { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api, artifactUrl } from '../api'
 import Button from '../components/Button'
+import type { WebPdfCapture } from '../types/api'
 
 export default function WebImagesToPdf() {
   const [url, setUrl] = useState('')
   const [open, setOpen] = useState(false)
   const [opening, setOpening] = useState(false)
   const [capturing, setCapturing] = useState(false)
-  const [result, setResult] = useState(null)
-  const [error, setError] = useState(null)
+  const [result, setResult] = useState<WebPdfCapture | null>(null)
+  const [error, setError] = useState<string | null>(null)
   const busy = useRef(false) // pause the poll while a request is in flight
 
   // Independent status region: poll every 3s while mounted so a session
@@ -47,7 +48,7 @@ export default function WebImagesToPdf() {
       await api.webpdfOpen(url.trim())
       setOpen(true)
     } catch (err) {
-      setError(err.message) // 409 already open / 502 could not open
+      setError((err as Error).message) // 409 already open / 502 could not open
     } finally {
       setOpening(false)
       busy.current = false
@@ -64,7 +65,7 @@ export default function WebImagesToPdf() {
       setOpen(false) // a successful capture also closes the browser
     } catch (err) {
       // 400 "no images" leaves the browser open for a retry; 409/502 too.
-      setError(err.message)
+      setError((err as Error).message)
     } finally {
       setCapturing(false)
       busy.current = false
@@ -78,7 +79,7 @@ export default function WebImagesToPdf() {
       await api.webpdfClose()
       setOpen(false)
     } catch (err) {
-      setError(err.message)
+      setError((err as Error).message)
     } finally {
       busy.current = false
     }

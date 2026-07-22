@@ -127,8 +127,12 @@ export interface MagnetScrapeResult {
   total: number
   successful_count: number
   failed_count: number
-  /** Present only on the automatic path, where pagination looks for a cutoff. */
-  cutoff_found?: boolean
+  /**
+   * Present only on the automatic path, where pagination looks for a cutoff,
+   * and only ever `true` — the false case is MagnetCutoffMiss below. Typed as
+   * the literal so `cutoff_found === false` discriminates the union.
+   */
+  cutoff_found?: true
 }
 
 /**
@@ -268,6 +272,8 @@ export interface WebPdfCapture {
   name: string
   pages: number
   skipped: number
+  /** Set when the PDF was built but bookmarks could not be added. */
+  warn: string | null
 }
 
 /** Mirrors GenerateIn. */

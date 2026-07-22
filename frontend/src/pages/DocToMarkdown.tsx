@@ -2,13 +2,14 @@
 // One job per batch; the backend runs one MinerU subprocess per file and
 // bundles every file's output tree into a single downloadable zip.
 
-import React, { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { api, artifactUrl } from '../api'
 import { useToolJob } from '../jobs'
 import FileDrop from '../components/FileDrop'
 import JobPanel from '../components/JobPanel'
 import CodeBox from '../components/CodeBox'
 import Button from '../components/Button'
+import type { DocConvertResult, MarkdownHealth } from '../types/api'
 
 const ACCEPT = '.pdf,.png,.jpg,.jpeg,.docx,.pptx,.xlsx'
 
@@ -18,7 +19,7 @@ const OCR_LANGS = [
 ]
 
 // Small muted help line under a control (the old page's `help=` tooltips).
-function Hint({ children }) {
+function Hint({ children }: { children: ReactNode }) {
   return (
     <p style={{ margin: '4px 0 0', fontSize: '11.5px', color: 'var(--faint)', lineHeight: 1.45 }}>
       {children}
@@ -27,7 +28,7 @@ function Hint({ children }) {
 }
 
 export default function DocToMarkdown() {
-  const [files, setFiles] = useState([])
+  const [files, setFiles] = useState<File[]>([])
   const [backend, setBackend] = useState('hybrid-engine')
   const [method, setMethod] = useState('auto')
   const [lang, setLang] = useState('ch')
@@ -36,14 +37,14 @@ export default function DocToMarkdown() {
   const [table, setTable] = useState(true)
 
   // Health lamps load independently of everything else on the page.
-  const [health, setHealth] = useState(null)
+  const [health, setHealth] = useState<MarkdownHealth | null>(null)
   useEffect(() => {
     let alive = true
     api.docmdHealth().then((h) => alive && setHealth(h)).catch(() => {})
     return () => { alive = false }
   }, [])
 
-  const { start, snapshot, running, error } = useToolJob('/tools/doc-to-markdown')
+  const { start, snapshot, running, error } = useToolJob<DocConvertResult>('/tools/doc-to-markdown')
 
   async function convert() {
     const fd = new FormData()

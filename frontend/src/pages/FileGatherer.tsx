@@ -1,17 +1,18 @@
 // File Gatherer — recursively gather files by type into one target folder.
 // Mirrors backend/src/toolkit_api/routers/gather.py (POST /gather/start -> job).
 
-import React, { useMemo, useState } from 'react'
+import { useMemo, useState, type CSSProperties } from 'react'
 import { api } from '../api'
-import { useToolJob } from '../jobs.jsx'
-import FolderField from '../components/FolderField.jsx'
-import JobPanel from '../components/JobPanel.jsx'
+import { useToolJob } from '../jobs'
+import FolderField from '../components/FolderField'
+import JobPanel from '../components/JobPanel'
 import Button from '../components/Button'
+import type { GatherResult as GatherResultData } from '../types/api'
 
 // Client-side mirror of the engine presets — used ONLY for the live
 // "Matching: …" caption; the backend builds the real pattern list from the
 // category names + custom string we send it.
-const FILE_TYPE_PRESETS = {
+const FILE_TYPE_PRESETS: Record<string, string[]> = {
   Video: ['*.mkv', '*.mp4', '*.mov', '*.ts', '*.flv', '*.avi', '*.webm', '*.m4v', '*.wmv', '*.mpg', '*.mpeg'],
   Audio: ['*.mp3', '*.flac', '*.aac', '*.wav', '*.m4a', '*.ogg', '*.opus', '*.wma'],
   Image: ['*.jpg', '*.jpeg', '*.png', '*.gif', '*.heic', '*.webp', '*.bmp', '*.tiff'],
@@ -22,21 +23,21 @@ const FILE_TYPE_PRESETS = {
 const CATEGORY_NAMES = Object.keys(FILE_TYPE_PRESETS)
 
 // 'srt'/'.srt' -> '*.srt'; tokens with * or ? are kept as real globs.
-function normalizePattern(token) {
+function normalizePattern(token: string): string | null {
   const t = token.trim()
   if (!t) return null
   if (t.includes('*') || t.includes('?')) return t
   return `*.${t.replace(/^\.+/, '')}`
 }
 
-const captionStyle = {
+const captionStyle: CSSProperties = {
   font: '12px var(--mono)',
   color: 'var(--muted)',
   overflowWrap: 'anywhere',
   margin: '4px 0 0',
 }
 
-function GatherResult({ result }) {
+function GatherResult({ result }: { result: GatherResultData }) {
   const { moved, failed, scan_errors: scanErrors, target, warning } = result
   const nothingFound = moved.length === 0 && failed.length === 0
   return (
@@ -45,7 +46,7 @@ function GatherResult({ result }) {
         <details className="expander">
           <summary>⚠️ {scanErrors.length} scan warning(s)</summary>
           <div className="body">
-            {scanErrors.map((err, i) => (
+            {scanErrors.map((err: string, i: number) => (
               <div key={i} style={{ ...captionStyle, padding: '2px 0' }}>{err}</div>
             ))}
           </div>
@@ -92,15 +93,15 @@ function GatherResult({ result }) {
 export default function FileGatherer() {
   const [source, setSource] = useState('~/Desktop')
   const [target, setTarget] = useState('~/Desktop')
-  const [selected, setSelected] = useState({ Video: true })
+  const [selected, setSelected] = useState<Record<string, boolean>>({ Video: true })
   const [custom, setCustom] = useState('')
-  const { start, snapshot, running, error } = useToolJob('/tools/file-gatherer')
+  const { start, snapshot, running, error } = useToolJob<GatherResultData>('/tools/file-gatherer')
 
   const categories = CATEGORY_NAMES.filter((c) => selected[c])
 
   // Live pattern preview, assembled exactly the way the backend will.
   const patterns = useMemo(() => {
-    const out = []
+    const out: string[] = []
     for (const c of categories) out.push(...FILE_TYPE_PRESETS[c])
     for (const token of custom.replace(/,/g, ' ').split(/\s+/)) {
       const p = normalizePattern(token)
@@ -109,7 +110,7 @@ export default function FileGatherer() {
     return [...new Set(out)].sort()
   }, [custom, selected]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const toggle = (name) => setSelected((prev) => ({ ...prev, [name]: !prev[name] }))
+  const toggle = (name: string) => setSelected((prev) => ({ ...prev, [name]: !prev[name] }))
 
   const run = () => start(() => api.gatherStart({ source, target, categories, custom }))
 
@@ -198,9 +199,9 @@ export default function FileGatherer() {
           </Button>
           {error && <div className="note error">{error}</div>}
           <JobPanel snapshot={snapshot}>
-            {['done', 'cancelled'].includes(snapshot?.state) && snapshot.result && (
-              <GatherResult result={snapshot.result} />
-            )}
+            {snapshot &&
+              (snapshot.state === 'done' || snapshot.state === 'cancelled') &&
+              snapshot.result && <GatherResult result={snapshot.result} />}
           </JobPanel>
         </div>
       </div>

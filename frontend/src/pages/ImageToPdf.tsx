@@ -1,16 +1,16 @@
 // Image to PDF: combine uploaded images (PNG/JPG/HEIC) into a single PDF,
 // returned as a direct download — no job, one synchronous request.
 
-import React, { useState } from 'react'
+import { useState } from 'react'
 import { api, saveBlob } from '../api'
 import FileDrop from '../components/FileDrop'
 
 export default function ImageToPdf() {
   const [name, setName] = useState('')
-  const [files, setFiles] = useState([])
+  const [files, setFiles] = useState<File[]>([])
   const [busy, setBusy] = useState(false)
-  const [error, setError] = useState(null)
-  const [saved, setSaved] = useState(null)
+  const [error, setError] = useState<string | null>(null)
+  const [saved, setSaved] = useState<string | null>(null)
 
   async function convert() {
     setBusy(true)
@@ -25,7 +25,7 @@ export default function ImageToPdf() {
       setSaved(filename)
       setFiles([])
     } catch (err) {
-      setError(err.message)
+      setError((err as Error).message)
     } finally {
       setBusy(false)
     }

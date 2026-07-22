@@ -3,30 +3,33 @@
 // found (then advances it); Manual scrapes a pasted URL list; Remove
 // duplicated de-dupes a magnet list locally (sync, no job).
 
-import React, { useEffect, useState } from 'react'
+import { useEffect, useState, type CSSProperties } from 'react'
 import { api } from '../api'
 import { useToolJob } from '../jobs'
 import JobPanel from '../components/JobPanel'
 import CodeBox from '../components/CodeBox'
 import Button from '../components/Button'
+import type { DedupeResult, MagnetConfig, MagnetResult } from '../types/api'
 
 const MODES = [
   { key: 'auto', label: 'Automatic' },
   { key: 'manual', label: 'Manual' },
   { key: 'cleanup', label: 'Remove duplicated' },
-]
+] as const
 
-const BIG_TAP = { minHeight: 44 }
+type MagnetMode = (typeof MODES)[number]['key']
 
-function splitLines(raw) {
+const BIG_TAP: CSSProperties = { minHeight: 44 }
+
+function splitLines(raw: string): string[] {
   return raw
     .split(/\r?\n/)
-    .map((line) => line.trim())
+    .map((line: string) => line.trim())
     .filter(Boolean)
 }
 
 // Shared result block for auto + manual scrapes (snapshot.result).
-function ScrapeResult({ result }) {
+function ScrapeResult({ result }: { result: MagnetResult | null }) {
   if (!result) return null
 
   // Automatic mode only: pagination never located the cutoff video.
@@ -79,30 +82,30 @@ function ScrapeResult({ result }) {
 }
 
 export default function MagnetScraper() {
-  const [mode, setMode] = useState('auto')
+  const [mode, setMode] = useState<MagnetMode>('auto')
 
   // Automatic mode
   const [startPage, setStartPage] = useState('1')
-  const [config, setConfig] = useState(null) // {website_url_set, cutoff_set}
-  const [configError, setConfigError] = useState(null)
+  const [config, setConfig] = useState<MagnetConfig | null>(null)
+  const [configError, setConfigError] = useState<string | null>(null)
 
   // Manual mode
   const [manualRaw, setManualRaw] = useState('')
 
   // Remove duplicated (sync call — result persists while switching modes)
   const [dedupeRaw, setDedupeRaw] = useState('')
-  const [dedupeResult, setDedupeResult] = useState(null) // {unique, count}
-  const [dedupeError, setDedupeError] = useState(null)
+  const [dedupeResult, setDedupeResult] = useState<DedupeResult | null>(null)
+  const [dedupeError, setDedupeError] = useState<string | null>(null)
   const [dedupeBusy, setDedupeBusy] = useState(false)
 
-  const { start, snapshot, running, error, setError } = useToolJob('/tools/magnet-scraper')
+  const { start, snapshot, running, error, setError } = useToolJob<MagnetResult>('/tools/magnet-scraper')
 
   // Config lamps load independently of any job.
   useEffect(() => {
     api
       .magnetConfig()
       .then(setConfig)
-      .catch((e) => setConfigError(e.message))
+      .catch((e: Error) => setConfigError(e.message))
   }, [])
 
   function startAuto() {
@@ -127,7 +130,7 @@ export default function MagnetScraper() {
       setDedupeResult(await api.magnetDedupe(splitLines(dedupeRaw)))
     } catch (e) {
       setDedupeResult(null)
-      setDedupeError(e.message)
+      setDedupeError((e as Error).message)
     } finally {
       setDedupeBusy(false)
     }
