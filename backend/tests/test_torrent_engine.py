@@ -234,6 +234,44 @@ def test_rpc_raises_on_a_bad_secret(fake_aria2):
         bad.version()
 
 
+def test_rpc_never_routes_loopback_through_a_proxy():
+    # A configured HTTP proxy would intercept 127.0.0.1 and answer with a
+    # non-JSON error page; the daemon must always be reached directly.
+    assert Aria2RPC()._session.trust_env is False
+
+
+def test_rpc_treats_a_non_json_response_as_unreachable(monkeypatch):
+    # A proxy 503 (or any non-JSON body) must be reported as unreachable, not
+    # crash startup with a JSONDecodeError -- the actual make-start failure.
+    class FakeResponse:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            raise ValueError("Expecting value: line 1 column 1 (char 0)")
+
+    rpc = Aria2RPC(secret="x")
+    monkeypatch.setattr(rpc._session, "post", lambda *a, **k: FakeResponse())
+    with pytest.raises(Aria2Error, match="non-JSON"):
+        rpc.version()
+    assert probe(rpc) is None
+
+
+def test_rpc_treats_an_http_error_status_as_unreachable(monkeypatch):
+    import requests
+
+    class FakeResponse:
+        def raise_for_status(self):
+            raise requests.HTTPError("503 Server Error")
+
+        def json(self):  # pragma: no cover - must never be reached
+            raise AssertionError("json() must not run on a 5xx")
+
+    rpc = Aria2RPC(secret="x")
+    monkeypatch.setattr(rpc._session, "post", lambda *a, **k: FakeResponse())
+    assert probe(rpc) is None
+
+
 def test_rpc_raises_a_clear_error_when_the_daemon_is_unreachable():
     dead = Aria2RPC(url="http://127.0.0.1:1/jsonrpc", secret="x", timeout=0.5)
     with pytest.raises(Aria2Error, match="not reachable"):

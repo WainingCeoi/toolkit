@@ -96,9 +96,13 @@ def test_status_reports_a_down_daemon_without_failing(app_state, tmp_path):
         Aria2RPC(url="http://127.0.0.1:1/jsonrpc", secret="x", timeout=0.5),
         download_dir=tmp_path,
     )
-    with TestClient(create_app(state=app_state)) as client:
-        body = client.get("/api/torrent/status").json()
-    store.close()
+    try:
+        with TestClient(create_app(state=app_state)) as client:
+            body = client.get("/api/torrent/status").json()
+    finally:
+        # Close even if startup raises, so a leaked :memory: connection can't
+        # surface as a ResourceWarning blamed on an unrelated later test.
+        store.close()
     assert body["running"] is False
     assert body["version"] is None
 

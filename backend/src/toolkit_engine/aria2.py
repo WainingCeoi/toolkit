@@ -67,6 +67,12 @@ class Aria2RPC:
         self.timeout = timeout
         self._token = f"token:{secret}"
         self._session = requests.Session()
+        # aria2 is always on loopback. A configured HTTP proxy (env vars or the
+        # macOS system proxy -- likely on a machine that also runs a proxy
+        # subscription tool) would otherwise intercept 127.0.0.1 and answer
+        # with its own non-JSON error page, which is neither the daemon nor a
+        # connection error. trust_env=False keeps these calls off any proxy.
+        self._session.trust_env = False
 
     def call(self, method: str, *params):
         payload = {
@@ -77,10 +83,18 @@ class Aria2RPC:
         }
         try:
             response = self._session.post(self.url, json=payload, timeout=self.timeout)
+            # A non-2xx (e.g. a proxy's 503, or aria2 mid-restart) is "not
+            # reachable", not a crash -- raise_for_status makes it a
+            # RequestException handled below.
+            response.raise_for_status()
+            body = response.json()
         except requests.RequestException as exc:
             raise Aria2Error(f"aria2 is not reachable at {self.url}: {exc}") from exc
+        except ValueError as exc:  # body was not JSON (json.JSONDecodeError)
+            raise Aria2Error(
+                f"aria2 returned a non-JSON response from {self.url}: {exc}"
+            ) from exc
 
-        body = response.json()
         if "error" in body:
             raise Aria2Error(body["error"].get("message", "unknown aria2 error"))
         return body["result"]
