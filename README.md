@@ -29,6 +29,7 @@ toolkit/
 | 🧲  | **Magnet Scraper**  | Scrape unwatched video magnet links automatically, in bulk, or de-duplicate a list. |
 | 🖼️  | **Image to PDF**    | Combine selected images into a single PDF.                                           |
 | 🎬  | **Remux Processor** | Parallel, lossless remuxing (stream-copy) of videos with configurable tracks.       |
+| 🌊  | **Torrent Downloader** | Add a magnet or `.torrent`, keep only the files worth keeping, and manage the queue across restarts. |
 | 📦  | **File Gatherer**   | Recursively gather files by type from a folder and move them into one target.       |
 | 🛰️  | **Optimized-IP Subscription** | Rewrite nodes with optimized Cloudflare IPs and serve LAN subscriptions (Shadowrocket / Clash / Surge). |
 | 🧹  | **Cache Purge**     | Recursively find and delete cache / junk files from a folder.                       |
@@ -72,7 +73,7 @@ HOST=127.0.0.1 make host     # local-only
 ## Architecture
 
 ```
-frontend (React + Vite) ──/api (JSON + SSE)──▶ backend (FastAPI) ──▶ engines ──▶ ffmpeg / Chrome / LibreOffice / MinerU / SQLite
+frontend (React + Vite) ──/api (JSON + SSE)──▶ backend (FastAPI) ──▶ engines ──▶ ffmpeg / aria2 / Chrome / LibreOffice / MinerU / SQLite
 ```
 
 - **`backend/src/subgen/`** — the Optimized-IP Subscription engine (parse / rewrite /
@@ -120,6 +121,7 @@ make clean                     # remove build artifacts
 - [uv](https://docs.astral.sh/uv/) — Python 3.14 is managed automatically via `.python-version`
 - [Node.js](https://nodejs.org/) ≥ 20 (frontend build)
 - [FFmpeg](https://ffmpeg.org/) on your `PATH` — required by **Remux Processor** (`brew install ffmpeg`)
+- [aria2](https://aria2.github.io/) on your `PATH` — required by **Torrent Downloader** (`brew install aria2`)
 - [Google Chrome](https://www.google.com/chrome/) — required by **Web Images to PDF** (the matching driver is downloaded automatically)
 - [LibreOffice](https://www.libreoffice.org/) — required by **Doc to PDF** (`brew install --cask libreoffice`)
 - [MinerU](https://github.com/opendatalab/MinerU) — required by **Doc to Markdown**; installed with the backend via the `mineru[core]` dependency, its ML models download automatically on first run (cached under `~/.cache/huggingface`)
@@ -150,6 +152,27 @@ select videos, configure video / audio / subtitle track indices and the subtitle
 language tag, optionally attach external subtitle files (matched by filename stem),
 choose an output folder and worker count, then watch per-file live progress and a
 success/failure summary.
+
+### 🌊 Torrent Downloader
+
+Paste a magnet link or pick a `.torrent`, review every file inside it **before any
+content downloads**, and fetch only what matches your filter — by default video
+files over 100 MB, so the screenshots, samples and `RARBG.txt` are left behind.
+Tick any row to override the rule.
+
+The minimum size applies to video and audio only. A global floor would discard
+every subtitle the moment you ticked that box, since they are ~40 KB.
+
+Downloads survive restarts: the queue lives in SQLite, resumes where it stopped,
+and never re-downloads a file you deselected. The dashboard shows progress, speed
+and ETA per torrent, with pause / resume / remove.
+
+`aria2c` is started automatically if it is not already running, and stopped again
+once the last dashboard tab has been gone for 45 seconds — a refresh or a second
+tab does not count as leaving. If you already run aria2 yourself (for example
+`brew services start aria2`), the tool attaches to it instead and never shuts it
+down; export `ARIA2_SECRET` matching that daemon's `--rpc-secret` so the two can
+talk.
 
 ### 📦 File Gatherer
 
