@@ -14,23 +14,12 @@ from pathlib import Path
 import ffmpeg
 from ffmpeg_progress_yield import FfmpegProgress
 
+from toolkit_engine.filetypes import SUBTITLE_EXTENSIONS, VIDEO_EXTENSIONS
 from toolkit_engine.fsutil import natural_sort_key
 
-VIDEO_EXTENSIONS = {
-    ".mkv",
-    ".mp4",
-    ".mov",
-    ".avi",
-    ".ts",
-    ".m2ts",
-    ".webm",
-    ".flv",
-    ".wmv",
-    ".mpg",
-    ".mpeg",
-    ".m4v",
-}
-SUBTITLE_EXTENSIONS = {".srt", ".ass", ".ssa", ".sub", ".vtt"}
+# Re-exported: callers and tests still reach these through toolkit_engine.remux,
+# but filetypes.py owns them now so Torrent Downloader shares the same answer.
+__all__ = ["SUBTITLE_EXTENSIONS", "VIDEO_EXTENSIONS"]
 
 
 # =======================================================
