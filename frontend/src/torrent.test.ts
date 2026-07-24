@@ -1,14 +1,19 @@
 import { describe, it, expect } from 'vitest'
 import {
   SIZED_CATEGORIES,
+  addTorrent,
   applyFilter,
   formatBytes,
   formatEta,
   formatSpeed,
   hasActiveWork,
   MB,
+  parseMagnetLines,
+  ruleKey,
+  selectionFor,
+  updateTorrent,
 } from './torrent'
-import type { TorrentFileRow, TorrentRow } from './types/api'
+import type { TorrentFileRow, TorrentResolve, TorrentRow } from './types/api'
 
 const FILES: TorrentFileRow[] = [
   { index: 1, path: 'Movie.mkv', size: 2_000_000_000, category: 'video' },
@@ -16,6 +21,10 @@ const FILES: TorrentFileRow[] = [
   { index: 3, path: 'Movie.chi.srt', size: 45_000, category: 'subtitle' },
   { index: 4, path: 'Screens/01.jpg', size: 300_000, category: 'image' },
 ]
+
+function torrent(infohash: string, files = FILES, over: Partial<TorrentResolve> = {}): TorrentResolve {
+  return { infohash, ready: true, name: infohash, files, state: 'awaiting_selection', ...over }
+}
 
 describe('applyFilter', () => {
   it('keeps only large videos by default', () => {
@@ -132,5 +141,73 @@ describe('rule + override composition', () => {
     // fallback -- unticking a rule-selected row has to stick.
     const overrides = new Map([[1, false]])
     expect(overrides.get(1) ?? rule.has(1)).toBe(false)
+  })
+})
+
+describe('parseMagnetLines', () => {
+  it('splits one magnet per line, trimming blanks', () => {
+    const raw = '  magnet:?xt=urn:btih:aaa \n\nmagnet:?xt=urn:btih:bbb\n  '
+    expect(parseMagnetLines(raw)).toEqual([
+      'magnet:?xt=urn:btih:aaa',
+      'magnet:?xt=urn:btih:bbb',
+    ])
+  })
+
+  it('de-duplicates repeated lines within one paste', () => {
+    const raw = 'magnet:?xt=urn:btih:aaa\nmagnet:?xt=urn:btih:aaa'
+    expect(parseMagnetLines(raw)).toEqual(['magnet:?xt=urn:btih:aaa'])
+  })
+
+  it('returns nothing for whitespace-only input', () => {
+    expect(parseMagnetLines('  \n \n')).toEqual([])
+  })
+})
+
+describe('addTorrent / updateTorrent', () => {
+  it('appends a new torrent', () => {
+    const list = addTorrent([], torrent('a'))
+    expect(list.map((t) => t.infohash)).toEqual(['a'])
+  })
+
+  it('skips a torrent whose infohash is already under review', () => {
+    // Pasting the same magnet twice, or a magnet plus its .torrent, must not
+    // create two review sections for one download.
+    const once = addTorrent([], torrent('a', FILES, { name: 'first' }))
+    const twice = addTorrent(once, torrent('a', FILES, { name: 'second' }))
+    expect(twice).toHaveLength(1)
+    expect(twice[0]!.name).toBe('first')
+  })
+
+  it('replaces a torrent in place once metadata lands', () => {
+    const staged = [torrent('a', [], { ready: false, name: null, state: 'awaiting_metadata' })]
+    const done = updateTorrent(staged, torrent('a', FILES, { name: 'Resolved' }))
+    expect(done[0]!.ready).toBe(true)
+    expect(done[0]!.files).toHaveLength(4)
+  })
+})
+
+describe('selectionFor + ruleKey (per-torrent)', () => {
+  const cats = new Set(['video'])
+
+  it('applies the shared rule with no overrides', () => {
+    expect(selectionFor(torrent('a'), cats, 100 * MB, new Map())).toEqual(new Set([1]))
+  })
+
+  it("honours one torrent's overrides without touching another's", () => {
+    const t = torrent('a')
+    const withSub = selectionFor(t, cats, 100 * MB, new Map([[3, true]]))
+    expect(withSub).toEqual(new Set([1, 3]))
+  })
+
+  it('keys the rule by infohash so two torrents differ', () => {
+    // Same categories + size, different torrent -> different key, so ticks on
+    // one never bleed onto the other.
+    expect(ruleKey('a', cats, 100)).not.toBe(ruleKey('b', cats, 100))
+    expect(ruleKey('a', cats, 100)).toBe(ruleKey('a', cats, 100))
+  })
+
+  it('changes the key when the shared filter changes', () => {
+    expect(ruleKey('a', cats, 100)).not.toBe(ruleKey('a', cats, 200))
+    expect(ruleKey('a', cats, 100)).not.toBe(ruleKey('a', new Set(['audio']), 100))
   })
 })

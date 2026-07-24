@@ -2,7 +2,7 @@
 // exports components only — react-refresh cannot hot-reload a file that mixes
 // the two. Same split as jobs.ts / JobsProvider.tsx.
 
-import type { TorrentFileRow, TorrentRow } from './types/api'
+import type { TorrentFileRow, TorrentResolve, TorrentRow } from './types/api'
 
 // Mirrors toolkit_engine/filetypes.py SIZED_CATEGORIES. Duplicated on purpose:
 // this drives the live preview as boxes are ticked, before any round trip. The
@@ -65,4 +65,57 @@ export function formatEta(seconds: number | null): string {
 
 export function formatSpeed(bytesPerSecond: number): string {
   return bytesPerSecond > 0 ? `${formatBytes(bytesPerSecond)}/s` : '—'
+}
+
+// One magnet per line: trimmed, blanks dropped, de-duplicated within the paste.
+// Kept pure so the "paste ten magnets" parsing is unit-tested, not eyeballed.
+export function parseMagnetLines(raw: string): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const line of raw.split('\n')) {
+    const trimmed = line.trim()
+    if (trimmed && !seen.has(trimmed)) {
+      seen.add(trimmed)
+      out.push(trimmed)
+    }
+  }
+  return out
+}
+
+// Append a freshly resolved torrent, skipping one whose infohash is already in
+// the review list -- pasting the same magnet twice, or a magnet plus its
+// .torrent, must not create two review sections for one download.
+export function addTorrent(list: TorrentResolve[], t: TorrentResolve): TorrentResolve[] {
+  return list.some((x) => x.infohash === t.infohash) ? list : [...list, t]
+}
+
+// Replace a torrent in place once its metadata has landed (magnet poll result).
+export function updateTorrent(
+  list: TorrentResolve[],
+  t: TorrentResolve,
+): TorrentResolve[] {
+  return list.map((x) => (x.infohash === t.infohash ? t : x))
+}
+
+// The selection for one torrent: the filter rule, with the user's per-file
+// ticks layered over it. Ticks are tagged with the rule they were made against
+// (infohash + categories + size), so changing the shared filter drops stale
+// ticks for every torrent at once. Mirrors the single-torrent logic that was
+// inlined in the page before multi-resolve.
+export function selectionFor(
+  t: TorrentResolve,
+  categories: Set<string>,
+  minBytes: number,
+  overrides: ReadonlyMap<number, boolean>,
+): Set<number> {
+  const rule = new Set(applyFilter(t.files, categories, minBytes))
+  const out = new Set<number>()
+  for (const file of t.files) {
+    if (overrides.get(file.index) ?? rule.has(file.index)) out.add(file.index)
+  }
+  return out
+}
+
+export function ruleKey(infohash: string, categories: Set<string>, minMb: number): string {
+  return JSON.stringify([infohash, [...categories].sort(), minMb])
 }
