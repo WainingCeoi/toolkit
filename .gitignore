@@ -14,7 +14,3 @@ Thumbs.db
 
 # Legacy Streamlit-era root .env (backend/.env is the live config)
 /.env
-
-# Runtime data the app creates on first run: the subscription and torrent
-# databases, plus aria2's session and log. Machine state, never source.
-/data/

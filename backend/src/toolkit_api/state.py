@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import os
-import secrets
 import threading
-import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -41,10 +39,20 @@ class AppState:
 def build_torrent_manager():
     """Attach to a running aria2, or spawn one we own.
 
-    Only a daemon we started is ever shut down: an aria2 already running (for
-    example under `brew services`) may be serving downloads this tool knows
-    nothing about. Returns None when aria2 is not installed -- the tool then
-    reports that through /api/torrent/status instead of failing at startup.
+    Ownership decides what happens on shutdown, and the four cases are:
+
+    - reachable + our PID file names it  -> our daemon (this run's, or an
+      orphan a previous unclean exit left behind). owned=True, stopped on close.
+    - reachable + no PID file            -> external (e.g. `brew services`
+      aria2 with a matching ARIA2_SECRET). owned=False, never touched.
+    - not reachable + port free          -> spawn one. owned=True.
+    - not reachable + port occupied      -> someone else's daemon on 6800 with
+      a different secret. Do NOT spawn a second onto the taken port (it would
+      fail to bind and stall startup); attach unreachable and let /status
+      report the conflict. owned=False.
+
+    Returns None only when aria2 is not installed and nothing is running, so
+    the tool reports that through /status rather than failing the whole app.
     """
     from toolkit_api.torrents import TorrentManager
     from toolkit_engine import aria2
@@ -56,22 +64,40 @@ def build_torrent_manager():
     # subscriptions schema, and the two tools share nothing.
     data_dir = Path(config.DB_PATH).parent
     download_dir = Path.home() / "Downloads" / "toolkit-torrents"
-    secret = os.environ.get("ARIA2_SECRET") or secrets.token_hex(16)
+    pid_file = data_dir / aria2.PID_FILENAME
 
-    rpc = aria2.Aria2RPC(secret=secret)
+    # Persisted, not random-per-boot: a restart must reconnect to a daemon a
+    # previous run left behind rather than being rejected by it and hanging.
+    secret = os.environ.get("ARIA2_SECRET") or aria2.read_or_create_secret(
+        data_dir / aria2.SECRET_FILENAME
+    )
+
+    # Short timeout so bring-up can never stall the web server's startup.
+    rpc = aria2.Aria2RPC(secret=secret, timeout=aria2.BRINGUP_TIMEOUT)
     owned = False
-    if aria2.probe(rpc) is None:
-        if not aria2.installed():
-            return None
-        aria2.spawn(state_dir=data_dir, download_dir=download_dir, secret=secret)
-        owned = True
-        for _ in range(50):  # the daemon needs a moment to bind the port
-            if aria2.probe(rpc) is not None:
-                break
-            time.sleep(0.1)
 
+    if aria2.probe(rpc) is not None:
+        owned = aria2.pid_file_names_a_live_process(pid_file)
+    elif not aria2.installed():
+        return None  # nothing running and nothing to run; /status says so
+    elif aria2.port_is_open():
+        pass  # occupied by a daemon we can't authenticate against; /status warns
+    else:
+        proc = aria2.spawn(state_dir=data_dir, download_dir=download_dir, secret=secret)
+        aria2.write_pid(pid_file, proc.pid)
+        owned = True
+        aria2.wait_until_ready(rpc)
+
+    # Steady-state calls get the normal, more forgiving timeout.
+    rpc.timeout = aria2.Aria2RPC().timeout
     store = TorrentStore(data_dir / "torrents.db")
-    return TorrentManager(store, rpc, download_dir=download_dir, owned=owned)
+    return TorrentManager(
+        store,
+        rpc,
+        download_dir=download_dir,
+        owned=owned,
+        pid_file=pid_file if owned else None,
+    )
 
 
 def build_state() -> AppState:

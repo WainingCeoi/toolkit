@@ -55,6 +55,9 @@ def torrent_client(app_state, fake_aria2, tmp_path):
     app = create_app(state=app_state)
     with TestClient(app) as client:
         yield client
+    # Disarm the grace timer the presence tests arm before the store closes,
+    # so it cannot fire against a closed store in a background thread.
+    app_state.torrents.cancel_pending_shutdown()
     store.close()
 
 

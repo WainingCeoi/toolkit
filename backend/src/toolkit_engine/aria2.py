@@ -11,8 +11,14 @@ anyway and issues three unfiltered requests per listing.
 
 from __future__ import annotations
 
+import contextlib
+import os
+import secrets
 import shutil
+import signal
+import socket
 import subprocess
+import time
 from pathlib import Path
 
 import requests
@@ -20,10 +26,19 @@ import requests
 RPC_PORT = 6800
 RPC_URL = f"http://127.0.0.1:{RPC_PORT}/jsonrpc"
 
+# Short timeout while bringing the daemon up, so a wrong/occupied port can
+# never stall the whole web server's startup; steady-state calls use the
+# longer default on Aria2RPC.
+BRINGUP_TIMEOUT = 1.5
+# How long to wait for a freshly spawned daemon to bind its RPC port.
+READY_TIMEOUT = 5.0
+
 # These sit in the app's shared data folder, next to the databases, so the
 # names say who owns them.
 SESSION_FILENAME = "aria2-session.txt"
 LOG_FILENAME = "aria2.log"
+SECRET_FILENAME = "aria2-secret"
+PID_FILENAME = "aria2.pid"
 
 # Fields fetched for the dashboard. aria2 returns every field when `keys` is
 # omitted, including the full file list for every torrent on every poll.
@@ -190,5 +205,104 @@ def spawn(
         [exe, *flags],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
+        # Detached so an editor-triggered `uvicorn --reload` restart does not
+        # take the daemon (and its in-flight downloads) down with it. The cost
+        # is that an unclean exit orphans it; the PID file below is how the
+        # next boot re-adopts that orphan instead of fighting it for the port.
         start_new_session=True,
     )
+
+
+# =======================================================
+# DAEMON LIFECYCLE
+# =======================================================
+def port_is_open(host: str = "127.0.0.1", port: int = RPC_PORT) -> bool:
+    """True if something is already listening on the RPC port."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(0.3)
+        return sock.connect_ex((host, port)) == 0
+
+
+def read_or_create_secret(path: Path) -> str:
+    """Return a stable RPC secret, generating and persisting one if needed.
+
+    Persisted, not random-per-boot, so a restart authenticates against a
+    daemon a previous run left behind (an unclean-exit orphan, or the same
+    daemon across a reload) rather than being rejected and stalling.
+    """
+    if path.exists():
+        existing = path.read_text().strip()
+        if existing:
+            return existing
+    token = secrets.token_hex(16)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(token)
+    with contextlib.suppress(OSError):
+        path.chmod(0o600)
+    return token
+
+
+def write_pid(path: Path, pid: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(str(pid))
+
+
+def read_pid(path: Path) -> int | None:
+    try:
+        return int(path.read_text().strip())
+    except OSError, ValueError:
+        return None
+
+
+def pid_is_alive(pid: int) -> bool:
+    """True if a process with this PID exists (whether or not we own it)."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # exists, just not ours to signal
+    return True
+
+
+def pid_file_names_a_live_process(path: Path) -> bool:
+    """True when the PID file points at a process still running.
+
+    This is the ownership marker: a daemon reachable with our secret AND named
+    by our PID file is one we spawned (so we manage and stop it); a daemon
+    reachable with our secret but with no PID file is external -- e.g. a
+    `brew services` aria2 the user set ARIA2_SECRET for -- and is left alone.
+    """
+    pid = read_pid(path)
+    return pid is not None and pid_is_alive(pid)
+
+
+def wait_until_ready(rpc: Aria2RPC, timeout: float = READY_TIMEOUT) -> bool:
+    """Poll until the daemon answers, or the (bounded) timeout elapses."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if probe(rpc) is not None:
+            return True
+        time.sleep(0.1)
+    return False
+
+
+def stop_process(path: Path, timeout: float = 3.0) -> None:
+    """Stop the daemon named by the PID file, then remove the file.
+
+    A graceful aria2.shutdown RPC is the primary path; this is the fallback
+    that guarantees a daemon we own is actually gone on close even if the RPC
+    did not land, so it cannot linger holding the port.
+    """
+    pid = read_pid(path)
+    if pid is not None and pid_is_alive(pid):
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.kill(pid, signal.SIGTERM)
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline and pid_is_alive(pid):
+            time.sleep(0.1)
+        if pid_is_alive(pid):
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.kill(pid, signal.SIGKILL)
+    with contextlib.suppress(OSError):
+        path.unlink()

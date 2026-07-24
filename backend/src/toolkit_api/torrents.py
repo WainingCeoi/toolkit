@@ -17,6 +17,7 @@ import threading
 import time
 from pathlib import Path
 
+from toolkit_engine import aria2
 from toolkit_engine.aria2 import Aria2Error, Aria2RPC
 from toolkit_engine.filetypes import categorize
 from toolkit_engine.torrent import (
@@ -60,11 +61,16 @@ class TorrentManager:
         *,
         download_dir: Path,
         owned: bool = False,
+        pid_file: Path | None = None,
     ) -> None:
         self.store = store
         self.rpc = rpc
         self.download_dir = Path(download_dir)
         self.owned = owned
+        # Set only for a daemon we own, so shutdown can guarantee the process
+        # is gone even if the graceful RPC did not land -- otherwise an orphan
+        # would keep the port and the next boot would have to adopt it.
+        self.pid_file = pid_file
         self._gids: dict[str, str] = {}
         self._resolve_started: dict[str, float] = {}
         # Uploaded .torrent bytes held until commit. Not persisted: an upload
@@ -407,12 +413,16 @@ class TorrentManager:
     # =======================================================
     # PRESENCE / SHUTDOWN
     # =======================================================
+    def _cancel_timer_locked(self) -> None:
+        """Cancel a pending grace timer. Caller must hold self._lock."""
+        if self._grace_timer is not None:
+            self._grace_timer.cancel()
+            self._grace_timer = None
+
     def client_connected(self) -> None:
         with self._lock:
             self._clients += 1
-            if self._grace_timer is not None:
-                self._grace_timer.cancel()
-                self._grace_timer = None
+            self._cancel_timer_locked()
 
     def client_disconnected(self) -> None:
         with self._lock:
@@ -428,12 +438,20 @@ class TorrentManager:
         with self._lock:
             return self._grace_timer is not None
 
+    def cancel_pending_shutdown(self) -> None:
+        """Disarm the grace timer without shutting down.
+
+        Used on disposal (and in tests) so a timer can never fire against a
+        torn-down manager -- a closed store or a stopped daemon -- which would
+        surface as a stray exception in a background thread.
+        """
+        with self._lock:
+            self._cancel_timer_locked()
+
     def shutdown(self) -> None:
         """Pause our work, flush the session, and stop a daemon we own."""
         with self._lock:
-            if self._grace_timer is not None:
-                self._grace_timer.cancel()
-                self._grace_timer = None
+            self._cancel_timer_locked()
             owned_gids = dict(self._gids)
 
         try:
@@ -457,3 +475,8 @@ class TorrentManager:
                 self.rpc.shutdown()
         except Aria2Error:
             pass  # daemon already gone; the DB state is what matters
+
+        # Guarantee an owned daemon is actually gone, even if the RPC above
+        # never landed, so it cannot linger holding the port.
+        if self.owned and self.pid_file is not None:
+            aria2.stop_process(self.pid_file)

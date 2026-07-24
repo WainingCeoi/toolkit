@@ -154,7 +154,11 @@ def fake_aria2():
 @pytest.fixture
 def manager(store, fake_aria2, tmp_path):
     rpc = Aria2RPC(url=fake_aria2.url, secret=fake_aria2.secret)
-    return TorrentManager(store, rpc, download_dir=tmp_path / "dl", owned=True)
+    m = TorrentManager(store, rpc, download_dir=tmp_path / "dl", owned=True)
+    yield m
+    # Disarm any grace timer a presence test armed, so it cannot fire after the
+    # store is closed and the fake server is stopped.
+    m.cancel_pending_shutdown()
 
 
 def sample_torrent():
@@ -377,6 +381,45 @@ def test_a_second_tab_keeps_the_daemon_alive(manager):
 
     # One tab closing while another is still open is not an absence.
     assert manager.shutdown_pending() is False
+
+
+def test_cancel_pending_shutdown_disarms_the_timer(manager):
+    manager.GRACE_SECONDS = 30.0
+    manager.client_connected()
+    manager.client_disconnected()
+    assert manager.shutdown_pending() is True
+
+    # Disposal must be able to disarm the timer, or it fires later against a
+    # closed store / stopped daemon -- a stray background-thread exception.
+    manager.cancel_pending_shutdown()
+    assert manager.shutdown_pending() is False
+
+
+def test_shutdown_stops_an_owned_daemon_process(store, fake_aria2, tmp_path):
+    pid_file = tmp_path / "aria2.pid"
+    pid_file.write_text("4242")
+    rpc = Aria2RPC(url=fake_aria2.url, secret=fake_aria2.secret)
+    m = TorrentManager(store, rpc, download_dir=tmp_path, owned=True, pid_file=pid_file)
+
+    m.shutdown()
+
+    # The graceful RPC is best-effort; the PID-file stop is the guarantee that
+    # a daemon we own is gone and the file cleaned up.
+    assert not pid_file.exists()
+
+
+def test_shutdown_leaves_no_pid_file_untouched_when_not_owned(
+    store, fake_aria2, tmp_path
+):
+    pid_file = tmp_path / "aria2.pid"
+    pid_file.write_text("4242")
+    rpc = Aria2RPC(url=fake_aria2.url, secret=fake_aria2.secret)
+    # owned=False and no pid_file passed: an external daemon's PID file (were
+    # one to exist) must never be removed by us.
+    m = TorrentManager(store, rpc, download_dir=tmp_path, owned=False)
+
+    m.shutdown()
+    assert pid_file.exists()
 
 
 # =======================================================

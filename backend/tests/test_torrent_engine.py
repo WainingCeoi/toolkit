@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import os
+import time
 
 import pytest
 from fake_aria2 import VERSION, FakeAria2
@@ -333,3 +335,90 @@ def test_spawn_creates_the_session_file_before_launching(tmp_path, monkeypatch):
     # aria2 errors at startup if --input-file points at a missing path.
     assert (state / aria2.SESSION_FILENAME).exists()
     assert launched["cmd"][0] == "/usr/local/bin/aria2c"
+
+
+# =======================================================
+# DAEMON LIFECYCLE
+# =======================================================
+def test_secret_is_generated_once_then_reused(tmp_path):
+    path = tmp_path / "aria2-secret"
+    first = aria2.read_or_create_secret(path)
+
+    assert first and path.exists()
+    # A restart must read the SAME secret, or it cannot authenticate against a
+    # daemon a previous run left behind -- the whole point of persisting it.
+    assert aria2.read_or_create_secret(path) == first
+
+
+def test_secret_file_is_not_world_readable(tmp_path):
+    path = tmp_path / "aria2-secret"
+    aria2.read_or_create_secret(path)
+    assert (path.stat().st_mode & 0o077) == 0
+
+
+def test_pid_file_round_trips(tmp_path):
+    path = tmp_path / "aria2.pid"
+    aria2.write_pid(path, 4242)
+    assert aria2.read_pid(path) == 4242
+
+
+def test_read_pid_is_none_when_absent_or_garbage(tmp_path):
+    assert aria2.read_pid(tmp_path / "missing.pid") is None
+    junk = tmp_path / "junk.pid"
+    junk.write_text("not-a-pid")
+    assert aria2.read_pid(junk) is None
+
+
+def test_pid_file_names_a_live_process_tracks_ownership(tmp_path):
+    path = tmp_path / "aria2.pid"
+    # Our own process is certainly alive -> "ours".
+    aria2.write_pid(path, os.getpid())
+    assert aria2.pid_file_names_a_live_process(path) is True
+
+
+def test_pid_file_names_a_live_process_is_false_for_a_dead_pid(tmp_path):
+    path = tmp_path / "aria2.pid"
+    # PID 2**31-1 is astronomically unlikely to exist.
+    aria2.write_pid(path, 2**31 - 1)
+    assert aria2.pid_file_names_a_live_process(path) is False
+
+
+def test_pid_file_names_a_live_process_is_false_when_no_file(tmp_path):
+    # No PID file == external daemon (brew services); never adopt it as ours.
+    assert aria2.pid_file_names_a_live_process(tmp_path / "none.pid") is False
+
+
+def test_port_is_open_is_false_on_a_free_port():
+    # Port 1 is privileged and never bound by this app.
+    assert aria2.port_is_open(port=1) is False
+
+
+def test_stop_process_removes_the_pid_file(tmp_path, monkeypatch):
+    path = tmp_path / "aria2.pid"
+    aria2.write_pid(path, 999999)
+    # Pretend the process is already gone, so no real signal is sent.
+    monkeypatch.setattr(aria2, "pid_is_alive", lambda _pid: False)
+
+    aria2.stop_process(path)
+    assert not path.exists()
+
+
+def test_stop_process_signals_a_live_daemon_then_cleans_up(tmp_path, monkeypatch):
+    path = tmp_path / "aria2.pid"
+    aria2.write_pid(path, 555)
+    signalled = []
+    monkeypatch.setattr(aria2, "pid_is_alive", lambda pid: pid == 555 and not signalled)
+    monkeypatch.setattr(aria2.os, "kill", lambda pid, sig: signalled.append((pid, sig)))
+
+    aria2.stop_process(path, timeout=0.5)
+
+    assert signalled and signalled[0] == (555, aria2.signal.SIGTERM)
+    assert not path.exists()
+
+
+def test_wait_until_ready_gives_up_within_the_bound(tmp_path):
+    dead = Aria2RPC(url="http://127.0.0.1:1/jsonrpc", secret="x", timeout=0.2)
+    started = time.monotonic()
+    assert aria2.wait_until_ready(dead, timeout=0.5) is False
+    # Bounded: it must not run anywhere near the per-call request timeout * N.
+    assert time.monotonic() - started < 2.0
