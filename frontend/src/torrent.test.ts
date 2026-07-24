@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
+  DEFAULT_SAVE_DIR,
   SIZED_CATEGORIES,
   addTorrent,
   applyFilter,
@@ -25,6 +26,12 @@ const FILES: TorrentFileRow[] = [
 function torrent(infohash: string, files = FILES, over: Partial<TorrentResolve> = {}): TorrentResolve {
   return { infohash, ready: true, name: infohash, files, state: 'awaiting_selection', ...over }
 }
+
+describe('DEFAULT_SAVE_DIR', () => {
+  it('is ~/Downloads, matching the backend default', () => {
+    expect(DEFAULT_SAVE_DIR).toBe('~/Downloads')
+  })
+})
 
 describe('applyFilter', () => {
   it('keeps only large videos by default', () => {

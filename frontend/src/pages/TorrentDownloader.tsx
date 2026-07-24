@@ -10,6 +10,7 @@ import FolderField from '../components/FolderField'
 import {
   ACTIVE_STATES,
   CATEGORIES,
+  DEFAULT_SAVE_DIR,
   MB,
   addTorrent,
   formatBytes,
@@ -134,7 +135,10 @@ export default function TorrentDownloader() {
   // --- shared filter + destination (step 2) ---
   const [categories, setCategories] = useState<Set<string>>(new Set(['video']))
   const [minMb, setMinMb] = useState(100)
-  const [saveDir, setSaveDir] = useState('')
+  // Mirrors DEFAULT_SAVE_DIR in backend/src/toolkit_api/torrents.py. Prefilled
+  // so downloads land in ~/Downloads with no extra click; the backend expands
+  // the tilde. Browsing swaps in an absolute path.
+  const [saveDir, setSaveDir] = useState(DEFAULT_SAVE_DIR)
 
   // --- resolved torrents under review (step 3) ---
   const [resolved, setResolved] = useState<TorrentResolve[]>([])

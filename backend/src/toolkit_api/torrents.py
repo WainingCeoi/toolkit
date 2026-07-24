@@ -28,6 +28,11 @@ from toolkit_engine.torrent import (
 )
 from toolkit_engine.torrentdb import TorrentStore
 
+# Default destination, shown in the UI in this tidy tilde form and stored as-is;
+# it is expanduser()-ed only where it meets the filesystem (aria2's dir option,
+# file deletion). The frontend mirrors this string.
+DEFAULT_SAVE_DIR = "~/Downloads"
+
 # A dead magnet stalls forever in aria2, which offers no cancel, so the
 # deadline is ours to impose.
 METADATA_TIMEOUT = 120.0
@@ -252,7 +257,13 @@ class TorrentManager:
             raise KeyError(infohash)
 
         value = format_selection(selected)  # raises on an empty selection
-        options = {"select-file": value, "dir": save_dir, "pause": "true"}
+        # aria2 gets no shell, so "~/Downloads" would become a literal ./~ dir;
+        # expand here, at the filesystem boundary.
+        options = {
+            "select-file": value,
+            "dir": str(Path(save_dir).expanduser()),
+            "pause": "true",
+        }
 
         if row["source_kind"] == "torrent":
             data = self._pending_torrent_data.get(infohash)
@@ -268,6 +279,9 @@ class TorrentManager:
 
         self._set_gid(infohash, gid)
         self.store.set_selection(infohash, value)
+        # Persist the tidy form the user chose so the dashboard, reconciliation,
+        # and file deletion all agree with it.
+        self.store.set_save_dir(infohash, save_dir)
         self.rpc.unpause(gid)
         self.store.set_state(infohash, "active")
 
@@ -316,7 +330,7 @@ class TorrentManager:
             return
         options = {
             "select-file": row["selected"],
-            "dir": row["save_dir"],
+            "dir": str(Path(row["save_dir"]).expanduser()),
             "pause": "true",
         }
         try:
@@ -361,7 +375,7 @@ class TorrentManager:
         row = self.store.get(infohash)
         if row is None:
             return
-        base = Path(row["save_dir"])
+        base = Path(row["save_dir"]).expanduser()
         for entry in self.store.files(infohash):
             try:
                 (base / entry.path).unlink(missing_ok=True)

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from fake_aria2 import FakeAria2
 
-from toolkit_api.torrents import METADATA_TIMEOUT, TorrentManager
+from toolkit_api.torrents import DEFAULT_SAVE_DIR, METADATA_TIMEOUT, TorrentManager
 from toolkit_engine.aria2 import Aria2RPC
 from toolkit_engine.torrent import TorrentFile, bencode
 from toolkit_engine.torrentdb import TorrentStore
@@ -89,6 +91,13 @@ def test_set_selection_stores_aria2_syntax(store):
     add(store)
     store.set_selection(HASH, "1,4,7")
     assert store.get(HASH)["selected"] == "1,4,7"
+
+
+def test_set_save_dir_updates_the_row(store):
+    add(store)
+    store.set_save_dir(HASH, "~/Movies")
+    # Stored verbatim; expansion happens only at the filesystem boundary.
+    assert store.get(HASH)["save_dir"] == "~/Movies"
 
 
 def test_pause_reason_distinguishes_user_from_shutdown(store):
@@ -268,6 +277,35 @@ def test_commit_rejects_an_empty_selection(manager):
         manager.commit(out["infohash"], [], "/tmp/dest")
 
 
+def test_commit_expands_a_tilde_save_dir_for_aria2(manager, fake_aria2):
+    out = manager.resolve_torrent(sample_torrent(), "Example.torrent")
+    manager.commit(out["infohash"], [1], "~/Downloads")
+
+    got = fake_aria2.downloads[manager.gid_for(out["infohash"])]["options"]["dir"]
+    # aria2 gets no shell, so a literal ~ would become ./~/Downloads.
+    assert got == str(Path("~/Downloads").expanduser())
+    assert "~" not in got
+
+
+def test_commit_persists_the_chosen_save_dir(manager, store):
+    out = manager.resolve_torrent(sample_torrent(), "Example.torrent")
+    manager.commit(out["infohash"], [1], "~/Movies")
+
+    # Stored in the tidy form the user chose, so the dashboard, reconciliation,
+    # and deletion all use it instead of the resolve-time default.
+    assert store.get(out["infohash"])["save_dir"] == "~/Movies"
+
+
+def test_resolve_seeds_the_default_save_dir(store, fake_aria2):
+    rpc = Aria2RPC(url=fake_aria2.url, secret=fake_aria2.secret)
+    m = TorrentManager(store, rpc, download_dir=DEFAULT_SAVE_DIR, owned=True)
+    try:
+        out = m.resolve_torrent(sample_torrent(), "Example.torrent")
+        assert store.get(out["infohash"])["save_dir"] == "~/Downloads"
+    finally:
+        m.cancel_pending_shutdown()
+
+
 # =======================================================
 # RECONCILIATION
 # =======================================================
@@ -303,6 +341,16 @@ def test_reconcile_readds_a_row_the_daemon_forgot(manager, fake_aria2, store):
     # The selection has to be re-asserted from OUR record -- the daemon's copy
     # is a cache that a lost session file takes with it.
     assert added[0]["options"]["select-file"] == "1,3"
+
+
+def test_reconcile_readds_with_an_expanded_save_dir(manager, fake_aria2, store):
+    add(store, state="active", selected="1", save_dir="~/Downloads")
+    manager.reconcile()
+
+    added = [d for d in fake_aria2.downloads.values() if d.get("uris")]
+    got = added[0]["options"]["dir"]
+    assert got == str(Path("~/Downloads").expanduser())
+    assert "~" not in got
 
 
 def test_reconcile_does_not_readd_completed_or_removed_rows(manager, fake_aria2, store):

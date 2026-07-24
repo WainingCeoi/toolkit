@@ -9,6 +9,10 @@ import type { TorrentFileRow, TorrentResolve, TorrentRow } from './types/api'
 // backend re-derives the same answer and stays authoritative.
 export const SIZED_CATEGORIES = new Set(['video', 'audio'])
 
+// Mirrors DEFAULT_SAVE_DIR in backend/src/toolkit_api/torrents.py — the default
+// destination, shown in this tidy tilde form; the backend expands it.
+export const DEFAULT_SAVE_DIR = '~/Downloads'
+
 export const CATEGORIES: { key: string; label: string }[] = [
   { key: 'video', label: 'Video' },
   { key: 'audio', label: 'Audio' },

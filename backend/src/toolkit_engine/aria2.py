@@ -207,6 +207,9 @@ def spawn(
             "`brew install aria2`."
         )
 
+    # Expand here too, so a "~/..." can never create a literal ~ directory in
+    # the launch cwd if a caller forgets to.
+    download_dir = Path(download_dir).expanduser()
     state_dir.mkdir(parents=True, exist_ok=True)
     download_dir.mkdir(parents=True, exist_ok=True)
     # --input-file errors at startup if the path does not exist yet.

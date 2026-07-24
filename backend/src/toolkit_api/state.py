@@ -54,7 +54,7 @@ def build_torrent_manager():
     Returns None only when aria2 is not installed and nothing is running, so
     the tool reports that through /status rather than failing the whole app.
     """
-    from toolkit_api.torrents import TorrentManager
+    from toolkit_api.torrents import DEFAULT_SAVE_DIR, TorrentManager
     from toolkit_engine import aria2
     from toolkit_engine.torrentdb import TorrentStore
 
@@ -63,7 +63,11 @@ def build_torrent_manager():
     # both databases together. Separate FILE though -- subgen's Store owns a
     # subscriptions schema, and the two tools share nothing.
     data_dir = Path(config.DB_PATH).parent
-    download_dir = Path.home() / "Downloads" / "toolkit-torrents"
+    # Display form ("~/Downloads") for the manager's default and every new
+    # row; the daemon's own --dir needs the real path, since aria2 gets no
+    # shell to expand a tilde.
+    download_dir = DEFAULT_SAVE_DIR
+    daemon_dir = Path(DEFAULT_SAVE_DIR).expanduser()
     pid_file = data_dir / aria2.PID_FILENAME
 
     # Persisted, not random-per-boot: a restart must reconnect to a daemon a
@@ -83,7 +87,7 @@ def build_torrent_manager():
     elif aria2.port_is_open():
         pass  # occupied by a daemon we can't authenticate against; /status warns
     else:
-        proc = aria2.spawn(state_dir=data_dir, download_dir=download_dir, secret=secret)
+        proc = aria2.spawn(state_dir=data_dir, download_dir=daemon_dir, secret=secret)
         aria2.write_pid(pid_file, proc.pid)
         owned = True
         aria2.wait_until_ready(rpc)

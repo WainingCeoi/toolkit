@@ -135,6 +135,21 @@ class TorrentStore:
             )
             conn.commit()
 
+    def set_save_dir(self, infohash: str, save_dir: str) -> None:
+        """Persist the destination the user actually chose at commit.
+
+        Stored verbatim (e.g. "~/Downloads"), so the dashboard shows the tidy
+        form; callers expanduser() it at the filesystem boundary. Without this
+        a picked folder was lost -- reconciliation and file deletion would use
+        the stale default the row was seeded with at resolve time.
+        """
+        with closing(self._connect()) as conn:
+            conn.execute(
+                "UPDATE torrents SET save_dir = ? WHERE infohash = ?",
+                (save_dir, infohash),
+            )
+            conn.commit()
+
     def set_state(
         self,
         infohash: str,
