@@ -334,3 +334,50 @@ export interface DownloadedBlob {
   blob: Blob
   filename: string
 }
+
+// --- Torrent Downloader ---------------------------------------------------
+
+export interface TorrentFileRow {
+  index: number // 1-based: aria2's select-file numbering, sent back verbatim
+  path: string
+  size: number
+  category: string
+}
+
+export interface TorrentResolve {
+  infohash: string
+  ready: boolean
+  name: string | null
+  files: TorrentFileRow[]
+  state: string
+}
+
+export interface TorrentRow {
+  infohash: string
+  name: string | null
+  state: string
+  pause_reason: string | null
+  save_dir: string
+  selected: string | null
+  total_bytes: number
+  completed_bytes: number
+  progress: number
+  speed: number
+  eta_seconds: number | null
+  added_at: string
+  completed_at: string | null
+  last_error: string | null
+}
+
+export interface TorrentStatus {
+  running: boolean
+  owned: boolean
+  version: string | null
+  detail: string | null
+}
+
+export interface TorrentCommitPayload {
+  infohash: string
+  selected: number[]
+  save_dir: string
+}

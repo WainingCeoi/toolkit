@@ -6,6 +6,47 @@ describe('api helpers', () => {
     expect(artifactUrl('abc123')).toBe('/api/artifacts/abc123')
   })
 
+  it('posts a magnet as form data, not JSON', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ infohash: 'abc', ready: false, files: [] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await api.torrentResolveMagnet('magnet:?xt=urn:btih:abc')
+
+    const [url, opts] = fetchMock.mock.calls[0]
+    expect(url).toBe('/api/torrent/resolve')
+    // The endpoint accepts a magnet OR an upload, so it is multipart on both
+    // paths; sending JSON here would 422.
+    expect(opts.body).toBeInstanceOf(FormData)
+    expect((opts.body as FormData).get('magnet')).toBe('magnet:?xt=urn:btih:abc')
+    vi.unstubAllGlobals()
+  })
+
+  it('sends the selection as JSON on commit', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ infohash: 'abc', state: 'active' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await api.torrentCommit({ infohash: 'abc', selected: [1, 3], save_dir: '/tmp' })
+
+    const [url, opts] = fetchMock.mock.calls[0]
+    expect(url).toBe('/api/torrent')
+    expect(JSON.parse(opts.body)).toEqual({
+      infohash: 'abc',
+      selected: [1, 3],
+      save_dir: '/tmp',
+    })
+    vi.unstubAllGlobals()
+  })
+
   it('sends a JSON body for POSTs', async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ job_id: 'j1' }), {

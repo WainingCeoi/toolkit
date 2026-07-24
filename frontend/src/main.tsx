@@ -12,6 +12,7 @@ import ErrorBoundary from './components/ErrorBoundary'
 const pages = {
   'magnet-scraper': lazy(() => import('./pages/MagnetScraper')),
   remux: lazy(() => import('./pages/Remux')),
+  'torrent-downloader': lazy(() => import('./pages/TorrentDownloader')),
   'web-images-to-pdf': lazy(() => import('./pages/WebImagesToPdf')),
   'file-gatherer': lazy(() => import('./pages/FileGatherer')),
   'image-to-pdf': lazy(() => import('./pages/ImageToPdf')),

@@ -22,6 +22,10 @@ import type {
   Subscription,
   SubsGeneratePayload,
   SubsHistoryItem,
+  TorrentCommitPayload,
+  TorrentResolve,
+  TorrentRow,
+  TorrentStatus,
   WebPdfCapture,
   WebPdfStatus,
 } from './types/api'
@@ -260,4 +264,33 @@ export const api = {
   subsRenderUrl: (id: string, target: string) => `${BASE}/subs/${id}/render?target=${target}`,
   subsDownload: (id: string, target: string) =>
     fetchBlob(`/subs/${id}/render?target=${target}`, `subscription-${target}`),
+
+  // torrent downloader
+  // /resolve is multipart on BOTH paths: one endpoint accepts a pasted magnet
+  // or an uploaded .torrent, so a JSON body would 422.
+  torrentStatus: () => request<TorrentStatus>('/torrent/status'),
+  torrentResolveMagnet: (magnet: string) => {
+    const body = new FormData()
+    body.append('magnet', magnet)
+    return request<TorrentResolve>('/torrent/resolve', { method: 'POST', body })
+  },
+  torrentResolveFile: (file: File) => {
+    const body = new FormData()
+    body.append('file', file)
+    return request<TorrentResolve>('/torrent/resolve', { method: 'POST', body })
+  },
+  torrentPollResolve: (infohash: string) =>
+    request<TorrentResolve>(`/torrent/resolve/${infohash}`),
+  torrentCommit: (payload: TorrentCommitPayload) =>
+    request<{ infohash: string; state: string }>('/torrent', { method: 'POST', body: payload }),
+  torrentList: () => request<TorrentRow[]>('/torrent'),
+  torrentPause: (infohash: string) =>
+    request<{ state: string }>(`/torrent/${infohash}/pause`, { method: 'POST' }),
+  torrentResume: (infohash: string) =>
+    request<{ state: string }>(`/torrent/${infohash}/resume`, { method: 'POST' }),
+  torrentRemove: (infohash: string, deleteFiles = false) =>
+    request<{ state: string }>(`/torrent/${infohash}?delete_files=${deleteFiles}`, {
+      method: 'DELETE',
+    }),
+  torrentShutdown: () => request<{ stopped: boolean }>('/torrent/shutdown', { method: 'POST' }),
 }
