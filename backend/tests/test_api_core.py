@@ -21,14 +21,14 @@ def wait_for_job(client, job_id, timeout=5.0):
     raise AssertionError(f"job {job_id} did not finish within {timeout}s")
 
 
-def test_tools_manifest_has_ten_tools_in_three_categories(client):
+def test_tools_manifest_has_eleven_tools_in_three_categories(client):
     categories = client.get("/api/tools").json()
     assert [c["name"] for c in categories] == [
         "🎬 Media",
         "🗂️ Files & Tools",
         "🌐 Network",
     ]
-    assert sum(len(c["tools"]) for c in categories) == 10
+    assert sum(len(c["tools"]) for c in categories) == 11
 
 
 def test_disabled_tools_are_hidden_from_the_manifest(client, monkeypatch):
@@ -38,7 +38,7 @@ def test_disabled_tools_are_hidden_from_the_manifest(client, monkeypatch):
     assert "doc-to-markdown" not in slugs
     assert "remux" not in slugs
     assert "cache-purge" in slugs  # everything else still listed
-    assert sum(len(c["tools"]) for c in categories) == 8
+    assert sum(len(c["tools"]) for c in categories) == 9
 
 
 def test_disabling_a_whole_category_drops_the_category(client, monkeypatch):
@@ -51,12 +51,12 @@ def test_disabling_a_whole_category_drops_the_category(client, monkeypatch):
 def test_unset_disabled_tools_lists_everything(client, monkeypatch):
     monkeypatch.delenv("TOOLKIT_DISABLED_TOOLS", raising=False)
     categories = client.get("/api/tools").json()
-    assert sum(len(c["tools"]) for c in categories) == 10
+    assert sum(len(c["tools"]) for c in categories) == 11
 
 
 def test_health_reports_dependency_booleans(client):
     body = client.get("/api/health").json()
-    assert set(body) == {"ok", "ffmpeg", "soffice", "mineru"}
+    assert set(body) == {"ok", "ffmpeg", "soffice", "mineru", "aria2"}
     assert all(isinstance(v, bool) for v in body.values())
 
 
@@ -127,6 +127,15 @@ def test_job_events_stream_ends_with_done(client, app_state):
     assert events[-1] == "done"
 
 
+def test_tools_manifest_lists_the_torrent_downloader(client):
+    slugs = [
+        tool["slug"]
+        for category in client.get("/api/tools").json()
+        for tool in category["tools"]
+    ]
+    assert "torrent-downloader" in slugs
+
+
 def test_unknown_job_and_artifact_are_404(client):
     assert client.get("/api/jobs/nope").status_code == 404
     assert client.get("/api/jobs/nope/events").status_code == 404
@@ -180,6 +189,15 @@ def test_all_api_routers_are_wired(app_state):
         "/api/subs/history",
         "/api/deps/scan",
         "/api/deps/apply",
+        "/api/torrent",
+        "/api/torrent/status",
+        "/api/torrent/resolve",
+        "/api/torrent/resolve/{infohash}",
+        "/api/torrent/events",
+        "/api/torrent/shutdown",
+        "/api/torrent/{infohash}",
+        "/api/torrent/{infohash}/pause",
+        "/api/torrent/{infohash}/resume",
         "/sub/{sub_id}",
     }
     assert expected <= paths, f"unwired routes: {expected - paths}"

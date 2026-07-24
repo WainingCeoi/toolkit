@@ -35,6 +35,7 @@ from .routers import (
     purge,
     remux,
     subs,
+    torrent,
     webpdf,
 )
 from .state import AppState, build_state
@@ -77,10 +78,16 @@ def create_app(state: AppState | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.state = state or build_state()
+        if app.state.state.torrents is not None:
+            # The daemon's session can be older than our DB (or gone to a
+            # kill -9); make them agree before serving a single request.
+            app.state.state.torrents.reconcile()
         yield
         # Session-scoped resources die with the process. Cancel in-flight jobs
         # first so their children (ffmpeg, …) are cleaned up before teardown.
         app.state.state.jobs.shutdown()
+        if app.state.state.torrents is not None:
+            app.state.state.torrents.shutdown()
         if app.state.state.browser is not None:
             app.state.state.browser.shutdown()
         app.state.state.artifacts.cleanup()
@@ -108,6 +115,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
         docmd.router,
         subs.router,
         depsync.router,
+        torrent.router,
     ):
         app.include_router(api_router, prefix="/api")
     # Public subscription route for proxy clients: GET /sub/{id} (no /api). It

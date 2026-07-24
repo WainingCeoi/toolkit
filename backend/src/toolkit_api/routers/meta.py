@@ -36,6 +36,14 @@ CATEGORIES = [
                     "Parallel, lossless remuxing (stream-copy) of videos with FFmpeg."
                 ),
             ),
+            ToolOut(
+                slug="torrent-downloader",
+                title="🌊 Torrent Downloader",
+                description=(
+                    "Add a magnet or .torrent, keep only the files worth "
+                    "keeping, and manage the queue across restarts."
+                ),
+            ),
         ],
     ),
     CategoryOut(
@@ -149,4 +157,5 @@ def health() -> HealthOut:
         ffmpeg=shutil.which("ffmpeg") is not None,
         soffice=_soffice_available(),
         mineru=docmd.find_mineru() is not None,
+        aria2=shutil.which("aria2c") is not None,
     )
