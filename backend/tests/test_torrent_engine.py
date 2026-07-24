@@ -281,7 +281,7 @@ def test_daemon_flags_enable_rpc_and_pause_metadata(tmp_path):
 
 
 def test_daemon_flags_persist_the_session_on_a_timer(tmp_path):
-    session = tmp_path / "state" / "session.txt"
+    session = tmp_path / "state" / aria2.SESSION_FILENAME
     got = flags(tmp_path)
     assert f"--save-session={session}" in got
     # aria2 does NOT auto-load its own session file; --input-file is required.
@@ -331,5 +331,5 @@ def test_spawn_creates_the_session_file_before_launching(tmp_path, monkeypatch):
     aria2.spawn(state_dir=state, download_dir=tmp_path / "dl", secret="tok")
 
     # aria2 errors at startup if --input-file points at a missing path.
-    assert (state / "session.txt").exists()
+    assert (state / aria2.SESSION_FILENAME).exists()
     assert launched["cmd"][0] == "/usr/local/bin/aria2c"

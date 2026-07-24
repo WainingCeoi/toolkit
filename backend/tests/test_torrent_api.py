@@ -260,6 +260,17 @@ def test_explicit_shutdown_pauses_and_stops(torrent_client, fake_aria2):
     assert "aria2.shutdown" in [m for m, _ in fake_aria2.calls]
 
 
+def test_status_answers_even_with_no_engine(app_state):
+    # The diagnostic endpoint must not be gated behind the thing it diagnoses,
+    # or the UI has no way to say WHY the tool is unavailable.
+    app_state.torrents = None
+    with TestClient(create_app(state=app_state)) as client:
+        resp = client.get("/api/torrent/status")
+    assert resp.status_code == 200
+    assert resp.json()["running"] is False
+    assert "brew install aria2" in resp.json()["detail"]
+
+
 def test_endpoints_503_when_the_engine_was_never_built(app_state):
     # aria2 not installed -> build_torrent_manager returns None rather than
     # blowing up at startup; the tool says so instead of 500-ing.

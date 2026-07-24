@@ -12,7 +12,7 @@ from sse_starlette.sse import EventSourceResponse
 
 from toolkit_engine.aria2 import Aria2Error, probe
 
-from ..deps import TorrentsDep
+from ..deps import StateDep, TorrentsDep
 
 router = APIRouter(prefix="/torrent", tags=["torrent"])
 
@@ -31,7 +31,21 @@ class StatusOut(BaseModel):
 
 
 @router.get("/status", response_model=StatusOut)
-def status(torrents: TorrentsDep) -> dict:
+def status(state: StateDep) -> dict:
+    """Always answers, even with no engine -- it is the diagnostic endpoint, so
+    gating it behind the dependency it reports on would hide the diagnosis."""
+    torrents = state.torrents
+    if torrents is None:
+        return {
+            "running": False,
+            "owned": False,
+            "version": None,
+            "detail": (
+                "aria2 is not installed or not on PATH. Install it with "
+                "`brew install aria2`, then restart the backend."
+            ),
+        }
+
     version = probe(torrents.rpc)
     detail = None
     if version is None:

@@ -50,7 +50,11 @@ def build_torrent_manager():
     from toolkit_engine import aria2
     from toolkit_engine.torrentdb import TorrentStore
 
-    state_dir = Path(config.DB_PATH).parent / "torrents"
+    # Same folder as the subscription DB, not a subfolder of it: one data
+    # directory for the whole app. Derived from DB_PATH so SUB_DB_PATH moves
+    # both databases together. Separate FILE though -- subgen's Store owns a
+    # subscriptions schema, and the two tools share nothing.
+    data_dir = Path(config.DB_PATH).parent
     download_dir = Path.home() / "Downloads" / "toolkit-torrents"
     secret = os.environ.get("ARIA2_SECRET") or secrets.token_hex(16)
 
@@ -59,14 +63,14 @@ def build_torrent_manager():
     if aria2.probe(rpc) is None:
         if not aria2.installed():
             return None
-        aria2.spawn(state_dir=state_dir, download_dir=download_dir, secret=secret)
+        aria2.spawn(state_dir=data_dir, download_dir=download_dir, secret=secret)
         owned = True
         for _ in range(50):  # the daemon needs a moment to bind the port
             if aria2.probe(rpc) is not None:
                 break
             time.sleep(0.1)
 
-    store = TorrentStore(state_dir / "torrents.db")
+    store = TorrentStore(data_dir / "torrents.db")
     return TorrentManager(store, rpc, download_dir=download_dir, owned=owned)
 
 

@@ -20,6 +20,11 @@ import requests
 RPC_PORT = 6800
 RPC_URL = f"http://127.0.0.1:{RPC_PORT}/jsonrpc"
 
+# These sit in the app's shared data folder, next to the databases, so the
+# names say who owns them.
+SESSION_FILENAME = "aria2-session.txt"
+LOG_FILENAME = "aria2.log"
+
 # Fields fetched for the dashboard. aria2 returns every field when `keys` is
 # omitted, including the full file list for every torrent on every poll.
 STATUS_KEYS = [
@@ -130,7 +135,7 @@ def daemon_flags(
     port: int = RPC_PORT,
 ) -> list[str]:
     """The full flag set. Every entry here is load-bearing -- see the spec."""
-    session = state_dir / "session.txt"
+    session = state_dir / SESSION_FILENAME
     return [
         # RPC. pause-metadata below is a silent no-op without this.
         "--enable-rpc=true",
@@ -153,7 +158,7 @@ def daemon_flags(
         "--seed-time=0",
         "--max-concurrent-downloads=3",
         f"--dir={download_dir}",
-        f"--log={state_dir / 'aria2.log'}",
+        f"--log={state_dir / LOG_FILENAME}",
         "--log-level=notice",
     ]
 
@@ -176,7 +181,7 @@ def spawn(
     state_dir.mkdir(parents=True, exist_ok=True)
     download_dir.mkdir(parents=True, exist_ok=True)
     # --input-file errors at startup if the path does not exist yet.
-    (state_dir / "session.txt").touch(exist_ok=True)
+    (state_dir / SESSION_FILENAME).touch(exist_ok=True)
 
     flags = daemon_flags(
         state_dir=state_dir, download_dir=download_dir, secret=secret, port=port
