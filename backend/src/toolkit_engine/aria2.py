@@ -40,6 +40,35 @@ LOG_FILENAME = "aria2.log"
 SECRET_FILENAME = "aria2-secret"
 PID_FILENAME = "aria2.pid"
 
+# A magnet carries only an infohash -- no peers -- so the client must first
+# DISCOVER peers before a single byte can move. aria2's own defaults help
+# (DHT v4 and PEX are on), but a magnet whose tr= trackers are dead or absent
+# then relies on DHT alone, and stalls at 0 B/s wherever DHT is firewalled.
+# Supplementing every torrent with a live public-tracker list is the biggest
+# single lever a client has here, and is exactly what Motrix/motrix-next do.
+#
+# Bundled as a static snapshot rather than fetched at startup: it keeps the app
+# self-contained and avoids reaching out to a third-party endpoint on every
+# boot. It can go stale -- refresh from https://github.com/ngosang/trackerslist
+# (the "best" list) when swarms start looking thin.
+DEFAULT_TRACKERS = [
+    "udp://tracker.opentrackr.org:1337/announce",
+    "udp://open.tracker.cl:1337/announce",
+    "udp://open.demonii.com:1337/announce",
+    "udp://tracker.openbittorrent.com:6969/announce",
+    "http://tracker.openbittorrent.com:80/announce",
+    "udp://exodus.desync.com:6969/announce",
+    "udp://tracker.torrent.eu.org:451/announce",
+    "udp://open.stealth.si:80/announce",
+    "udp://explodie.org:6969/announce",
+    "udp://tracker-udp.gbitt.info:80/announce",
+    "udp://opentracker.i2p.rocks:6969/announce",
+    "udp://tracker.dler.org:6969/announce",
+    "udp://uploads.gamecoast.net:6969/announce",
+    "udp://tracker1.bt.moack.co.kr:80/announce",
+    "udp://tracker.tiny-vps.com:6969/announce",
+]
+
 # Fields fetched for the dashboard. aria2 returns every field when `keys` is
 # omitted, including the full file list for every torrent on every poll.
 STATUS_KEYS = [
@@ -134,6 +163,12 @@ class Aria2RPC:
     def unpause(self, gid: str) -> None:
         self.call("aria2.unpause", gid)
 
+    def pause_all(self) -> None:
+        self.call("aria2.forcePauseAll")
+
+    def unpause_all(self) -> None:
+        self.call("aria2.unpauseAll")
+
     def remove(self, gid: str) -> None:
         self.call("aria2.forceRemove", gid)
 
@@ -183,6 +218,29 @@ def daemon_flags(
         # Without these, every restart re-fetches metadata from the DHT.
         "--bt-save-metadata=true",
         "--bt-load-saved-metadata=true",
+        # --- peer discovery -------------------------------------------------
+        # The reason a magnet actually finds a swarm. DHT (v4+v6) resolves an
+        # infohash to peers with no working tracker; PEX gossips more peers
+        # from the ones you already have; LPD finds peers on the same LAN.
+        # Without this block a magnet with dead trackers sits at 0 B/s.
+        "--enable-dht=true",
+        "--enable-dht6=true",
+        "--enable-peer-exchange=true",
+        "--bt-enable-lpd=true",
+        # Supplement every torrent's announce set with a live public list, so a
+        # magnet whose own trackers are dead still reaches populated swarms.
+        f"--bt-tracker={','.join(DEFAULT_TRACKERS)}",
+        # --- throughput -----------------------------------------------------
+        # aria2 defaults are conservative (max-connection-per-server=1,
+        # split=5, bt-max-peers=55). These raise the ceiling so a healthy
+        # swarm or a multi-connection HTTP web-seed can actually saturate the
+        # link, the way Motrix's bundled config does.
+        "--max-connection-per-server=16",
+        "--split=16",
+        "--min-split-size=1M",
+        "--bt-max-peers=200",
+        # If the whole torrent is slower than this, hunt for more peers.
+        "--bt-request-peer-speed-limit=5M",
         # Stop at completion; this tool does not seed.
         "--seed-time=0",
         "--max-concurrent-downloads=3",

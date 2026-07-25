@@ -347,6 +347,33 @@ def test_daemon_flags_do_not_seed_after_completion(tmp_path):
     assert "--seed-time=0" in flags(tmp_path)
 
 
+def test_daemon_flags_enable_full_peer_discovery(tmp_path):
+    # The zero-speed fix at the config level: a magnet finds a swarm only if
+    # DHT/PEX/LPD are on. Without these a dead-tracker magnet stalls at 0 B/s.
+    got = flags(tmp_path)
+    assert "--enable-dht=true" in got
+    assert "--enable-dht6=true" in got
+    assert "--enable-peer-exchange=true" in got
+    assert "--bt-enable-lpd=true" in got
+
+
+def test_daemon_flags_supplement_the_tracker_list(tmp_path):
+    # Every torrent gets a live public-tracker list appended, so a magnet whose
+    # own trackers are dead still reaches populated announces.
+    tracker_flag = next(f for f in flags(tmp_path) if f.startswith("--bt-tracker="))
+    assert "udp://" in tracker_flag
+    assert tracker_flag.count(",") >= 5  # a list, not a lone tracker
+
+
+def test_daemon_flags_raise_the_throughput_ceiling(tmp_path):
+    # aria2's stock max-connection-per-server=1 / split=5 leave a healthy swarm
+    # or a multi-connection web-seed under-used; these lift the ceiling.
+    got = flags(tmp_path)
+    assert "--max-connection-per-server=16" in got
+    assert "--split=16" in got
+    assert "--bt-max-peers=200" in got
+
+
 def test_spawn_reports_a_clear_error_when_aria2_is_missing(tmp_path, monkeypatch):
     monkeypatch.setattr(aria2.shutil, "which", lambda _name: None)
     with pytest.raises(Aria2Error, match="brew install aria2"):
