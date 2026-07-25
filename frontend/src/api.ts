@@ -292,5 +292,9 @@ export const api = {
     request<{ state: string }>(`/torrent/${infohash}?delete_files=${deleteFiles}`, {
       method: 'DELETE',
     }),
+  torrentPauseAll: () =>
+    request<{ paused: boolean }>('/torrent/pause-all', { method: 'POST' }),
+  torrentResumeAll: () =>
+    request<{ resumed: boolean }>('/torrent/resume-all', { method: 'POST' }),
   torrentShutdown: () => request<{ stopped: boolean }>('/torrent/shutdown', { method: 'POST' }),
 }

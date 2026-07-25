@@ -306,6 +306,24 @@ export default function TorrentDownloader() {
     }
   }
 
+  // Batch controls. The SSE stream re-renders the queue after each, so there
+  // is no local state to flip -- just fire and surface any failure.
+  async function resumeAll() {
+    try {
+      await api.torrentResumeAll()
+    } catch (e) {
+      pushError('resume-all', errMsg(e, 'Could not resume the downloads.'))
+    }
+  }
+
+  async function stopAll() {
+    try {
+      await api.torrentPauseAll()
+    } catch (e) {
+      pushError('stop-all', errMsg(e, 'Could not stop the downloads.'))
+    }
+  }
+
   function toggleCategory(key: string) {
     setCategories((prev) => {
       const next = new Set(prev)
@@ -331,6 +349,8 @@ export default function TorrentDownloader() {
   const engineDown = status !== null && !status.running
   const nothingToResolve = parseMagnetLines(magnets).length === 0 && pendingFiles.length === 0
   const readyCount = resolved.filter((t) => t.ready && selectedFor(t).size > 0).length
+  const anyActive = rows.some((r) => r.state === 'active' || r.state === 'queued')
+  const anyPaused = rows.some((r) => r.state === 'paused')
 
   return (
     <>
@@ -461,62 +481,70 @@ export default function TorrentDownloader() {
             </Button>
           </div>
 
-          {resolved.map((t, i) => {
-            const selected = selectedFor(t)
-            const bytes = t.files
-              .filter((f) => selected.has(f.index))
-              .reduce((sum, f) => sum + f.size, 0)
-            const fetching = resolvingHashes.has(t.infohash)
-            return (
-              <div
-                key={t.infohash}
-                style={{
-                  padding: '12px 0',
-                  borderTop: i === 0 ? undefined : '1px solid var(--edge)',
-                }}
-              >
-                <div className="row">
-                  <strong className="grow" style={{ overflowWrap: 'anywhere', fontSize: 13.5 }}>
-                    {t.name ?? t.infohash.slice(0, 16)}
-                  </strong>
-                  {fetching ? (
-                    <span className="label" style={{ margin: 0 }}>
-                      fetching metadata…
-                    </span>
-                  ) : (
-                    <>
-                      <span style={{ font: '12px var(--mono)', color: 'var(--muted)' }}>
-                        {selected.size} of {t.files.length} · {formatBytes(bytes)}
+          {/* Horizontal rail: one card per torrent, scrolling sideways so many
+              torrents under review never push the queue off the screen. */}
+          <div style={{ display: 'flex', gap: 12, overflowX: 'auto', paddingBottom: 6 }}>
+            {resolved.map((t) => {
+              const selected = selectedFor(t)
+              const bytes = t.files
+                .filter((f) => selected.has(f.index))
+                .reduce((sum, f) => sum + f.size, 0)
+              const fetching = resolvingHashes.has(t.infohash)
+              return (
+                <div
+                  key={t.infohash}
+                  style={{
+                    flex: '0 0 340px',
+                    maxWidth: 340,
+                    padding: 12,
+                    border: '1px solid var(--edge)',
+                    borderRadius: 'var(--radius-s)',
+                    background: 'var(--panel-2)',
+                  }}
+                >
+                  <div className="row" style={{ flexWrap: 'wrap' }}>
+                    <strong className="grow" style={{ overflowWrap: 'anywhere', fontSize: 13.5 }}>
+                      {t.name ?? t.infohash.slice(0, 16)}
+                    </strong>
+                    {fetching ? (
+                      <span className="label" style={{ margin: 0 }}>
+                        fetching metadata…
                       </span>
-                      <Button
-                        variant="primary"
-                        size="sm"
-                        disabled={selected.size === 0 || !saveDir.trim()}
-                        onClick={() => void addOne(t)}
-                      >
-                        Add
-                      </Button>
-                    </>
-                  )}
-                </div>
-                {t.ready && (
-                  <div style={{ marginTop: 8 }}>
-                    <FileTable
-                      files={t.files}
-                      selected={selected}
-                      onToggle={(index) => toggleFile(t, index)}
-                    />
-                    {selected.size === 0 && (
-                      <div className="note warn">
-                        Select at least one file — a torrent with everything deselected finishes
-                        instantly having downloaded nothing.
-                      </div>
+                    ) : (
+                      <>
+                        <span style={{ font: '12px var(--mono)', color: 'var(--muted)' }}>
+                          {selected.size} of {t.files.length} · {formatBytes(bytes)}
+                        </span>
+                        <Button
+                          variant="primary"
+                          size="sm"
+                          disabled={selected.size === 0 || !saveDir.trim()}
+                          onClick={() => void addOne(t)}
+                        >
+                          Add
+                        </Button>
+                      </>
                     )}
                   </div>
-                )}
-              </div>
-            )
-          })}
+                  {t.ready && (
+                    <div style={{ marginTop: 8 }}>
+                      <FileTable
+                        files={t.files}
+                        selected={selected}
+                        onToggle={(index) => toggleFile(t, index)}
+                      />
+                      {selected.size === 0 && (
+                        <div className="note warn">
+                          Select at least one file — a torrent with everything deselected finishes
+                          instantly having downloaded nothing.
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+          </div>
 
           {!saveDir.trim() && <div className="note info">Choose a destination folder above.</div>}
         </div>
@@ -525,10 +553,18 @@ export default function TorrentDownloader() {
       <div className="panel">
         <div className="row">
           <div className="step grow">Queue</div>
-          {working && (
-            <Button size="sm" variant="danger" onClick={() => setShowQuit(true)}>
-              Pause &amp; quit
-            </Button>
+          {rows.length > 0 && (
+            <>
+              <Button size="sm" disabled={!anyPaused} onClick={() => void resumeAll()}>
+                Resume all
+              </Button>
+              <Button size="sm" disabled={!anyActive} onClick={() => void stopAll()}>
+                Stop all
+              </Button>
+              <Button size="sm" variant="danger" onClick={() => setShowQuit(true)}>
+                Quit
+              </Button>
+            </>
           )}
         </div>
 

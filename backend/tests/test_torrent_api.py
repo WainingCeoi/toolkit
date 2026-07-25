@@ -212,6 +212,37 @@ def test_pause_and_resume_round_trip(torrent_client):
     assert torrent_client.get("/api/torrent").json()[0]["state"] == "active"
 
 
+def test_pause_all_stops_every_running_torrent(torrent_client):
+    first = upload(torrent_client)
+    start(torrent_client, first)
+    second = "b" * 40
+    torrent_client.post(
+        "/api/torrent/resolve", data={"magnet": f"magnet:?xt=urn:btih:{second}"}
+    )
+    start(torrent_client, second, save_dir="/tmp/dest")
+
+    assert torrent_client.post("/api/torrent/pause-all").status_code == 200
+    rows = torrent_client.get("/api/torrent").json()
+    assert {r["state"] for r in rows} == {"paused"}
+    assert all(r["pause_reason"] == "user" for r in rows)
+
+
+def test_resume_all_restarts_every_paused_torrent(torrent_client):
+    infohash = upload(torrent_client)
+    start(torrent_client, infohash)
+    torrent_client.post("/api/torrent/pause-all")
+    assert torrent_client.get("/api/torrent").json()[0]["state"] == "paused"
+
+    assert torrent_client.post("/api/torrent/resume-all").status_code == 200
+    assert torrent_client.get("/api/torrent").json()[0]["state"] == "active"
+
+
+def test_pause_all_is_not_captured_by_the_infohash_route(torrent_client):
+    # "/torrent/pause-all" must hit the batch endpoint, not be read as an
+    # infohash named "pause-all"; a 200 with the batch body proves the routing.
+    assert torrent_client.post("/api/torrent/pause-all").json() == {"paused": True}
+
+
 def test_delete_tombstones_the_row(torrent_client):
     infohash = upload(torrent_client)
     start(torrent_client, infohash)

@@ -161,6 +161,20 @@ def shutdown(torrents: TorrentsDep) -> dict:
     return {"stopped": True}
 
 
+# Literal-segment routes, declared before the "/{infohash}/..." ones so a
+# torrent can never be named "pause-all".
+@router.post("/pause-all")
+def pause_all(torrents: TorrentsDep) -> dict:
+    torrents.pause_all()
+    return {"paused": True}
+
+
+@router.post("/resume-all")
+def resume_all(torrents: TorrentsDep) -> dict:
+    torrents.resume_all()
+    return {"resumed": True}
+
+
 @router.post("/{infohash}/pause")
 def pause(infohash: str, torrents: TorrentsDep) -> dict:
     torrents.pause(infohash)

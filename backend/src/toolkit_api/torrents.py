@@ -360,6 +360,30 @@ class TorrentManager:
                 pass
         self.store.set_state(infohash, "active")
 
+    def pause_all(self) -> None:
+        """Pause every running torrent at once ("Stop all"), daemon left up.
+
+        One RPC pauses the whole daemon; the DB is the authoritative record, so
+        it is updated per row regardless of whether the RPC landed.
+        """
+        try:
+            self.rpc.pause_all()
+        except Aria2Error:
+            pass
+        for row in self.store.all(include_removed=False):
+            if row["state"] in {"active", "queued"}:
+                self.store.set_state(row["infohash"], "paused", pause_reason="user")
+
+    def resume_all(self) -> None:
+        """Resume every paused torrent at once ("Resume all")."""
+        try:
+            self.rpc.unpause_all()
+        except Aria2Error:
+            pass
+        for row in self.store.all(include_removed=False):
+            if row["state"] == "paused":
+                self.store.set_state(row["infohash"], "active")
+
     def remove(self, infohash: str, *, delete_files: bool = False) -> None:
         gid = self.gid_for(infohash)
         if gid is not None:
@@ -470,7 +494,7 @@ class TorrentManager:
 
         try:
             if self.owned:
-                self.rpc.call("aria2.forcePauseAll")
+                self.rpc.pause_all()
             else:
                 # Another front-end's downloads are not ours to touch.
                 for infohash, gid in owned_gids.items():

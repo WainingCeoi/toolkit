@@ -87,7 +87,17 @@ class FakeAria2:
         if name == "changeOption":
             self.downloads[params[0]].setdefault("options", {}).update(params[1])
             return "OK"
-        if name in {"saveSession", "shutdown", "pauseAll", "forcePauseAll"}:
+        if name in {"pauseAll", "forcePauseAll"}:
+            for d in self.downloads.values():
+                if d["status"] in {"active", "waiting"}:
+                    d["status"] = "paused"
+            return "OK"
+        if name == "unpauseAll":
+            for d in self.downloads.values():
+                if d["status"] == "paused":
+                    d["status"] = "active"
+            return "OK"
+        if name in {"saveSession", "shutdown"}:
             return "OK"
         if method == "system.multicall":
             return [[self._dispatch(c["methodName"], c["params"])] for c in params[0]]
