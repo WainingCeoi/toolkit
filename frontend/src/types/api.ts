@@ -338,7 +338,7 @@ export interface DownloadedBlob {
 // --- Torrent Downloader ---------------------------------------------------
 
 export interface TorrentFileRow {
-  index: number // 1-based: aria2's select-file numbering, sent back verbatim
+  index: number // 1-based, the torrent's own file order; sent back verbatim
   path: string
   size: number
   category: string
@@ -363,7 +363,7 @@ export interface TorrentRow {
   completed_bytes: number
   progress: number
   speed: number
-  eta_seconds: number | null
+  eta: string | null // BitComet formats the remaining time itself
   added_at: string
   completed_at: string | null
   last_error: string | null
@@ -371,13 +371,11 @@ export interface TorrentRow {
 
 export interface TorrentStatus {
   running: boolean
-  owned: boolean
-  version: string | null
+  server: string | null
   detail: string | null
 }
 
 export interface TorrentCommitPayload {
   infohash: string
   selected: number[]
-  save_dir: string
 }

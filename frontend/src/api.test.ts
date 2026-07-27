@@ -15,7 +15,7 @@ describe('api helpers', () => {
     )
     vi.stubGlobal('fetch', fetchMock)
 
-    await api.torrentResolveMagnet('magnet:?xt=urn:btih:abc')
+    await api.torrentResolveMagnet('magnet:?xt=urn:btih:abc', '~/Movies')
 
     const [url, opts] = fetchMock.mock.calls[0]
     expect(url).toBe('/api/torrent/resolve')
@@ -23,6 +23,7 @@ describe('api helpers', () => {
     // paths; sending JSON here would 422.
     expect(opts.body).toBeInstanceOf(FormData)
     expect((opts.body as FormData).get('magnet')).toBe('magnet:?xt=urn:btih:abc')
+    expect((opts.body as FormData).get('save_dir')).toBe('~/Movies')
     vi.unstubAllGlobals()
   })
 
@@ -35,15 +36,13 @@ describe('api helpers', () => {
     )
     vi.stubGlobal('fetch', fetchMock)
 
-    await api.torrentCommit({ infohash: 'abc', selected: [1, 3], save_dir: '/tmp' })
+    await api.torrentCommit({ infohash: 'abc', selected: [1, 3] })
 
     const [url, opts] = fetchMock.mock.calls[0]
     expect(url).toBe('/api/torrent')
-    expect(JSON.parse(opts.body)).toEqual({
-      infohash: 'abc',
-      selected: [1, 3],
-      save_dir: '/tmp',
-    })
+    // No save_dir: BitComet fixes a task's folder when the task is created, so
+    // the destination travels with /resolve instead.
+    expect(JSON.parse(opts.body)).toEqual({ infohash: 'abc', selected: [1, 3] })
     vi.unstubAllGlobals()
   })
 

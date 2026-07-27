@@ -47,7 +47,7 @@ class HealthOut(BaseModel):
     ffmpeg: bool
     soffice: bool
     mineru: bool
-    aria2: bool
+    bitcomet: bool
 
 
 class PickFolderIn(BaseModel):

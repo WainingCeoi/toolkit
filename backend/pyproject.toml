@@ -11,6 +11,9 @@ dependencies = [
     "sse-starlette>=3.4.6",
     "python-dotenv>=1.2.2",
     "beautifulsoup4>=4.15.0",
+    # BitComet's WebUI login envelope is AES-256-CBC; the stdlib has hashing
+    # and HMAC but no block cipher, so this is the one thing it cannot do.
+    "cryptography>=46.0.4",
     "ffmpeg-progress-yield>=1.1.3",
     "ffmpeg-python>=0.2.0",
     "lxml>=6.1.1",

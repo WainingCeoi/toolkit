@@ -5,16 +5,14 @@ import {
   addTorrent,
   applyFilter,
   formatBytes,
-  formatEta,
   formatSpeed,
-  hasActiveWork,
   MB,
   parseMagnetLines,
   ruleKey,
   selectionFor,
   updateTorrent,
 } from './torrent'
-import type { TorrentFileRow, TorrentResolve, TorrentRow } from './types/api'
+import type { TorrentFileRow, TorrentResolve } from './types/api'
 
 const FILES: TorrentFileRow[] = [
   { index: 1, path: 'Movie.mkv', size: 2_000_000_000, category: 'video' },
@@ -57,54 +55,9 @@ describe('applyFilter', () => {
   })
 })
 
-function row(state: string, over: Partial<TorrentRow> = {}): TorrentRow {
-  return {
-    infohash: 'a'.repeat(40),
-    name: 'X',
-    state,
-    pause_reason: null,
-    save_dir: '/tmp',
-    selected: '1',
-    total_bytes: 100,
-    completed_bytes: 10,
-    progress: 10,
-    speed: 5,
-    eta_seconds: 18,
-    added_at: '',
-    completed_at: null,
-    last_error: null,
-    ...over,
-  }
-}
-
-describe('hasActiveWork', () => {
-  it('is true while something is downloading', () => {
-    expect(hasActiveWork([row('active')])).toBe(true)
-  })
-
-  it('counts a magnet still fetching metadata as work', () => {
-    expect(hasActiveWork([row('awaiting_metadata')])).toBe(true)
-  })
-
-  it('is false when everything is finished or paused', () => {
-    expect(hasActiveWork([row('complete'), row('paused')])).toBe(false)
-  })
-
-  it('is false for an empty queue', () => {
-    expect(hasActiveWork([])).toBe(false)
-  })
-})
-
 describe('formatters', () => {
   it('renders a dash when the download is stalled', () => {
-    expect(formatEta(null)).toBe('—')
     expect(formatSpeed(0)).toBe('—')
-  })
-
-  it('renders seconds, minutes, and hours', () => {
-    expect(formatEta(18)).toBe('18s')
-    expect(formatEta(120)).toBe('2m')
-    expect(formatEta(5400)).toBe('1.5h')
   })
 
   it('scales bytes through the units', () => {

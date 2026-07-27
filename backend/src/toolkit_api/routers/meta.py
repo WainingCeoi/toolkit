@@ -8,7 +8,7 @@ from pathlib import Path
 
 from fastapi import APIRouter
 
-from toolkit_engine import docmd
+from toolkit_engine import bitcomet, docmd
 
 from ..schemas import CategoryOut, HealthOut, ToolOut
 
@@ -157,5 +157,7 @@ def health() -> HealthOut:
         ffmpeg=shutil.which("ffmpeg") is not None,
         soffice=_soffice_available(),
         mineru=docmd.find_mineru() is not None,
-        aria2=shutil.which("aria2c") is not None,
+        # BitComet is a .app, not a binary on PATH, so its config file existing
+        # is the only cheap "installed" signal there is.
+        bitcomet=bitcomet.CONFIG_PATH.exists(),
     )

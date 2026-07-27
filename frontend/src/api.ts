@@ -268,15 +268,19 @@ export const api = {
   // torrent downloader
   // /resolve is multipart on BOTH paths: one endpoint accepts a pasted magnet
   // or an uploaded .torrent, so a JSON body would 422.
+  // save_dir rides along with /resolve, not with the commit: BitComet fixes a
+  // task's save folder when the task is created and cannot move it afterwards.
   torrentStatus: () => request<TorrentStatus>('/torrent/status'),
-  torrentResolveMagnet: (magnet: string) => {
+  torrentResolveMagnet: (magnet: string, saveDir = '') => {
     const body = new FormData()
     body.append('magnet', magnet)
+    body.append('save_dir', saveDir)
     return request<TorrentResolve>('/torrent/resolve', { method: 'POST', body })
   },
-  torrentResolveFile: (file: File) => {
+  torrentResolveFile: (file: File, saveDir = '') => {
     const body = new FormData()
     body.append('file', file)
+    body.append('save_dir', saveDir)
     return request<TorrentResolve>('/torrent/resolve', { method: 'POST', body })
   },
   torrentPollResolve: (infohash: string) =>
@@ -296,5 +300,4 @@ export const api = {
     request<{ paused: boolean }>('/torrent/pause-all', { method: 'POST' }),
   torrentResumeAll: () =>
     request<{ resumed: boolean }>('/torrent/resume-all', { method: 'POST' }),
-  torrentShutdown: () => request<{ stopped: boolean }>('/torrent/shutdown', { method: 'POST' }),
 }

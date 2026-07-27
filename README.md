@@ -73,7 +73,7 @@ HOST=127.0.0.1 make host     # local-only
 ## Architecture
 
 ```
-frontend (React + Vite) ──/api (JSON + SSE)──▶ backend (FastAPI) ──▶ engines ──▶ ffmpeg / aria2 / Chrome / LibreOffice / MinerU / SQLite
+frontend (React + Vite) ──/api (JSON + SSE)──▶ backend (FastAPI) ──▶ engines ──▶ ffmpeg / BitComet / Chrome / LibreOffice / MinerU / SQLite
 ```
 
 - **`backend/src/subgen/`** — the Optimized-IP Subscription engine (parse / rewrite /
@@ -121,7 +121,10 @@ make clean                     # remove build artifacts
 - [uv](https://docs.astral.sh/uv/) — Python 3.14 is managed automatically via `.python-version`
 - [Node.js](https://nodejs.org/) ≥ 20 (frontend build)
 - [FFmpeg](https://ffmpeg.org/) on your `PATH` — required by **Remux Processor** (`brew install ffmpeg`)
-- [aria2](https://aria2.github.io/) on your `PATH` — required by **Torrent Downloader** (`brew install aria2`)
+- [BitComet](https://www.bitcomet.com/) — required by **Torrent Downloader**. Turn on
+  *Options → Remote Access* and enable **both** switches ("via BitComet Mobile App" and
+  "via Web UI"), then set a username and password; the app reads them from BitComet's own
+  config, so there is nothing to configure twice
 - [Google Chrome](https://www.google.com/chrome/) — required by **Web Images to PDF** (the matching driver is downloaded automatically)
 - [LibreOffice](https://www.libreoffice.org/) — required by **Doc to PDF** (`brew install --cask libreoffice`)
 - [MinerU](https://github.com/opendatalab/MinerU) — required by **Doc to Markdown**; installed with the backend via the `mineru[core]` dependency, its ML models download automatically on first run (cached under `~/.cache/huggingface`)
@@ -167,12 +170,11 @@ Downloads survive restarts: the queue lives in SQLite, resumes where it stopped,
 and never re-downloads a file you deselected. The dashboard shows progress, speed
 and ETA per torrent, with pause / resume / remove.
 
-`aria2c` is started automatically if it is not already running, and stopped again
-once the last dashboard tab has been gone for 45 seconds — a refresh or a second
-tab does not count as leaving. If you already run aria2 yourself (for example
-`brew services start aria2`), the tool attaches to it instead and never shuts it
-down; export `ARIA2_SECRET` matching that daemon's `--rpc-secret` so the two can
-talk.
+BitComet does the actual downloading, and it is yours: this tool never starts,
+stops or quits it. Closing the dashboard — or the whole backend — leaves your
+downloads running, and a torrent you pause in BitComet's own window stays paused
+here. Pick the destination folder *before* you resolve: BitComet fixes a
+torrent's save folder as the task is created and cannot move it afterwards.
 
 ### 📦 File Gatherer
 

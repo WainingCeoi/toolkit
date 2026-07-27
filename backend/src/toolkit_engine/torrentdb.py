@@ -1,9 +1,9 @@
 """SQLite persistence for the torrent queue.
 
-aria2 forgets everything it finished the moment it restarts, and its session
-file can be lost outright to a kill -9, so this table -- not the daemon -- is
-the source of truth for what the user asked for. The daemon holds the piece
-data; this holds the intent.
+BitComet is the user's own application: they can delete a task, reinstall, or
+never have seen a torrent this app staged. This table -- not BitComet -- is
+the source of truth for what the user asked for HERE. BitComet holds the piece
+data and the live numbers; this holds the intent.
 
 Connection-per-call and the :memory: keepalive trick mirror subgen.db.Store.
 """
@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS torrents (
   selected     TEXT,
   state        TEXT NOT NULL,
   pause_reason TEXT,
+  task_id      TEXT,
   added_at     TEXT NOT NULL,
   completed_at TEXT,
   last_error   TEXT
@@ -41,9 +42,26 @@ CREATE TABLE IF NOT EXISTS torrent_files (
 );
 """
 
+# Columns added after a database was first written. This app is installed and
+# upgraded in place, so an existing torrents.db has to be widened rather than
+# recreated -- CREATE TABLE IF NOT EXISTS alone would leave it on the old
+# shape and every read of the new column would raise OperationalError.
+MIGRATIONS = {
+    # BitComet's own task id, so a row can be paused, started or deleted
+    # without first listing every task to find it again.
+    "task_id": "ALTER TABLE torrents ADD COLUMN task_id TEXT",
+}
+
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    have = {row["name"] for row in conn.execute("PRAGMA table_info(torrents)")}
+    for column, statement in MIGRATIONS.items():
+        if column not in have:
+            conn.execute(statement)
 
 
 class TorrentStore:
@@ -65,6 +83,7 @@ class TorrentStore:
         with closing(self._connect()) as conn:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.executescript(SCHEMA)
+            _migrate(conn)
             conn.commit()
 
     def _connect(self) -> sqlite3.Connection:
@@ -135,18 +154,17 @@ class TorrentStore:
             )
             conn.commit()
 
-    def set_save_dir(self, infohash: str, save_dir: str) -> None:
-        """Persist the destination the user actually chose at commit.
+    def set_task_id(self, infohash: str, task_id: str) -> None:
+        """Remember which BitComet task this torrent became.
 
-        Stored verbatim (e.g. "~/Downloads"), so the dashboard shows the tidy
-        form; callers expanduser() it at the filesystem boundary. Without this
-        a picked folder was lost -- reconciliation and file deletion would use
-        the stale default the row was seeded with at resolve time.
+        Stored rather than held in memory: BitComet outlives this process, so
+        after a restart the queue would otherwise have no handle on the tasks
+        it staged and every control would be a no-op.
         """
         with closing(self._connect()) as conn:
             conn.execute(
-                "UPDATE torrents SET save_dir = ? WHERE infohash = ?",
-                (save_dir, infohash),
+                "UPDATE torrents SET task_id = ? WHERE infohash = ?",
+                (str(task_id), infohash),
             )
             conn.commit()
 
@@ -160,9 +178,11 @@ class TorrentStore:
     ) -> None:
         """Set state, always rewriting pause_reason.
 
-        pause_reason is overwritten rather than merged on purpose: a stale
-        'shutdown' left behind on a torrent the user later paused by hand
-        would auto-resume it on the next boot.
+        pause_reason qualifies the state it was stored with, so it is
+        overwritten rather than merged: a reason left behind from an earlier
+        pause would sit there on a row that is running again, explaining a
+        pause that is over. Every dashboard row carries the field, so a stale
+        value is published, not merely kept.
         """
         completed = _now() if state == "complete" else None
         with closing(self._connect()) as conn:
@@ -180,7 +200,12 @@ class TorrentStore:
             conn.commit()
 
     def tombstone(self, infohash: str) -> None:
-        """Mark removed but keep the row, so reconciliation cannot re-adopt it."""
+        """Mark removed but keep the row, so reconciliation ignores it.
+
+        Deleting outright would make the row indistinguishable from one
+        BitComet lost, and the next boot would report it as an error the user
+        never caused.
+        """
         self.set_state(infohash, "removed")
 
     # --- reads ------------------------------------------------------------
@@ -198,14 +223,6 @@ class TorrentStore:
         sql += " ORDER BY added_at, infohash"
         with closing(self._connect()) as conn:
             return [dict(r) for r in conn.execute(sql).fetchall()]
-
-    def paused_by_shutdown(self) -> list[dict]:
-        with closing(self._connect()) as conn:
-            rows = conn.execute(
-                "SELECT * FROM torrents WHERE state = 'paused' "
-                "AND pause_reason = 'shutdown' ORDER BY added_at, infohash"
-            ).fetchall()
-        return [dict(r) for r in rows]
 
     def files(self, infohash: str) -> list[TorrentFile]:
         with closing(self._connect()) as conn:

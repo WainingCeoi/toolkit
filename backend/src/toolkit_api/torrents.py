@@ -1,9 +1,13 @@
-"""TorrentManager: the orchestration layer between SQLite and aria2.
+"""TorrentManager: the orchestration layer between SQLite and BitComet.
 
 The split it enforces: SQLite holds what the user asked for and is
-authoritative; aria2 holds piece data and live speeds and is treated as a
-cache that can vanish. The infohash -> gid map is process-lifetime only,
-because aria2 re-mints a content gid whenever metadata re-resolves.
+authoritative for THIS app; BitComet holds the piece data, the swarm and the
+live numbers. The link between them is the BitComet task id, persisted beside
+the infohash because BitComet outlives this process.
+
+BitComet is the user's own desktop application. Nothing here starts it, adopts
+it or stops it, and nothing here undoes a decision they made in BitComet's own
+window -- the client is a client and no more.
 
 Unlike every other tool here this one is not a batch job -- a torrent outlives
 the request that created it, the backend process, and the host -- so it does
@@ -12,13 +16,16 @@ not use JobRegistry.
 
 from __future__ import annotations
 
-import base64
-import threading
 import time
 from pathlib import Path
 
-from toolkit_engine import aria2
-from toolkit_engine.aria2 import Aria2Error, Aria2RPC
+from toolkit_engine.bitcomet import (
+    DESELECTED,
+    SELECTED,
+    STARTUP_TIMEOUT,
+    BitCometClient,
+    BitCometError,
+)
 from toolkit_engine.filetypes import categorize
 from toolkit_engine.torrent import (
     TorrentFile,
@@ -29,16 +36,33 @@ from toolkit_engine.torrent import (
 from toolkit_engine.torrentdb import TorrentStore
 
 # Default destination, shown in the UI in this tidy tilde form and stored as-is;
-# it is expanduser()-ed only where it meets the filesystem (aria2's dir option,
-# file deletion). The frontend mirrors this string.
+# it is expanduser()-ed only where it meets the filesystem. The frontend
+# mirrors this string.
 DEFAULT_SAVE_DIR = "~/Downloads"
 
-# A dead magnet stalls forever in aria2, which offers no cancel, so the
-# deadline is ours to impose.
+# A dead magnet never resolves and BitComet will wait for it indefinitely, so
+# the deadline is ours to impose.
 METADATA_TIMEOUT = 120.0
 
-# States that mean "work is outstanding" for reconciliation and the UI.
-ACTIVE_STATES = frozenset({"active", "queued", "awaiting_metadata"})
+# BitComet's task_guid for a BitTorrent task is "bt_<infohash>", which is the
+# only place the API hands back the infohash -- task_id alone is a meaningless
+# integer like 1002.
+GUID_PREFIX = "bt_"
+
+# States reconciliation must not flag as lost: finished, deliberately gone, or
+# not yet staged for real work. "awaiting_metadata" belongs here because
+# torrent_links/add is ASYNCHRONOUS -- the task can legitimately not be in
+# task_list yet, and calling that row an error would kill a magnet that is at
+# that moment doing exactly what it should.
+SETTLED_STATES = frozenset(
+    {
+        "complete",
+        "removed",
+        "error",
+        "awaiting_selection",
+        "awaiting_metadata",
+    }
+)
 
 
 def _as_file_dicts(files: list[TorrentFile]) -> list[dict]:
@@ -53,93 +77,175 @@ def _as_file_dicts(files: list[TorrentFile]) -> list[dict]:
     ]
 
 
-class TorrentManager:
-    # How long the daemon keeps running after the last dashboard closes. A
-    # refresh, a route change, and a dropped wifi link all look identical to a
-    # departure, so shutdown is driven by sustained absence, not one event.
-    GRACE_SECONDS = 45.0
+def infohash_of(task: dict) -> str:
+    """The infohash a BitComet task carries, or "" if it is not a BT task."""
+    guid = str(task.get("task_guid") or "")
+    return guid[len(GUID_PREFIX) :].lower() if guid.startswith(GUID_PREFIX) else ""
 
+
+class TorrentManager:
     def __init__(
         self,
         store: TorrentStore,
-        rpc: Aria2RPC,
+        client: BitCometClient,
         *,
-        download_dir: Path,
-        owned: bool = False,
-        pid_file: Path | None = None,
+        download_dir: str | Path,
     ) -> None:
         self.store = store
-        self.rpc = rpc
-        self.download_dir = Path(download_dir)
-        self.owned = owned
-        # Set only for a daemon we own, so shutdown can guarantee the process
-        # is gone even if the graceful RPC did not land -- otherwise an orphan
-        # would keep the port and the next boot would have to adopt it.
-        self.pid_file = pid_file
-        self._gids: dict[str, str] = {}
+        self.client = client
+        self.download_dir = str(download_dir)
+        # Wall-clock start of each magnet's metadata fetch. Process-lifetime
+        # only: a deadline that survived a restart would fire against a magnet
+        # nobody is watching, and only a live poll ever reads it.
         self._resolve_started: dict[str, float] = {}
-        # Uploaded .torrent bytes held until commit. Not persisted: an upload
-        # the user never committed is not state worth surviving a restart.
-        self._pending_torrent_data: dict[str, bytes] = {}
-        self._clients = 0
-        self._grace_timer: threading.Timer | None = None
-        self._lock = threading.Lock()
 
-    def gid_for(self, infohash: str) -> str | None:
-        with self._lock:
-            return self._gids.get(infohash)
+    def task_id_for(self, infohash: str) -> str | None:
+        row = self.store.get(infohash)
+        return row["task_id"] if row else None
 
-    def _set_gid(self, infohash: str, gid: str) -> None:
-        with self._lock:
-            self._gids[infohash] = gid
+    def _stage_folder(self, save_dir: str | None) -> str:
+        """Register the destination with BitComet and return the real path.
+
+        BitComet whitelists save_folder against its own configured directory
+        list and refuses anything else, with nothing in the add request
+        hinting at why -- so every folder is registered before it is used.
+        """
+        return self.client.ensure_save_folder(save_dir or self.download_dir)
 
     # =======================================================
     # RESOLVE
     # =======================================================
-    def resolve_torrent(self, data: bytes, filename: str) -> dict:
-        """Parse an uploaded .torrent. Offline: no daemon, no swarm."""
+    # The destination is chosen here, not at commit: BitComet fixes a task's
+    # save folder when the task is created and publishes no way to move it.
+    def _payload(
+        self, infohash: str, name: str | None, files: list[TorrentFile], state: str
+    ) -> dict:
+        """The shape every resolve/poll answer takes."""
+        return {
+            "infohash": infohash,
+            "ready": bool(files),
+            "name": name,
+            "files": _as_file_dicts(files),
+            "state": state,
+        }
+
+    def _already_staged(self, infohash: str) -> dict | None:
+        """The payload for a torrent this app already staged, if it still lives.
+
+        Adding the same infohash twice would mint a second BitComet task and
+        overwrite task_id with its id, leaving the first task running inside
+        BitComet with nothing in this app able to pause, start or delete it.
+        A row whose task BitComet no longer has returns None -- then adding
+        again is exactly the right move.
+        """
+        row = self.store.get(infohash)
+        if row is None or row["state"] == "removed":
+            return None
+        task = self._live_task(infohash)
+        if task is None:
+            return None
+        self.store.set_task_id(infohash, task["task_id"])
+        return self._payload(
+            infohash, row["name"], self.store.files(infohash), row["state"]
+        )
+
+    def _live_task(self, infohash: str) -> dict | None:
+        """The BitComet task behind this row, by stored id then by guid."""
+        task_id = self.task_id_for(infohash)
+        try:
+            tasks = self.client.task_list()
+        except BitCometError:
+            return None
+        for task in tasks:
+            if task["task_id"] == task_id or infohash_of(task) == infohash:
+                return task
+        return None
+
+    def resolve_torrent(self, data: bytes, filename: str, save_dir: str = "") -> dict:
+        """Parse an uploaded .torrent, then stage it in BitComet, stopped.
+
+        The file list comes from the bencode, offline -- a .torrent carries it,
+        so there is no reason to ask BitComet and wait. The add still happens
+        now, because start_later leaves the task stopped and that stopped task
+        is what the selection is applied to at commit. A magnet cannot be
+        staged this way; see resolve_magnet.
+        """
         info = parse_torrent(data)
+        staged = self._already_staged(info.infohash)
+        if staged is not None:
+            return staged
+
+        folder = self._stage_folder(save_dir)
+        added = self.client.add_torrent(data, folder, start_later=True)
+
         self.store.upsert(
             infohash=info.infohash,
             source=filename,
             source_kind="torrent",
             name=info.name,
             total_bytes=info.total_bytes,
-            save_dir=str(self.download_dir),
+            save_dir=save_dir or self.download_dir,
             state="awaiting_selection",
         )
         self.store.set_files(info.infohash, info.files)
-        self._pending_torrent_data[info.infohash] = data
-        return {
-            "infohash": info.infohash,
-            "ready": True,
-            "name": info.name,
-            "files": _as_file_dicts(info.files),
-            "state": "awaiting_selection",
-        }
+        self.store.set_task_id(info.infohash, added["task_id"])
+        return self._payload(info.infohash, info.name, info.files, "awaiting_selection")
 
-    def resolve_magnet(self, uri: str) -> dict:
-        """Add a magnet with pause-metadata so its files can be listed."""
+    def resolve_magnet(self, uri: str, save_dir: str = "") -> dict:
+        """Stage a magnet RUNNING -- the only way it can ever learn its files.
+
+        A magnet carries no metadata, so BitComet has to reach the swarm to
+        fetch it, and a task added with start_later=True is `stopped` and never
+        reaches anything. There is no metadata-only mode: the task runs, and
+        poll_resolve disables every file the instant the list appears.
+        """
         infohash, display = parse_magnet(uri)
+        staged = self._already_staged(infohash)
+        if staged is not None:
+            # Keep the original deadline. Re-resolving must not hand a dead
+            # magnet another 120 seconds every time the user hits the button.
+            self._resolve_started.setdefault(infohash, time.monotonic())
+            return staged
+
+        folder = self._stage_folder(save_dir)
+        self.client.add_magnets([uri], folder, start_later=False)
+
         self.store.upsert(
             infohash=infohash,
             source=uri,
             source_kind="magnet",
             name=display,
             total_bytes=None,
-            save_dir=str(self.download_dir),
+            save_dir=save_dir or self.download_dir,
             state="awaiting_metadata",
         )
-        gid = self.rpc.add_uri([uri], {"pause-metadata": "true"})
-        self._set_gid(infohash, gid)
         self._resolve_started[infohash] = time.monotonic()
-        return {
-            "infohash": infohash,
-            "ready": False,
-            "name": display,
-            "files": [],
-            "state": "awaiting_metadata",
-        }
+        # torrent_links/add returns no task id and answers before the task
+        # exists, so this first look usually finds nothing and poll_resolve
+        # keeps trying.
+        self._locate_task(infohash)
+        return self._payload(infohash, display, [], "awaiting_metadata")
+
+    def _locate_task(self, infohash: str) -> str | None:
+        """Find and remember the task torrent_links/add created, by its guid.
+
+        The add is asynchronous and hands back neither task_id nor task_ids,
+        so a magnet's task can only be reached by matching "bt_<infohash>" in
+        the task list -- and until that match is made and stored, nothing in
+        this app can read the task's files or stop it.
+        """
+        task_id = self.task_id_for(infohash)
+        if task_id is not None:
+            return task_id
+        try:
+            tasks = self.client.task_list()
+        except BitCometError:
+            return None
+        for task in tasks:
+            if infohash_of(task) == infohash:
+                self.store.set_task_id(infohash, task["task_id"])
+                return task["task_id"]
+        return None
 
     def poll_resolve(self, infohash: str) -> dict:
         """Check whether a magnet's metadata has landed yet."""
@@ -148,35 +254,31 @@ class TorrentManager:
             raise KeyError(infohash)
 
         if row["state"] != "awaiting_metadata":
-            files = self.store.files(infohash)
-            return {
-                "infohash": infohash,
-                "ready": bool(files),
-                "name": row["name"],
-                "files": _as_file_dicts(files),
-                "state": row["state"],
-            }
+            return self._payload(
+                infohash, row["name"], self.store.files(infohash), row["state"]
+            )
 
-        started = self._resolve_started.get(infohash, time.monotonic())
+        # setdefault, not get: a get() default restarts the clock on every
+        # poll, so a magnet resolved before a restart would never time out.
+        started = self._resolve_started.setdefault(infohash, time.monotonic())
         if time.monotonic() - started > METADATA_TIMEOUT:
             self._abandon(infohash)
-            return {
-                "infohash": infohash,
-                "ready": False,
-                "name": row["name"],
-                "files": [],
-                "state": "error",
-            }
+            return self._payload(infohash, row["name"], [], "error")
 
-        files = self._daemon_files(infohash)
+        task_id = self._locate_task(infohash)
+        files = self._staged_files(task_id) if task_id is not None else []
         if not files:
-            return {
-                "infohash": infohash,
-                "ready": False,
-                "name": row["name"],
-                "files": [],
-                "state": "awaiting_metadata",
-            }
+            return self._payload(infohash, row["name"], [], "awaiting_metadata")
+
+        # THE MOMENT metadata lands, deselect everything. The task is running
+        # -- it had to be, or the metadata would never have arrived -- so from
+        # this instant it would otherwise be downloading the whole torrent
+        # while the user is still deciding what they want. BitComet has no
+        # "fetch metadata then pause" mode (start_later just never starts), so
+        # disabling every file IS the pause: the task stays in the swarm and
+        # moves no content until commit re-enables what was ticked.
+        # Deleting this makes every magnet download itself in full, unasked.
+        self.client.set_priority(task_id, [f.index for f in files], DESELECTED)
 
         self.store.set_files(infohash, files)
         self.store.upsert(
@@ -188,50 +290,42 @@ class TorrentManager:
             save_dir=row["save_dir"],
             state="awaiting_selection",
         )
-        return {
-            "infohash": infohash,
-            "ready": True,
-            "name": row["name"],
-            "files": _as_file_dicts(files),
-            "state": "awaiting_selection",
-        }
+        return self._payload(infohash, row["name"], files, "awaiting_selection")
 
-    def _daemon_files(self, infohash: str) -> list[TorrentFile]:
-        """Read the content group's file list, following the metadata group.
+    def _staged_files(self, task_id: str) -> list[TorrentFile]:
+        """The staged task's file list, empty until metadata has landed.
 
-        A magnet starts as a metadata group; once ut_metadata completes aria2
-        creates a SEPARATE content group and links it via followedBy. Only the
-        content group has the real file list.
+        The client hands indexes back already translated to this repo's 1-based
+        form, so nothing here does arithmetic on them.
+
+        Empty files are kept. They are real entries in the torrent, they hold
+        real index positions, and hiding them meant the review list disagreed
+        with BitComet's own numbering -- so a selection could not be validated
+        against it and the user could not deselect what they could not see.
         """
-        gid = self.gid_for(infohash)
-        if gid is None:
-            return []
         try:
-            status = self.rpc.tell_status(gid)
-            followed = status.get("followedBy") or []
-            if followed:
-                gid = followed[0]
-                self._set_gid(infohash, gid)
-            raw = self.rpc.get_files(gid)
-        except Aria2Error:
+            entries = self.client.files(task_id)
+        except BitCometError:
             return []
 
         return [
             TorrentFile(
                 index=int(entry["index"]),
-                path=entry["path"].rstrip("/").split("/")[-1],
-                size=int(entry["length"]),
+                path=str(entry["name"]),
+                size=int(entry["size"]),
             )
-            for entry in raw
-            if int(entry.get("length", 0)) > 0
+            for entry in entries
         ]
 
     def _abandon(self, infohash: str) -> None:
-        gid = self.gid_for(infohash)
-        if gid is not None:
+        task_id = self.task_id_for(infohash)
+        if task_id is not None:
             try:
-                self.rpc.remove(gid)
-            except Aria2Error:
+                # delete_files stays off: the task never got past metadata, so
+                # there is nothing of the user's to erase and no reason to risk
+                # it if BitComet disagrees about which task this is.
+                self.client.delete(task_id, delete_files=False)
+            except BitCometError:
                 pass
         self.store.set_state(
             infohash,
@@ -245,188 +339,201 @@ class TorrentManager:
     # =======================================================
     # COMMIT
     # =======================================================
-    def commit(self, infohash: str, selected: list[int], save_dir: str) -> None:
-        """Apply the selection while paused, then start the download.
+    def commit(self, infohash: str, selected: list[int]) -> None:
+        """Apply the whole tick list to BitComet, then start the task.
 
-        The ordering is the point: changing select-file on an ACTIVE download
-        force-restarts it, and if the group is already halting the option is
-        discarded with no error while the RPC still returns OK.
+        BOTH directions go out every time -- ticked files to SELECTED, unticked
+        to DESELECTED -- because per-file priority is durable task state that
+        outlives this call, this process and this app. Sending only the
+        deselections would make commit a one-way door: re-ticking a file in the
+        UI would change nothing in BitComet, a magnet (whose files are all
+        disabled while it waits for the user) would start and download nothing
+        at all, and a commit interrupted between set_priority and start would
+        leave the store and BitComet disagreeing forever.
+
+        Disabling runs first so that a failure part-way through can only ever
+        leave a task that downloads too little, never too much.
         """
         row = self.store.get(infohash)
         if row is None:
             raise KeyError(infohash)
 
+        known = {f.index for f in self.store.files(infohash)}
+        chosen = set(selected)
+        # An index this torrent does not have is the caller's mistake, and an
+        # invisible one: unchecked it lands in neither set, so every real file
+        # is deselected and the task starts with nothing to download and calls
+        # itself finished.
+        unknown = sorted(chosen - known)
+        if unknown:
+            raise ValueError(
+                f"this torrent has no file {', '.join(str(index) for index in unknown)}"
+            )
+
         value = format_selection(selected)  # raises on an empty selection
-        # aria2 gets no shell, so "~/Downloads" would become a literal ./~ dir;
-        # expand here, at the filesystem boundary.
-        options = {
-            "select-file": value,
-            "dir": str(Path(save_dir).expanduser()),
-            "pause": "true",
-        }
+        task_id = row["task_id"]
+        if task_id is None:
+            raise ValueError("this torrent is no longer staged in BitComet")
 
-        if row["source_kind"] == "torrent":
-            data = self._pending_torrent_data.get(infohash)
-            if data is None:
-                raise ValueError("the uploaded .torrent is no longer available")
-            gid = self.rpc.add_torrent(base64.b64encode(data).decode("ascii"), options)
-        else:
-            gid = self.gid_for(infohash)
-            if gid is None:
-                gid = self.rpc.add_uri([row["source"]], options)
-            else:
-                self.rpc.call("aria2.changeOption", gid, {"select-file": value})
+        unwanted = sorted(known - chosen)
+        if unwanted:
+            self.client.set_priority(task_id, unwanted, DESELECTED)
+        self.client.set_priority(task_id, sorted(chosen), SELECTED)
+        self.client.action(task_id, "start")
 
-        self._set_gid(infohash, gid)
         self.store.set_selection(infohash, value)
-        # Persist the tidy form the user chose so the dashboard, reconciliation,
-        # and file deletion all agree with it.
-        self.store.set_save_dir(infohash, save_dir)
-        self.rpc.unpause(gid)
         self.store.set_state(infohash, "active")
 
     # =======================================================
     # RECONCILIATION
     # =======================================================
     def reconcile(self) -> None:
-        """Rebuild the gid map and make the daemon agree with our record.
+        """Re-link our rows to BitComet's tasks, and flag the ones it lost.
 
-        Runs at boot, when SQLite and the daemon's session can disagree: the
-        session may be older than the DB, or gone entirely to a kill -9.
+        Runs at boot, when the two can disagree: BitComet re-mints task ids
+        across a reinstall, and the user may have deleted a task in its own
+        window.
+
+        Nothing is auto-resumed here. This app no longer stops BitComet, so a
+        stopped task is a decision -- the user's, made in BitComet -- and
+        starting it again on every boot would silently overrule them.
         """
         try:
-            live = self.rpc.tell_all()
-        except Aria2Error:
-            return  # daemon down; the UI surfaces this through /status
+            # Short deadline: this runs before the app serves its first
+            # request, and a BitComet that is wedged rather than absent
+            # accepts the connection and then never replies.
+            with self.client.deadline(STARTUP_TIMEOUT):
+                tasks = self.client.task_list()
+        except BitCometError:
+            return  # BitComet down; the UI surfaces this through /status
 
-        by_hash: dict[str, dict] = {}
-        for entry in live:
-            infohash = (entry.get("infoHash") or "").lower()
-            if not infohash:
-                continue
-            # A metadata group carries followedBy; the content group it points
-            # at is the one with the real files. Prefer the content group.
-            if infohash in by_hash and entry.get("followedBy"):
-                continue
-            by_hash[infohash] = entry
-
-        for infohash, entry in by_hash.items():
-            followed = entry.get("followedBy") or []
-            self._set_gid(infohash, followed[0] if followed else entry["gid"])
+        by_id = {task["task_id"]: task for task in tasks}
+        by_infohash: dict[str, dict] = {}
+        for task in tasks:
+            infohash = infohash_of(task)
+            if infohash:
+                by_infohash[infohash] = task
 
         for row in self.store.all():
-            if row["infohash"] in by_hash:
+            # The stored task_id is the primary handle, the guid only a
+            # fallback: task_guid is the sole place the API mentions an
+            # infohash, but nothing guarantees a task carries one, and matching
+            # on it alone made every other task invisible here -- their rows
+            # were flagged as lost while the tasks were alive and downloading.
+            task = by_id.get(row["task_id"]) or by_infohash.get(row["infohash"])
+            if task is not None:
+                if task["task_id"] != row["task_id"]:
+                    self.store.set_task_id(row["infohash"], task["task_id"])
                 continue
-            if row["state"] in {"complete", "removed", "error", "awaiting_selection"}:
+            if row["state"] in SETTLED_STATES:
                 continue
-            self._readd(row)
+            self._forget(row)
 
-        for row in self.store.paused_by_shutdown():
-            self.resume(row["infohash"])
+    def _forget(self, row: dict) -> None:
+        """Flag a row whose BitComet task is gone, rather than re-adding it.
 
-    def _readd(self, row: dict) -> None:
-        """Re-add a torrent the daemon forgot, re-asserting OUR selection."""
-        if not row["selected"]:
-            return
-        options = {
-            "select-file": row["selected"],
-            "dir": str(Path(row["save_dir"]).expanduser()),
-            "pause": "true",
-        }
-        try:
-            gid = self.rpc.add_uri([row["source"]], options)
-        except Aria2Error:
-            return
-        self._set_gid(row["infohash"], gid)
+        BitComet keeps its task list across restarts, so a missing task was
+        deleted deliberately. Re-adding would resurrect that download AND
+        re-fetch every file the user deselected, because the selection lives
+        in the task's per-file priorities and a fresh add starts with all of
+        them enabled.
+        """
+        self.store.set_state(
+            row["infohash"],
+            "error",
+            last_error="BitComet no longer has this task - add it again to restart it",
+        )
 
     # =======================================================
     # CONTROLS
     # =======================================================
     def pause(self, infohash: str) -> None:
-        gid = self.gid_for(infohash)
-        if gid is not None:
-            try:
-                self.rpc.pause(gid)
-            except Aria2Error:
-                pass
+        self._action([infohash], "stop")
         self.store.set_state(infohash, "paused", pause_reason="user")
 
     def resume(self, infohash: str) -> None:
-        gid = self.gid_for(infohash)
-        if gid is not None:
-            try:
-                self.rpc.unpause(gid)
-            except Aria2Error:
-                pass
+        self._action([infohash], "start")
         self.store.set_state(infohash, "active")
 
     def pause_all(self) -> None:
-        """Pause every running torrent at once ("Stop all"), daemon left up.
-
-        One RPC pauses the whole daemon; the DB is the authoritative record, so
-        it is updated per row regardless of whether the RPC landed.
-        """
-        try:
-            self.rpc.pause_all()
-        except Aria2Error:
-            pass
-        for row in self.store.all(include_removed=False):
-            if row["state"] in {"active", "queued"}:
-                self.store.set_state(row["infohash"], "paused", pause_reason="user")
+        """Stop every running torrent at once ("Stop all")."""
+        rows = [
+            row
+            for row in self.store.all(include_removed=False)
+            if row["state"] in {"active", "queued"}
+        ]
+        self._action([row["infohash"] for row in rows], "stop")
+        # The DB is the authoritative record, so it is updated per row whether
+        # or not BitComet answered.
+        for row in rows:
+            self.store.set_state(row["infohash"], "paused", pause_reason="user")
 
     def resume_all(self) -> None:
         """Resume every paused torrent at once ("Resume all")."""
+        rows = [
+            row
+            for row in self.store.all(include_removed=False)
+            if row["state"] == "paused"
+        ]
+        self._action([row["infohash"] for row in rows], "start")
+        for row in rows:
+            self.store.set_state(row["infohash"], "active")
+
+    def _action(self, infohashes: list[str], verb: str) -> None:
+        """Start or stop our tasks in ONE call, skipping unstaged rows.
+
+        Only rows this app staged are named. BitComet is carrying the user's
+        own downloads too, and a blanket start/stop would sweep those up.
+        """
+        task_ids = [
+            task_id
+            for task_id in (self.task_id_for(infohash) for infohash in infohashes)
+            if task_id is not None
+        ]
+        if not task_ids:
+            return
         try:
-            self.rpc.unpause_all()
-        except Aria2Error:
-            pass
-        for row in self.store.all(include_removed=False):
-            if row["state"] == "paused":
-                self.store.set_state(row["infohash"], "active")
+            self.client.action(task_ids, verb)
+        except BitCometError:
+            pass  # the DB state is what the dashboard renders
 
     def remove(self, infohash: str, *, delete_files: bool = False) -> None:
-        gid = self.gid_for(infohash)
-        if gid is not None:
-            try:
-                self.rpc.remove(gid)
-            except Aria2Error:
-                pass
-        if delete_files:
-            self._delete_files(infohash)
-        self.store.tombstone(infohash)
+        """Drop the task, optionally erasing what it downloaded.
 
-    def _delete_files(self, infohash: str) -> None:
-        row = self.store.get(infohash)
-        if row is None:
-            return
-        base = Path(row["save_dir"]).expanduser()
-        for entry in self.store.files(infohash):
+        BitComet does the deleting: it knows where the pieces actually landed,
+        including the part files a half-finished torrent leaves behind, which
+        a save_dir plus a file list cannot reconstruct.
+        """
+        task_id = self.task_id_for(infohash)
+        if task_id is not None:
             try:
-                (base / entry.path).unlink(missing_ok=True)
-            except OSError:
+                self.client.delete(task_id, delete_files=delete_files)
+            except BitCometError:
                 pass
+        self.store.tombstone(infohash)
 
     # =======================================================
     # DASHBOARD
     # =======================================================
     def snapshot(self) -> list[dict]:
-        """Durable rows joined with live daemon numbers. Nothing is cached.
+        """Durable rows joined with BitComet's live numbers. Nothing is cached.
 
         Progress, speed and ETA are read through on every call rather than
         stored: persisting them goes stale the moment the backend restarts
         mid-download.
         """
         try:
-            live = {(d.get("infoHash") or "").lower(): d for d in self.rpc.tell_all()}
-        except Aria2Error:
+            live = {infohash_of(t): t for t in self.client.task_list()}
+        except BitCometError:
             live = {}
 
         rows = []
         for row in self.store.all(include_removed=False):
-            entry = live.get(row["infohash"], {})
-            total = int(entry.get("totalLength") or row["total_bytes"] or 0)
-            done = int(entry.get("completedLength") or 0)
-            speed = int(entry.get("downloadSpeed") or 0)
+            task = live.get(row["infohash"], {})
+            # The SELECTED sizes, not the torrent's totals: the user deselected
+            # files, and a denominator counting them would stick below 100%.
+            total = int(task.get("selected_size") or row["total_bytes"] or 0)
+            done = int(task.get("selected_downloaded_size") or 0)
             rows.append(
                 {
                     "infohash": row["infohash"],
@@ -437,10 +544,14 @@ class TorrentManager:
                     "selected": row["selected"],
                     "total_bytes": total,
                     "completed_bytes": done,
-                    "progress": (done / total * 100) if total else 0.0,
-                    "speed": speed,
-                    # aria2 returns no ETA; a stalled download has none.
-                    "eta_seconds": ((total - done) // speed) if speed else None,
+                    # permillage is progress in tenths of a percent, and it is
+                    # BitComet's own answer over the selected files -- deriving
+                    # it from the byte counts would only re-do its arithmetic.
+                    "progress": int(task.get("permillage") or 0) / 10,
+                    "speed": int(task.get("download_rate") or 0),
+                    # BitComet formats the remaining time itself, so this is
+                    # its string, not seconds we guessed from bytes and speed.
+                    "eta": task.get("left_time") or None,
                     "added_at": row["added_at"],
                     "completed_at": row["completed_at"],
                     "last_error": row["last_error"],
@@ -448,73 +559,10 @@ class TorrentManager:
             )
         return rows
 
-    # =======================================================
-    # PRESENCE / SHUTDOWN
-    # =======================================================
-    def _cancel_timer_locked(self) -> None:
-        """Cancel a pending grace timer. Caller must hold self._lock."""
-        if self._grace_timer is not None:
-            self._grace_timer.cancel()
-            self._grace_timer = None
+    def close(self) -> None:
+        """Release the HTTP session. BitComet keeps running; it is not ours.
 
-    def client_connected(self) -> None:
-        with self._lock:
-            self._clients += 1
-            self._cancel_timer_locked()
-
-    def client_disconnected(self) -> None:
-        with self._lock:
-            self._clients = max(0, self._clients - 1)
-            if self._clients > 0:
-                return
-            timer = threading.Timer(self.GRACE_SECONDS, self.shutdown)
-            timer.daemon = True
-            self._grace_timer = timer
-            timer.start()
-
-    def shutdown_pending(self) -> bool:
-        with self._lock:
-            return self._grace_timer is not None
-
-    def cancel_pending_shutdown(self) -> None:
-        """Disarm the grace timer without shutting down.
-
-        Used on disposal (and in tests) so a timer can never fire against a
-        torn-down manager -- a closed store or a stopped daemon -- which would
-        surface as a stray exception in a background thread.
+        Downloads deliberately survive this process exiting -- that is the
+        whole point of driving an application the user already runs.
         """
-        with self._lock:
-            self._cancel_timer_locked()
-
-    def shutdown(self) -> None:
-        """Pause our work, flush the session, and stop a daemon we own."""
-        with self._lock:
-            self._cancel_timer_locked()
-            owned_gids = dict(self._gids)
-
-        try:
-            if self.owned:
-                self.rpc.pause_all()
-            else:
-                # Another front-end's downloads are not ours to touch.
-                for infohash, gid in owned_gids.items():
-                    row = self.store.get(infohash)
-                    if row and row["state"] == "active":
-                        self.rpc.pause(gid)
-
-            for row in self.store.all(include_removed=False):
-                if row["state"] == "active":
-                    self.store.set_state(
-                        row["infohash"], "paused", pause_reason="shutdown"
-                    )
-
-            self.rpc.save_session()
-            if self.owned:
-                self.rpc.shutdown()
-        except Aria2Error:
-            pass  # daemon already gone; the DB state is what matters
-
-        # Guarantee an owned daemon is actually gone, even if the RPC above
-        # never landed, so it cannot linger holding the port.
-        if self.owned and self.pid_file is not None:
-            aria2.stop_process(self.pid_file)
+        self.client.close()

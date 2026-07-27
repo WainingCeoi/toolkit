@@ -8,15 +8,12 @@ import Button from '../components/Button'
 import FileDrop from '../components/FileDrop'
 import FolderField from '../components/FolderField'
 import {
-  ACTIVE_STATES,
   CATEGORIES,
   DEFAULT_SAVE_DIR,
   MB,
   addTorrent,
   formatBytes,
-  formatEta,
   formatSpeed,
-  hasActiveWork,
   parseMagnetLines,
   ruleKey,
   selectionFor,
@@ -71,59 +68,6 @@ function FileTable({
   )
 }
 
-function QuitModal({
-  rows,
-  onCancel,
-  onConfirm,
-  busy,
-}: {
-  rows: TorrentRow[]
-  onCancel: () => void
-  onConfirm: () => void
-  busy: boolean
-}) {
-  const active = rows.filter((r) => ACTIVE_STATES.has(r.state))
-  return (
-    <>
-      <button className="scrim" onClick={onCancel} aria-label="Cancel" />
-      <div
-        className="panel"
-        role="dialog"
-        aria-modal="true"
-        style={{
-          position: 'fixed',
-          zIndex: 31,
-          top: '50%',
-          left: '50%',
-          transform: 'translate(-50%, -50%)',
-          maxWidth: 460,
-          width: 'calc(100% - 32px)',
-        }}
-      >
-        <div className="step">Stop downloading</div>
-        <p style={{ fontSize: 13.5 }}>
-          {active.length} torrent{active.length === 1 ? '' : 's'} still downloading. Quitting
-          pauses {active.length === 1 ? 'it' : 'them'} and stops aria2 — progress is kept, and
-          {active.length === 1 ? ' it resumes' : ' they resume'} next time you open this page.
-        </p>
-        <ul style={{ fontSize: 13, color: 'var(--muted)', paddingLeft: 18, margin: '0 0 12px' }}>
-          {active.map((r) => (
-            <li key={r.infohash} style={{ overflowWrap: 'anywhere' }}>
-              {r.name ?? r.infohash.slice(0, 12)} — {r.progress.toFixed(0)}%
-            </li>
-          ))}
-        </ul>
-        <div className="row">
-          <Button onClick={onCancel}>Keep downloading</Button>
-          <Button variant="danger" loading={busy} onClick={onConfirm}>
-            Pause &amp; quit
-          </Button>
-        </div>
-      </div>
-    </>
-  )
-}
-
 export default function TorrentDownloader() {
   const [status, setStatus] = useState<TorrentStatus | null>(null)
 
@@ -153,22 +97,20 @@ export default function TorrentDownloader() {
 
   // --- queue (dashboard) ---
   const [rows, setRows] = useState<TorrentRow[]>([])
-  const [quitting, setQuitting] = useState(false)
-  const [showQuit, setShowQuit] = useState(false)
 
   useEffect(() => {
     let cancelled = false
     api
       .torrentStatus()
       .then((s) => !cancelled && setStatus(s))
-      .catch(() => !cancelled && setStatus({ running: false, owned: false, version: null, detail: null }))
+      .catch(() => !cancelled && setStatus({ running: false, server: null, detail: null }))
     return () => {
       cancelled = true
     }
   }, [])
 
-  // The dashboard stream doubles as the presence signal the backend uses to
-  // decide when the last tab is gone, so it stays open for the page's lifetime.
+  // Live queue for the page's lifetime. Closing it costs nothing now: BitComet
+  // keeps downloading whether or not this tab is open.
   useEffect(() => {
     const source = new EventSource('/api/torrent/events')
     source.addEventListener('torrents', (event) => {
@@ -176,17 +118,6 @@ export default function TorrentDownloader() {
     })
     return () => source.close()
   }, [])
-
-  // Browsers ignore custom text here and show their own generic dialog;
-  // preventDefault is the entire API. The informative confirmation is the Quit
-  // modal, which we control.
-  const working = hasActiveWork(rows)
-  useEffect(() => {
-    if (!working) return
-    const warn = (event: BeforeUnloadEvent) => event.preventDefault()
-    window.addEventListener('beforeunload', warn)
-    return () => window.removeEventListener('beforeunload', warn)
-  }, [working])
 
   function pushError(id: string, msg: string) {
     setErrors((prev) => [...prev, { id, msg }])
@@ -216,7 +147,7 @@ export default function TorrentDownloader() {
         next = await api.torrentPollResolve(infohash)
       } catch (e) {
         clearResolving(infohash)
-        pushError(infohash.slice(0, 12), errMsg(e, 'Could not reach the daemon.'))
+        pushError(infohash.slice(0, 12), errMsg(e, 'Could not reach BitComet.'))
         return
       }
       if (next.state === 'error') {
@@ -234,7 +165,7 @@ export default function TorrentDownloader() {
 
   async function stageMagnet(uri: string) {
     try {
-      const out = await api.torrentResolveMagnet(uri)
+      const out = await api.torrentResolveMagnet(uri, saveDir.trim())
       setResolved((prev) => addTorrent(prev, out))
       if (!out.ready) {
         setResolvingHashes((prev) => new Set(prev).add(out.infohash))
@@ -247,7 +178,7 @@ export default function TorrentDownloader() {
 
   async function stageFile(file: File) {
     try {
-      const out = await api.torrentResolveFile(file)
+      const out = await api.torrentResolveFile(file, saveDir.trim())
       setResolved((prev) => addTorrent(prev, out))
     } catch (e) {
       pushError(file.name, errMsg(e, 'Could not read that .torrent file.'))
@@ -257,7 +188,7 @@ export default function TorrentDownloader() {
   async function resolveAll() {
     const lines = parseMagnetLines(magnets)
     const files = pendingFiles
-    if (!lines.length && !files.length) return
+    if ((!lines.length && !files.length) || !saveDir.trim()) return
     setErrors([])
     setStaging(true)
     setMagnets('')
@@ -270,12 +201,11 @@ export default function TorrentDownloader() {
 
   async function addOne(t: TorrentResolve) {
     const selected = selectedFor(t)
-    if (selected.size === 0 || !saveDir.trim()) return
+    if (selected.size === 0) return
     try {
       await api.torrentCommit({
         infohash: t.infohash,
         selected: [...selected].sort((a, b) => a - b),
-        save_dir: saveDir.trim(),
       })
       setResolved((prev) => prev.filter((x) => x.infohash !== t.infohash))
       setOverrides((prev) => {
@@ -291,18 +221,6 @@ export default function TorrentDownloader() {
   async function addAll() {
     for (const t of resolved) {
       if (t.ready && selectedFor(t).size > 0) await addOne(t)
-    }
-  }
-
-  async function confirmQuit() {
-    setQuitting(true)
-    try {
-      await api.torrentShutdown()
-      setShowQuit(false)
-    } catch (e) {
-      pushError('shutdown', errMsg(e, 'Could not stop aria2.'))
-    } finally {
-      setQuitting(false)
     }
   }
 
@@ -346,8 +264,11 @@ export default function TorrentDownloader() {
     })
   }
 
-  const engineDown = status !== null && !status.running
+  const bitcometDown = status !== null && !status.running
   const nothingToResolve = parseMagnetLines(magnets).length === 0 && pendingFiles.length === 0
+  // The destination is needed to resolve, not to add: BitComet fixes a task's
+  // save folder when the task is created and cannot move it afterwards.
+  const noDestination = !saveDir.trim()
   const readyCount = resolved.filter((t) => t.ready && selectedFor(t).size > 0).length
   const anyActive = rows.some((r) => r.state === 'active' || r.state === 'queued')
   const anyPaused = rows.some((r) => r.state === 'paused')
@@ -359,12 +280,13 @@ export default function TorrentDownloader() {
       </div>
       <p className="page-sub">
         Paste magnets or pick .torrent files, review what is inside them, and download only the
-        files worth keeping.
+        files worth keeping. The downloads run in your own BitComet and keep going after you
+        close this page.
       </p>
 
-      {engineDown && (
+      {bitcometDown && (
         <div className="note error">
-          {status?.detail ?? 'aria2 is not running. Install it with `brew install aria2`.'}
+          {status?.detail ?? 'BitComet is not answering. Start it and turn on Remote Access.'}
         </div>
       )}
 
@@ -398,7 +320,7 @@ export default function TorrentDownloader() {
             <Button
               variant="primary"
               loading={staging}
-              disabled={nothingToResolve || engineDown}
+              disabled={nothingToResolve || noDestination || bitcometDown}
               onClick={resolveAll}
             >
               Resolve
@@ -462,6 +384,11 @@ export default function TorrentDownloader() {
           </div>
 
           <FolderField label="Save to" value={saveDir} onChange={setSaveDir} />
+          <p style={{ font: '12px var(--mono)', color: 'var(--faint)', margin: '4px 0 0' }}>
+            Applied when you resolve. BitComet fixes a torrent's folder as it is added, so
+            changing this afterwards only affects the next one.
+          </p>
+          {noDestination && <div className="note info">Choose a destination folder.</div>}
         </div>
       </div>
 
@@ -474,7 +401,7 @@ export default function TorrentDownloader() {
             <Button
               variant="primary"
               size="sm"
-              disabled={readyCount === 0 || !saveDir.trim()}
+              disabled={readyCount === 0}
               onClick={addAll}
             >
               Add all to queue
@@ -518,7 +445,7 @@ export default function TorrentDownloader() {
                         <Button
                           variant="primary"
                           size="sm"
-                          disabled={selected.size === 0 || !saveDir.trim()}
+                          disabled={selected.size === 0}
                           onClick={() => void addOne(t)}
                         >
                           Add
@@ -545,8 +472,6 @@ export default function TorrentDownloader() {
               )
             })}
           </div>
-
-          {!saveDir.trim() && <div className="note info">Choose a destination folder above.</div>}
         </div>
       )}
 
@@ -560,9 +485,6 @@ export default function TorrentDownloader() {
               </Button>
               <Button size="sm" disabled={!anyActive} onClick={() => void stopAll()}>
                 Stop all
-              </Button>
-              <Button size="sm" variant="danger" onClick={() => setShowQuit(true)}>
-                Quit
               </Button>
             </>
           )}
@@ -607,22 +529,13 @@ export default function TorrentDownloader() {
               </div>
               <div style={{ font: '12px var(--mono)', color: 'var(--muted)' }}>
                 {formatBytes(row.completed_bytes)} / {formatBytes(row.total_bytes)} ·{' '}
-                {formatSpeed(row.speed)} · ETA {formatEta(row.eta_seconds)}
+                {formatSpeed(row.speed)} · ETA {row.eta ?? '—'}
               </div>
               {row.last_error && <div className="note error">{row.last_error}</div>}
             </div>
           ))
         )}
       </div>
-
-      {showQuit && (
-        <QuitModal
-          rows={rows}
-          busy={quitting}
-          onCancel={() => setShowQuit(false)}
-          onConfirm={confirmQuit}
-        />
-      )}
     </>
   )
 }

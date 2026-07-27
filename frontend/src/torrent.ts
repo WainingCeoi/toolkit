@@ -2,7 +2,7 @@
 // exports components only — react-refresh cannot hot-reload a file that mixes
 // the two. Same split as jobs.ts / JobsProvider.tsx.
 
-import type { TorrentFileRow, TorrentResolve, TorrentRow } from './types/api'
+import type { TorrentFileRow, TorrentResolve } from './types/api'
 
 // Mirrors toolkit_engine/filetypes.py SIZED_CATEGORIES. Duplicated on purpose:
 // this drives the live preview as boxes are ticked, before any round trip. The
@@ -23,8 +23,6 @@ export const CATEGORIES: { key: string; label: string }[] = [
   { key: 'other', label: 'Other' },
 ]
 
-export const ACTIVE_STATES = new Set(['active', 'queued', 'awaiting_metadata'])
-
 export const MB = 1024 * 1024
 
 /** 1-based indices to download: in a ticked category, and big enough. */
@@ -44,10 +42,6 @@ export function applyFilter(
     .map((f) => f.index)
 }
 
-export function hasActiveWork(rows: TorrentRow[]): boolean {
-  return rows.some((r) => ACTIVE_STATES.has(r.state))
-}
-
 export function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`
   const units = ['KB', 'MB', 'GB', 'TB']
@@ -58,13 +52,6 @@ export function formatBytes(n: number): string {
     unit += 1
   }
   return `${value.toFixed(value >= 100 ? 0 : 1)} ${units[unit]}`
-}
-
-export function formatEta(seconds: number | null): string {
-  if (seconds === null) return '—'
-  if (seconds < 60) return `${seconds}s`
-  if (seconds < 3600) return `${Math.round(seconds / 60)}m`
-  return `${(seconds / 3600).toFixed(1)}h`
 }
 
 export function formatSpeed(bytesPerSecond: number): string {

@@ -56,7 +56,7 @@ def test_unset_disabled_tools_lists_everything(client, monkeypatch):
 
 def test_health_reports_dependency_booleans(client):
     body = client.get("/api/health").json()
-    assert set(body) == {"ok", "ffmpeg", "soffice", "mineru", "aria2"}
+    assert set(body) == {"ok", "ffmpeg", "soffice", "mineru", "bitcomet"}
     assert all(isinstance(v, bool) for v in body.values())
 
 
@@ -194,7 +194,6 @@ def test_all_api_routers_are_wired(app_state):
         "/api/torrent/resolve",
         "/api/torrent/resolve/{infohash}",
         "/api/torrent/events",
-        "/api/torrent/shutdown",
         "/api/torrent/{infohash}",
         "/api/torrent/{infohash}/pause",
         "/api/torrent/{infohash}/resume",

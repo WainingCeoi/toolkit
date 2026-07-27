@@ -10,23 +10,29 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
-from toolkit_engine.aria2 import Aria2Error, probe
+from toolkit_engine.bitcomet import BitCometError
 
 from ..deps import StateDep, TorrentsDep
 
 router = APIRouter(prefix="/torrent", tags=["torrent"])
 
+# Shown wherever BitComet is unreachable or unconfigured. Both switches are
+# named because the API answers APP_ACCESS_DISABLED with only the Web UI one
+# on, which looks exactly like a wrong password.
+REMOTE_ACCESS_HINT = (
+    "In BitComet, Options -> Remote Access: turn on both 'via BitComet Mobile "
+    "App' and 'via Web UI', and set a username and password."
+)
+
 
 class CommitIn(BaseModel):
     infohash: str
     selected: list[int]
-    save_dir: str
 
 
 class StatusOut(BaseModel):
     running: bool
-    owned: bool
-    version: str | None = None
+    server: str | None = None
     detail: str | None = None
 
 
@@ -38,33 +44,24 @@ def status(state: StateDep) -> dict:
     if torrents is None:
         return {
             "running": False,
-            "owned": False,
-            "version": None,
+            "server": None,
             "detail": (
-                "aria2 is not installed or not on PATH. Install it with "
-                "`brew install aria2`, then restart the backend."
+                "BitComet's settings could not be read. Install BitComet from "
+                f"https://www.bitcomet.com/, then restart the backend. "
+                f"{REMOTE_ACCESS_HINT}"
             ),
         }
 
-    version = probe(torrents.rpc)
+    server = torrents.client.probe()
     detail = None
-    if version is None:
-        # Distinguish "nothing listening" from "listening but rejecting us":
-        # an aria2 started outside this app has its own --rpc-secret.
-        try:
-            torrents.rpc.version()
-        except Aria2Error as exc:
-            if "unauthorized" in str(exc).lower():
-                detail = (
-                    "aria2 is running but rejected our token. Set ARIA2_SECRET "
-                    "to match that daemon's --rpc-secret."
-                )
-    return {
-        "running": version is not None,
-        "owned": torrents.owned,
-        "version": version,
-        "detail": detail,
-    }
+    if server is None:
+        # Credentials were readable, so BitComet is installed -- it is either
+        # not running or not serving the API.
+        detail = (
+            f"BitComet is not answering at {torrents.client.base_url}. "
+            f"Start it, then check: {REMOTE_ACCESS_HINT}"
+        )
+    return {"running": server is not None, "server": server, "detail": detail}
 
 
 @router.post("/resolve")
@@ -72,30 +69,38 @@ async def resolve(
     torrents: TorrentsDep,
     magnet: Annotated[str | None, Form()] = None,
     file: Annotated[UploadFile | None, File()] = None,
+    save_dir: Annotated[str, Form()] = "",
 ) -> dict:
     """Stage a magnet or a .torrent and report its file list when known.
 
     One endpoint for both because the two differ only in how long the file
     list takes to appear: a .torrent carries it, a magnet has to fetch it.
+
+    The destination is chosen here rather than at commit because BitComet fixes
+    a task's save folder when the task is created.
     """
     if file is not None:
         data = await file.read()
         try:
-            return torrents.resolve_torrent(data, file.filename or "upload.torrent")
+            return torrents.resolve_torrent(
+                data, file.filename or "upload.torrent", save_dir
+            )
         except ValueError as exc:
             raise HTTPException(
                 status_code=400, detail=f"Could not read that .torrent: {exc}"
             ) from exc
+        except BitCometError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     if not magnet:
         raise HTTPException(
             status_code=400, detail="Provide a magnet link or a .torrent file."
         )
     try:
-        return torrents.resolve_magnet(magnet)
+        return torrents.resolve_magnet(magnet, save_dir)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except Aria2Error as exc:
+    except BitCometError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
@@ -105,17 +110,22 @@ def poll_resolve(infohash: str, torrents: TorrentsDep) -> dict:
         return torrents.poll_resolve(infohash)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Unknown torrent.") from exc
+    except BitCometError as exc:
+        # A magnet's files are deselected on this path, and the torrent is
+        # running while that happens -- so a BitComet that stops answering here
+        # is reported, never smoothed over into "still waiting for metadata".
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @router.post("")
 def commit(payload: CommitIn, torrents: TorrentsDep) -> dict:
     try:
-        torrents.commit(payload.infohash, payload.selected, payload.save_dir)
+        torrents.commit(payload.infohash, payload.selected)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Unknown torrent.") from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except Aria2Error as exc:
+    except BitCometError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     return {"infohash": payload.infohash, "state": "active"}
 
@@ -132,33 +142,21 @@ async def torrent_frames(torrents, interval: float = 1.0):
     stream never ends on its own (a dashboard has no terminal state), so an
     HTTP-level test of it would hang rather than finish.
     """
-    torrents.client_connected()
     last = None
-    try:
-        while True:
-            # snapshot() polls aria2 over blocking HTTP. Called inline it
-            # would stall the event loop for every other request in the
-            # process, this stream included.
-            payload = json.dumps(await asyncio.to_thread(torrents.snapshot))
-            if payload != last:
-                yield {"event": "torrents", "data": payload}
-                last = payload
-            await asyncio.sleep(interval)
-    finally:
-        # Runs on client disconnect and on server shutdown alike.
-        torrents.client_disconnected()
+    while True:
+        # snapshot() polls BitComet over blocking HTTP. Called inline it would
+        # stall the event loop for every other request in the process, this
+        # stream included.
+        payload = json.dumps(await asyncio.to_thread(torrents.snapshot))
+        if payload != last:
+            yield {"event": "torrents", "data": payload}
+            last = payload
+        await asyncio.sleep(interval)
 
 
 @router.get("/events")
 async def events(torrents: TorrentsDep) -> EventSourceResponse:
-    """Dashboard stream. Doubles as the presence signal for auto-shutdown."""
     return EventSourceResponse(torrent_frames(torrents))
-
-
-@router.post("/shutdown")
-def shutdown(torrents: TorrentsDep) -> dict:
-    torrents.shutdown()
-    return {"stopped": True}
 
 
 # Literal-segment routes, declared before the "/{infohash}/..." ones so a

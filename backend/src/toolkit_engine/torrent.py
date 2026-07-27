@@ -1,7 +1,7 @@
 """Torrent Downloader engine: pure parsing and selection. No I/O, no network.
 
 Everything here is a function of its arguments, which is what makes the tool
-testable without aria2 installed or a swarm reachable: a .torrent is bencode,
+testable without BitComet running or a swarm reachable: a .torrent is bencode,
 so its file list is readable offline, and the category/size filter is a fold
 over that list.
 """
@@ -18,7 +18,9 @@ from toolkit_engine.filetypes import SIZED_CATEGORIES, categorize
 
 @dataclass(frozen=True)
 class TorrentFile:
-    index: int  # 1-based -- aria2's select-file numbering, used verbatim
+    # 1-based, following the torrent's own file order. BitComet numbers from
+    # 0; toolkit_engine.bitcomet translates at that single boundary.
+    index: int
     path: str  # path inside the torrent, '/'-joined
     size: int  # bytes
 
@@ -200,11 +202,11 @@ def select_files(
 
 
 def format_selection(indices: list[int]) -> str:
-    """Render indices as aria2's select-file value, e.g. "1,4,7".
+    """Render indices as the store's compact selection string, e.g. "1,4,7".
 
-    Never returns "": aria2 treats an empty select-file as a silent no-op, and
-    a torrent with every file deselected flips straight to complete having
-    downloaded nothing.
+    Never returns "": a torrent with every file deselected downloads nothing
+    and reports itself finished, so an empty selection is refused here rather
+    than becoming a download that silently produces no files.
     """
     if not indices:
         raise ValueError("a torrent must download at least one file")

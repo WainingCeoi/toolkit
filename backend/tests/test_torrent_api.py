@@ -5,18 +5,19 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-from fake_aria2 import FakeAria2
+from fake_bitcomet import SERVER_NAME, FakeBitComet
 from fastapi.testclient import TestClient
 
 from toolkit_api.main import create_app
 from toolkit_api.routers.torrent import torrent_frames
 from toolkit_api.torrents import TorrentManager
-from toolkit_engine.aria2 import Aria2RPC
+from toolkit_engine.bitcomet import BitCometClient
 from toolkit_engine.torrent import bencode
 from toolkit_engine.torrentdb import TorrentStore
 
 HASH = "c9e15763f722f23e98a29decdfae341b98d53056"
 TORRENT_MIME = "application/x-bittorrent"
+MAGNET = f"magnet:?xt=urn:btih:{HASH}&dn=Example.Release"
 
 
 def sample_torrent():
@@ -37,8 +38,15 @@ def sample_torrent():
 
 
 @pytest.fixture
-def fake_aria2():
-    server = FakeAria2()
+def save_folder(tmp_path):
+    folder = tmp_path / "Downloads"
+    folder.mkdir()
+    return folder
+
+
+@pytest.fixture
+def fake(save_folder):
+    server = FakeBitComet(save_folders=[str(save_folder)])
     try:
         yield server
     finally:
@@ -46,19 +54,18 @@ def fake_aria2():
 
 
 @pytest.fixture
-def torrent_client(app_state, fake_aria2, tmp_path):
-    rpc = Aria2RPC(url=fake_aria2.url, secret=fake_aria2.secret)
-    store = TorrentStore(":memory:")
-    app_state.torrents = TorrentManager(
-        store, rpc, download_dir=tmp_path / "dl", owned=True
+def torrent_client(app_state, fake, save_folder):
+    client = BitCometClient(
+        base_url=fake.url, username=fake.username, password=fake.password
     )
+    store = TorrentStore(":memory:")
+    app_state.torrents = TorrentManager(store, client, download_dir=save_folder)
     app = create_app(state=app_state)
-    with TestClient(app) as client:
-        yield client
-    # Disarm the grace timer the presence tests arm before the store closes,
-    # so it cannot fire against a closed store in a background thread.
-    app_state.torrents.cancel_pending_shutdown()
-    store.close()
+    try:
+        with TestClient(app) as test_client:
+            yield test_client
+    finally:
+        store.close()
 
 
 def upload(client):
@@ -69,42 +76,59 @@ def upload(client):
     ).json()["infohash"]
 
 
-def start(client, infohash, selected=(1,), save_dir="/tmp/dest"):
+def start(client, infohash, selected=(1,)):
     return client.post(
         "/api/torrent",
-        json={
-            "infohash": infohash,
-            "selected": list(selected),
-            "save_dir": save_dir,
-        },
+        json={"infohash": infohash, "selected": list(selected)},
     )
 
 
 # =======================================================
 # STATUS
 # =======================================================
-def test_status_reports_the_daemon_version(torrent_client):
+def test_status_reports_the_bitcomet_server(torrent_client):
     body = torrent_client.get("/api/torrent/status").json()
     assert body["running"] is True
-    assert body["version"] == "1.37.0"
+    assert body["server"] == SERVER_NAME
 
 
-def test_status_reports_a_down_daemon_without_failing(app_state, tmp_path):
+def test_status_reports_an_unreachable_bitcomet_without_failing(app_state, tmp_path):
     store = TorrentStore(":memory:")
-    app_state.torrents = TorrentManager(
-        store,
-        Aria2RPC(url="http://127.0.0.1:1/jsonrpc", secret="x", timeout=0.5),
-        download_dir=tmp_path,
+    client = BitCometClient(
+        base_url="http://127.0.0.1:1", username="u", password="p", timeout=0.5
     )
+    app_state.torrents = TorrentManager(store, client, download_dir=tmp_path)
     try:
-        with TestClient(create_app(state=app_state)) as client:
-            body = client.get("/api/torrent/status").json()
+        with TestClient(create_app(state=app_state)) as test_client:
+            body = test_client.get("/api/torrent/status").json()
     finally:
         # Close even if startup raises, so a leaked :memory: connection can't
         # surface as a ResourceWarning blamed on an unrelated later test.
         store.close()
     assert body["running"] is False
-    assert body["version"] is None
+    assert body["server"] is None
+    assert "Remote Access" in body["detail"]
+
+
+def test_status_answers_even_with_no_engine(app_state):
+    # The diagnostic endpoint must not be gated behind the thing it diagnoses,
+    # or the UI has no way to say WHY the tool is unavailable.
+    app_state.torrents = None
+    with TestClient(create_app(state=app_state)) as client:
+        resp = client.get("/api/torrent/status")
+    assert resp.status_code == 200
+    assert resp.json()["running"] is False
+    assert "Install BitComet" in resp.json()["detail"]
+
+
+def test_endpoints_503_when_the_engine_was_never_built(app_state):
+    # BitComet unconfigured -> build_torrent_manager returns None rather than
+    # blowing up at startup; the tool says so instead of 500-ing.
+    app_state.torrents = None
+    with TestClient(create_app(state=app_state)) as client:
+        resp = client.get("/api/torrent")
+    assert resp.status_code == 503
+    assert "not ready" in resp.json()["detail"]
 
 
 # =======================================================
@@ -162,6 +186,28 @@ def test_resolve_accepts_a_magnet_as_form_data(torrent_client):
     }
 
 
+def test_resolve_takes_the_destination_because_bitcomet_fixes_it_at_add_time(
+    torrent_client, app_state, tmp_path
+):
+    folder = tmp_path / "Films"
+    torrent_client.post(
+        "/api/torrent/resolve",
+        files={"file": ("Example.torrent", sample_torrent(), TORRENT_MIME)},
+        data={"save_dir": str(folder)},
+    )
+    rows = torrent_client.get("/api/torrent").json()
+    assert rows[0]["save_dir"] == str(folder)
+
+
+def test_resolve_503s_when_bitcomet_refuses(torrent_client, fake):
+    fake.reject_every_token = True
+    resp = torrent_client.post(
+        "/api/torrent/resolve", data={"magnet": f"magnet:?xt=urn:btih:{HASH}"}
+    )
+    # A BitComet that is down or rejecting us is a 503, not a 500.
+    assert resp.status_code == 503
+
+
 def test_poll_resolve_404s_on_an_unknown_infohash(torrent_client):
     assert torrent_client.get(f"/api/torrent/resolve/{'0' * 40}").status_code == 404
 
@@ -177,14 +223,48 @@ def test_commit_starts_the_download(torrent_client):
 
 def test_commit_rejects_an_empty_selection(torrent_client):
     resp = start(torrent_client, upload(torrent_client), selected=())
-    # aria2 would accept it and immediately call the torrent complete with
-    # nothing downloaded.
+    # A torrent with everything deselected downloads nothing and calls itself
+    # finished.
     assert resp.status_code == 400
     assert "at least one file" in resp.json()["detail"]
 
 
+def test_commit_400s_on_a_file_the_torrent_does_not_have(torrent_client):
+    resp = start(torrent_client, upload(torrent_client), selected=(1, 99))
+    # A client mistake, so a 4xx -- not the 503 that means "BitComet is down".
+    assert resp.status_code == 400
+    assert "no file 99" in resp.json()["detail"]
+
+
+def test_a_magnet_resolves_reviews_and_commits_end_to_end(torrent_client, fake):
+    fake.publish_metadata(HASH, [("Movie.mkv", 2_000_000_000), ("RARBG.txt", 30)])
+    assert (
+        torrent_client.post("/api/torrent/resolve", data={"magnet": MAGNET}).json()[
+            "state"
+        ]
+        == "awaiting_metadata"
+    )
+
+    polled = torrent_client.get(f"/api/torrent/resolve/{HASH}").json()
+    assert polled["state"] == "awaiting_selection"
+    assert [f["path"] for f in polled["files"]] == ["Movie.mkv", "RARBG.txt"]
+    # Held, not paused: BitComet has no metadata-only mode, so every file is
+    # disabled while the user reviews.
+    (task,) = fake.tasks.values()
+    assert {f["priority"] for f in task["files"]} == {"disabled"}
+
+    assert start(torrent_client, HASH, selected=(1,)).status_code == 200
+    assert [f["priority"] for f in task["files"]] == ["normal", "disabled"]
+
+
 def test_commit_404s_on_an_unknown_infohash(torrent_client):
     assert start(torrent_client, "0" * 40).status_code == 404
+
+
+def test_commit_503s_when_bitcomet_refuses(torrent_client, fake):
+    infohash = upload(torrent_client)
+    fake.reject_every_token = True
+    assert start(torrent_client, infohash).status_code == 503
 
 
 # =======================================================
@@ -215,11 +295,6 @@ def test_pause_and_resume_round_trip(torrent_client):
 def test_pause_all_stops_every_running_torrent(torrent_client):
     first = upload(torrent_client)
     start(torrent_client, first)
-    second = "b" * 40
-    torrent_client.post(
-        "/api/torrent/resolve", data={"magnet": f"magnet:?xt=urn:btih:{second}"}
-    )
-    start(torrent_client, second, save_dir="/tmp/dest")
 
     assert torrent_client.post("/api/torrent/pause-all").status_code == 200
     rows = torrent_client.get("/api/torrent").json()
@@ -255,8 +330,7 @@ def read_one_frame(manager):
     """Drive the dashboard generator for exactly one frame, then close it.
 
     The stream is infinite by design, so it is driven directly rather than
-    over HTTP: aclose() runs its finally block, which is also how the
-    presence counter gets decremented in production.
+    over HTTP: an HTTP-level test of it would hang rather than finish.
     """
 
     async def run():
@@ -277,43 +351,3 @@ def test_events_streams_a_dashboard_frame(torrent_client, app_state):
 
     assert frame["event"] == "torrents"
     assert infohash in frame["data"]
-
-
-def test_the_events_stream_is_the_presence_signal(torrent_client, app_state):
-    manager = app_state.torrents
-    manager.GRACE_SECONDS = 30.0
-
-    read_one_frame(manager)
-
-    # Opening and closing the dashboard is what arms auto-shutdown; without
-    # this wiring the daemon would outlive the last tab forever.
-    assert manager.shutdown_pending() is True
-
-
-def test_explicit_shutdown_pauses_and_stops(torrent_client, fake_aria2):
-    infohash = upload(torrent_client)
-    start(torrent_client, infohash)
-
-    assert torrent_client.post("/api/torrent/shutdown").status_code == 200
-    assert "aria2.shutdown" in [m for m, _ in fake_aria2.calls]
-
-
-def test_status_answers_even_with_no_engine(app_state):
-    # The diagnostic endpoint must not be gated behind the thing it diagnoses,
-    # or the UI has no way to say WHY the tool is unavailable.
-    app_state.torrents = None
-    with TestClient(create_app(state=app_state)) as client:
-        resp = client.get("/api/torrent/status")
-    assert resp.status_code == 200
-    assert resp.json()["running"] is False
-    assert "brew install aria2" in resp.json()["detail"]
-
-
-def test_endpoints_503_when_the_engine_was_never_built(app_state):
-    # aria2 not installed -> build_torrent_manager returns None rather than
-    # blowing up at startup; the tool says so instead of 500-ing.
-    app_state.torrents = None
-    with TestClient(create_app(state=app_state)) as client:
-        resp = client.get("/api/torrent")
-    assert resp.status_code == 503
-    assert "not ready" in resp.json()["detail"]
