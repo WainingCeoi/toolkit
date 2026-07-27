@@ -51,16 +51,21 @@ def build_torrent_manager():
     from toolkit_engine.bitcomet import BitCometClient, BitCometError
     from toolkit_engine.torrentdb import TorrentStore
 
-    try:
-        client = BitCometClient.from_config()
-    except BitCometError:
-        return None
-
     # Same folder as the subscription DB, not a subfolder of it: one data
     # directory for the whole app. Derived from DB_PATH so SUB_DB_PATH moves
     # both databases together. Separate FILE though -- subgen's Store owns a
     # subscriptions schema, and the two tools share nothing.
     data_dir = Path(config.DB_PATH).parent
+
+    try:
+        # The device id lives here too, so BitComet sees the same paired device
+        # across restarts instead of collecting one entry per boot.
+        client = BitCometClient.from_config(
+            device_id_file=data_dir / "bitcomet-device-id"
+        )
+    except BitCometError:
+        return None
+
     store = TorrentStore(data_dir / "torrents.db")
     return TorrentManager(store, client, download_dir=DEFAULT_SAVE_DIR)
 

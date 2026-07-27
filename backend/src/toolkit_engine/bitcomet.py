@@ -26,7 +26,7 @@ import os
 import uuid
 import xml.etree.ElementTree as ET
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -201,6 +201,33 @@ def decrypt(blob: str, client_id: str) -> str:
     return padded[: -padded[-1]].decode()
 
 
+def read_or_create_device_id(path: Path | None) -> str:
+    """A device id that survives restarts, generating and storing one if needed.
+
+    Pairing is per device id, and BitComet lists every one it has ever seen in
+    its Remote Access settings. Handing it a new id on each boot leaves the user
+    scrolling past a screenful of identical entries, so the id lives on disk and
+    we re-present the same one.
+
+    With no path (tests, throwaway clients) this degrades to a per-process id,
+    which pollutes nothing that outlives the process.
+    """
+    if path is None:
+        return str(uuid.uuid4())
+    try:
+        existing = path.read_text().strip()
+        if existing:
+            return existing
+    except OSError:
+        pass
+
+    device_id = str(uuid.uuid4())
+    with suppress(OSError):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(device_id)
+    return device_id
+
+
 def login_payload(username: str, password: str) -> dict:
     """The body of POST /api/webui/login, with a fresh single-use client_id."""
     client_id = str(uuid.uuid4())
@@ -268,6 +295,7 @@ class BitCometClient:
         username: str,
         password: str,
         timeout: float = 10.0,
+        device_id_file: Path | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.username = username
@@ -279,9 +307,11 @@ class BitCometClient:
         # of the running build, so re-reading it before every add would spend a
         # round trip to learn a number that cannot have changed.
         self._torrent_max_size: int | None = None
-        # Stable for the life of the client: BitComet keeps a list of paired
-        # devices, and a new id per login would fill it with duplicates of us.
-        self._device_id = str(uuid.uuid4())
+        # Persisted, not per-process: every login registers a bound device in
+        # BitComet's settings, so a fresh id per start would add one entry per
+        # restart -- and under `--reload` that is one per code edit. Measured at
+        # 37 after a single afternoon before this was persisted.
+        self._device_id = read_or_create_device_id(device_id_file)
 
         self._session = requests.Session()
         # BitComet is always on loopback. A configured HTTP proxy (env vars or
@@ -294,7 +324,10 @@ class BitCometClient:
 
     @classmethod
     def from_config(
-        cls, path: Path = CONFIG_PATH, timeout: float = 10.0
+        cls,
+        path: Path = CONFIG_PATH,
+        timeout: float = 10.0,
+        device_id_file: Path | None = None,
     ) -> BitCometClient:
         creds = read_credentials(path)
         return cls(
@@ -302,6 +335,7 @@ class BitCometClient:
             username=creds.username,
             password=creds.password,
             timeout=timeout,
+            device_id_file=device_id_file,
         )
 
     def close(self) -> None:

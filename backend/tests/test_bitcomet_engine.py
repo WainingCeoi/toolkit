@@ -577,3 +577,35 @@ def test_deadline_restores_the_timeout_even_when_the_block_fails(client):
     with pytest.raises(BitCometError), client.deadline(0.25):
         raise BitCometError("boom")
     assert client.timeout == 10.0
+
+
+# =======================================================
+# DEVICE IDENTITY
+# =======================================================
+def test_the_device_id_survives_a_restart(tmp_path):
+    from toolkit_engine.bitcomet import read_or_create_device_id
+
+    path = tmp_path / "bitcomet-device-id"
+    first = read_or_create_device_id(path)
+
+    # Every login registers a bound device in BitComet's settings, so a new id
+    # per boot would leave the user scrolling past one entry per restart.
+    assert read_or_create_device_id(path) == first
+    assert path.read_text().strip() == first
+
+
+def test_a_client_without_a_device_id_file_still_works(tmp_path):
+    from toolkit_engine.bitcomet import read_or_create_device_id
+
+    # Tests and throwaway clients pass no path; they get a per-process id, which
+    # pollutes nothing that outlives the process.
+    assert read_or_create_device_id(None) != read_or_create_device_id(None)
+
+
+def test_an_unwritable_device_id_path_does_not_break_the_client(tmp_path):
+    from toolkit_engine.bitcomet import read_or_create_device_id
+
+    # A read-only data dir should cost us the persistence, not the download.
+    blocked = tmp_path / "nope"
+    blocked.write_text("")
+    assert read_or_create_device_id(blocked / "sub" / "id")
