@@ -189,14 +189,13 @@ def test_all_api_routers_are_wired(app_state):
         "/api/subs/history",
         "/api/deps/scan",
         "/api/deps/apply",
+        # The torrent tool dispatches to BitComet and hands management over to
+        # it, so there is no queue, event stream or pause/resume route here.
         "/api/torrent",
         "/api/torrent/status",
         "/api/torrent/resolve",
         "/api/torrent/resolve/{infohash}",
-        "/api/torrent/events",
         "/api/torrent/{infohash}",
-        "/api/torrent/{infohash}/pause",
-        "/api/torrent/{infohash}/resume",
         "/sub/{sub_id}",
     }
     assert expected <= paths, f"unwired routes: {expected - paths}"

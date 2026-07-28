@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import time
 import uuid
 
 import pytest
@@ -569,7 +570,21 @@ def test_the_size_cap_is_asked_for_once_and_remembered(fake, client, save_folder
 def test_deadline_applies_only_inside_the_block(client):
     with client.deadline(0.25):
         assert client.timeout == 0.25
-    # Startup stays impatient without making every later call twitchy.
+    # probe() stays impatient without making every later call twitchy.
+    assert client.timeout == 10.0
+
+
+def test_probe_gives_up_quickly_on_a_wedged_bitcomet(client):
+    # A wedged BitComet accepts the connection and then never replies, so it is
+    # indistinguishable from a healthy one except by waiting. The page blocks on
+    # /status before it renders, so this must not sit there for the full
+    # steady-state timeout.
+    client.base_url = "http://10.255.255.1:19377"  # black-holes, never refuses
+    started = time.monotonic()
+    assert client.probe() is None
+    elapsed = time.monotonic() - started
+    assert elapsed < 5.0, f"probe took {elapsed:.1f}s; PROBE_TIMEOUT is not applied"
+    # ...and the impatience is confined to probe().
     assert client.timeout == 10.0
 
 

@@ -29,7 +29,7 @@ toolkit/
 | 🧲  | **Magnet Scraper**  | Scrape unwatched video magnet links automatically, in bulk, or de-duplicate a list. |
 | 🖼️  | **Image to PDF**    | Combine selected images into a single PDF.                                           |
 | 🎬  | **Remux Processor** | Parallel, lossless remuxing (stream-copy) of videos with configurable tracks.       |
-| 🌊  | **Torrent Downloader** | Add a magnet or `.torrent`, keep only the files worth keeping, and manage the queue across restarts. |
+| 🌊  | **Torrent Downloader** | Add a magnet or `.torrent`, keep only the files worth keeping, and send it to BitComet to download. |
 | 📦  | **File Gatherer**   | Recursively gather files by type from a folder and move them into one target.       |
 | 🛰️  | **Optimized-IP Subscription** | Rewrite nodes with optimized Cloudflare IPs and serve LAN subscriptions (Shadowrocket / Clash / Surge). |
 | 🧹  | **Cache Purge**     | Recursively find and delete cache / junk files from a folder.                       |
@@ -166,15 +166,19 @@ Tick any row to override the rule.
 The minimum size applies to video and audio only. A global floor would discard
 every subtitle the moment you ticked that box, since they are ~40 KB.
 
-Downloads survive restarts: the queue lives in SQLite, resumes where it stopped,
-and never re-downloads a file you deselected. The dashboard shows progress, speed
-and ETA per torrent, with pause / resume / remove.
+This is a **dispatcher, not a download manager**. Once you hit *Send*, the task
+belongs to BitComet: pause it, watch its progress and remove it in BitComet's own
+window, which is the only thing that actually knows what the download is doing.
+Nothing is stored on this side, so there is no second copy of BitComet's task list
+here to drift out of date with it.
 
-BitComet does the actual downloading, and it is yours: this tool never starts,
-stops or quits it. Closing the dashboard — or the whole backend — leaves your
-downloads running, and a torrent you pause in BitComet's own window stays paused
-here. Pick the destination folder *before* you resolve: BitComet fixes a
-torrent's save folder as the task is created and cannot move it afterwards.
+BitComet is yours — this tool never starts, stops or quits it. *Discard* on a
+review card is the one exception, and it cancels a staging you never sent: a
+magnet has to run while it fetches its metadata, so abandoning one without that
+would leave it downloading with every file enabled.
+
+Pick the destination folder *before* you resolve: BitComet fixes a torrent's save
+folder as the task is created and cannot move it afterwards.
 
 ### 📦 File Gatherer
 

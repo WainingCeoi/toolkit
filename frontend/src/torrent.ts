@@ -54,10 +54,6 @@ export function formatBytes(n: number): string {
   return `${value.toFixed(value >= 100 ? 0 : 1)} ${units[unit]}`
 }
 
-export function formatSpeed(bytesPerSecond: number): string {
-  return bytesPerSecond > 0 ? `${formatBytes(bytesPerSecond)}/s` : '—'
-}
-
 // One magnet per line: trimmed, blanks dropped, de-duplicated within the paste.
 // Kept pure so the "paste ten magnets" parsing is unit-tested, not eyeballed.
 export function parseMagnetLines(raw: string): string[] {

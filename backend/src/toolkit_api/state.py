@@ -43,22 +43,24 @@ def build_torrent_manager():
     asking at startup -- the client logs in lazily, and /status is what reports
     whether BitComet is answering right now.
 
+    There is no database. The tool dispatches tasks to BitComet and BitComet
+    keeps them, so the only thing this app could store is a stale second
+    opinion about state it does not own.
+
     Returns None only when BitComet's config is unreadable (not installed, or
     remote access never configured), so the tool reports that through /status
     rather than failing the whole app.
     """
     from toolkit_api.torrents import DEFAULT_SAVE_DIR, TorrentManager
     from toolkit_engine.bitcomet import BitCometClient, BitCometError
-    from toolkit_engine.torrentdb import TorrentStore
 
     # Same folder as the subscription DB, not a subfolder of it: one data
-    # directory for the whole app. Derived from DB_PATH so SUB_DB_PATH moves
-    # both databases together. Separate FILE though -- subgen's Store owns a
-    # subscriptions schema, and the two tools share nothing.
+    # directory for the whole app, derived from DB_PATH so SUB_DB_PATH moves
+    # everything together.
     data_dir = Path(config.DB_PATH).parent
 
     try:
-        # The device id lives here too, so BitComet sees the same paired device
+        # The device id lives here so BitComet sees the same paired device
         # across restarts instead of collecting one entry per boot.
         client = BitCometClient.from_config(
             device_id_file=data_dir / "bitcomet-device-id"
@@ -66,8 +68,7 @@ def build_torrent_manager():
     except BitCometError:
         return None
 
-    store = TorrentStore(data_dir / "torrents.db")
-    return TorrentManager(store, client, download_dir=DEFAULT_SAVE_DIR)
+    return TorrentManager(client, download_dir=DEFAULT_SAVE_DIR)
 
 
 def build_state() -> AppState:

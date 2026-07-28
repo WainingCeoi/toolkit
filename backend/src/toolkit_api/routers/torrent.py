@@ -1,14 +1,18 @@
-"""Torrent Downloader: resolve, commit, dashboard, and per-torrent controls."""
+"""Torrent Downloader: resolve, choose files, hand the task to BitComet.
+
+There is no queue endpoint, no event stream and no pause/resume/remove here on
+purpose. Once a task is sent it belongs to BitComet, which already has a UI for
+managing it and is the only thing that actually knows what the download is
+doing. The single non-resolve write left is discard(), which cancels a staging
+this app started and the user never sent -- see TorrentManager.discard.
+"""
 
 from __future__ import annotations
 
-import asyncio
-import json
 from typing import Annotated
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
-from sse_starlette.sse import EventSourceResponse
 
 from toolkit_engine.bitcomet import BitCometError
 
@@ -25,7 +29,7 @@ REMOTE_ACCESS_HINT = (
 )
 
 
-class CommitIn(BaseModel):
+class SendIn(BaseModel):
     infohash: str
     selected: list[int]
 
@@ -34,6 +38,9 @@ class StatusOut(BaseModel):
     running: bool
     server: str | None = None
     detail: str | None = None
+    # Where BitComet's own UI lives, so the page can hand the user straight
+    # over to it after sending instead of describing how to find it.
+    url: str | None = None
 
 
 @router.get("/status", response_model=StatusOut)
@@ -45,6 +52,7 @@ def status(state: StateDep) -> dict:
         return {
             "running": False,
             "server": None,
+            "url": None,
             "detail": (
                 "BitComet's settings could not be read. Install BitComet from "
                 f"https://www.bitcomet.com/, then restart the backend. "
@@ -61,7 +69,12 @@ def status(state: StateDep) -> dict:
             f"BitComet is not answering at {torrents.client.base_url}. "
             f"Start it, then check: {REMOTE_ACCESS_HINT}"
         )
-    return {"running": server is not None, "server": server, "detail": detail}
+    return {
+        "running": server is not None,
+        "server": server,
+        "detail": detail,
+        "url": torrents.client.base_url,
+    }
 
 
 @router.post("/resolve")
@@ -76,15 +89,13 @@ async def resolve(
     One endpoint for both because the two differ only in how long the file
     list takes to appear: a .torrent carries it, a magnet has to fetch it.
 
-    The destination is chosen here rather than at commit because BitComet fixes
+    The destination is chosen here rather than at send because BitComet fixes
     a task's save folder when the task is created.
     """
     if file is not None:
         data = await file.read()
         try:
-            return torrents.resolve_torrent(
-                data, file.filename or "upload.torrent", save_dir
-            )
+            return torrents.resolve_torrent(data, save_dir)
         except ValueError as exc:
             raise HTTPException(
                 status_code=400, detail=f"Could not read that .torrent: {exc}"
@@ -118,74 +129,25 @@ def poll_resolve(infohash: str, torrents: TorrentsDep) -> dict:
 
 
 @router.post("")
-def commit(payload: CommitIn, torrents: TorrentsDep) -> dict:
+def send(payload: SendIn, torrents: TorrentsDep) -> dict:
+    """The handover. After this the task is BitComet's and this app forgets it."""
     try:
-        torrents.commit(payload.infohash, payload.selected)
+        return torrents.send(payload.infohash, payload.selected)
     except KeyError as exc:
-        raise HTTPException(status_code=404, detail="Unknown torrent.") from exc
+        raise HTTPException(
+            status_code=404, detail="BitComet no longer has this torrent."
+        ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except BitCometError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    return {"infohash": payload.infohash, "state": "active"}
-
-
-@router.get("")
-def listing(torrents: TorrentsDep) -> list[dict]:
-    return torrents.snapshot()
-
-
-async def torrent_frames(torrents, interval: float = 1.0):
-    """Yield an SSE frame whenever the dashboard changes, until cancelled.
-
-    Module-level rather than a closure so it can be driven directly: the
-    stream never ends on its own (a dashboard has no terminal state), so an
-    HTTP-level test of it would hang rather than finish.
-    """
-    last = None
-    while True:
-        # snapshot() polls BitComet over blocking HTTP. Called inline it would
-        # stall the event loop for every other request in the process, this
-        # stream included.
-        payload = json.dumps(await asyncio.to_thread(torrents.snapshot))
-        if payload != last:
-            yield {"event": "torrents", "data": payload}
-            last = payload
-        await asyncio.sleep(interval)
-
-
-@router.get("/events")
-async def events(torrents: TorrentsDep) -> EventSourceResponse:
-    return EventSourceResponse(torrent_frames(torrents))
-
-
-# Literal-segment routes, declared before the "/{infohash}/..." ones so a
-# torrent can never be named "pause-all".
-@router.post("/pause-all")
-def pause_all(torrents: TorrentsDep) -> dict:
-    torrents.pause_all()
-    return {"paused": True}
-
-
-@router.post("/resume-all")
-def resume_all(torrents: TorrentsDep) -> dict:
-    torrents.resume_all()
-    return {"resumed": True}
-
-
-@router.post("/{infohash}/pause")
-def pause(infohash: str, torrents: TorrentsDep) -> dict:
-    torrents.pause(infohash)
-    return {"infohash": infohash, "state": "paused"}
-
-
-@router.post("/{infohash}/resume")
-def resume(infohash: str, torrents: TorrentsDep) -> dict:
-    torrents.resume(infohash)
-    return {"infohash": infohash, "state": "active"}
 
 
 @router.delete("/{infohash}")
-def remove(infohash: str, torrents: TorrentsDep, delete_files: bool = False) -> dict:
-    torrents.remove(infohash, delete_files=delete_files)
-    return {"infohash": infohash, "state": "removed"}
+def discard(infohash: str, torrents: TorrentsDep) -> dict:
+    """Cancel a staged torrent the user decided against, before it is sent."""
+    try:
+        torrents.discard(infohash)
+    except BitCometError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {"infohash": infohash, "state": "discarded"}

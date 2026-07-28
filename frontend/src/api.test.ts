@@ -27,16 +27,16 @@ describe('api helpers', () => {
     vi.unstubAllGlobals()
   })
 
-  it('sends the selection as JSON on commit', async () => {
+  it('sends the selection as JSON on send', async () => {
     const fetchMock = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify({ infohash: 'abc', state: 'active' }), {
+      new Response(JSON.stringify({ infohash: 'abc', task_id: '1001', name: 'X' }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
       }),
     )
     vi.stubGlobal('fetch', fetchMock)
 
-    await api.torrentCommit({ infohash: 'abc', selected: [1, 3] })
+    await api.torrentSend({ infohash: 'abc', selected: [1, 3] })
 
     const [url, opts] = fetchMock.mock.calls[0]
     expect(url).toBe('/api/torrent')

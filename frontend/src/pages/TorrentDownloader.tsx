@@ -1,5 +1,7 @@
-// Torrent Downloader — add magnets or .torrent files, keep only the files
-// worth keeping, and manage the queue across restarts.
+// Torrent Downloader — add magnets or .torrent files, keep only the files worth
+// keeping, and hand the task to BitComet. There is no queue on this page: once
+// a torrent is sent it is BitComet's, and BitComet's own window is where it is
+// paused, resumed, watched and removed.
 // Mirrors backend/src/toolkit_api/routers/torrent.py.
 
 import { useEffect, useState } from 'react'
@@ -13,13 +15,12 @@ import {
   MB,
   addTorrent,
   formatBytes,
-  formatSpeed,
   parseMagnetLines,
   ruleKey,
   selectionFor,
   updateTorrent,
 } from '../torrent'
-import type { TorrentFileRow, TorrentResolve, TorrentRow, TorrentStatus } from '../types/api'
+import type { TorrentFileRow, TorrentResolve, TorrentSent, TorrentStatus } from '../types/api'
 
 const NO_OVERRIDES: ReadonlyMap<number, boolean> = new Map()
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
@@ -95,28 +96,23 @@ export default function TorrentDownloader() {
     Map<string, { key: string; map: Map<number, boolean> }>
   >(new Map())
 
-  // --- queue (dashboard) ---
-  const [rows, setRows] = useState<TorrentRow[]>([])
+  // --- handed over (step 4) ---
+  // A receipt of what this page sent, for this visit only. Deliberately not a
+  // queue: it carries no progress and is never polled, because the moment a
+  // task is sent BitComet is the only thing that knows what it is doing.
+  const [sent, setSent] = useState<TorrentSent[]>([])
 
   useEffect(() => {
     let cancelled = false
     api
       .torrentStatus()
       .then((s) => !cancelled && setStatus(s))
-      .catch(() => !cancelled && setStatus({ running: false, server: null, detail: null }))
+      .catch(
+        () => !cancelled && setStatus({ running: false, server: null, detail: null, url: null }),
+      )
     return () => {
       cancelled = true
     }
-  }, [])
-
-  // Live queue for the page's lifetime. Closing it costs nothing now: BitComet
-  // keeps downloading whether or not this tab is open.
-  useEffect(() => {
-    const source = new EventSource('/api/torrent/events')
-    source.addEventListener('torrents', (event) => {
-      setRows(JSON.parse((event as MessageEvent).data) as TorrentRow[])
-    })
-    return () => source.close()
   }, [])
 
   function pushError(id: string, msg: string) {
@@ -199,46 +195,46 @@ export default function TorrentDownloader() {
     setStaging(false)
   }
 
-  async function addOne(t: TorrentResolve) {
+  // Drop a resolved torrent from the review rail and forget its ticks.
+  function closeCard(infohash: string) {
+    setResolved((prev) => prev.filter((x) => x.infohash !== infohash))
+    setOverrides((prev) => {
+      const next = new Map(prev)
+      next.delete(infohash)
+      return next
+    })
+  }
+
+  async function sendOne(t: TorrentResolve) {
     const selected = selectedFor(t)
     if (selected.size === 0) return
     try {
-      await api.torrentCommit({
+      const receipt = await api.torrentSend({
         infohash: t.infohash,
         selected: [...selected].sort((a, b) => a - b),
       })
-      setResolved((prev) => prev.filter((x) => x.infohash !== t.infohash))
-      setOverrides((prev) => {
-        const next = new Map(prev)
-        next.delete(t.infohash)
-        return next
-      })
+      setSent((prev) => [...prev, { ...receipt, name: receipt.name ?? t.name }])
+      closeCard(t.infohash)
     } catch (e) {
-      pushError(t.name ?? t.infohash.slice(0, 12), errMsg(e, 'Could not start that download.'))
+      pushError(t.name ?? t.infohash.slice(0, 12), errMsg(e, 'Could not send that torrent.'))
     }
   }
 
-  async function addAll() {
+  async function sendAll() {
     for (const t of resolved) {
-      if (t.ready && selectedFor(t).size > 0) await addOne(t)
+      if (t.ready && selectedFor(t).size > 0) await sendOne(t)
     }
   }
 
-  // Batch controls. The SSE stream re-renders the queue after each, so there
-  // is no local state to flip -- just fire and surface any failure.
-  async function resumeAll() {
+  // Cancelling a staging, not managing a task. A magnet is added RUNNING so it
+  // can fetch its metadata, so simply closing the card would leave it
+  // downloading in BitComet with every file still enabled.
+  async function discardOne(t: TorrentResolve) {
+    closeCard(t.infohash)
     try {
-      await api.torrentResumeAll()
+      await api.torrentDiscard(t.infohash)
     } catch (e) {
-      pushError('resume-all', errMsg(e, 'Could not resume the downloads.'))
-    }
-  }
-
-  async function stopAll() {
-    try {
-      await api.torrentPauseAll()
-    } catch (e) {
-      pushError('stop-all', errMsg(e, 'Could not stop the downloads.'))
+      pushError(t.name ?? t.infohash.slice(0, 12), errMsg(e, 'Could not discard that torrent.'))
     }
   }
 
@@ -270,8 +266,6 @@ export default function TorrentDownloader() {
   // save folder when the task is created and cannot move it afterwards.
   const noDestination = !saveDir.trim()
   const readyCount = resolved.filter((t) => t.ready && selectedFor(t).size > 0).length
-  const anyActive = rows.some((r) => r.state === 'active' || r.state === 'queued')
-  const anyPaused = rows.some((r) => r.state === 'paused')
 
   return (
     <>
@@ -279,9 +273,9 @@ export default function TorrentDownloader() {
         <h1>🌊 Torrent Downloader</h1>
       </div>
       <p className="page-sub">
-        Paste magnets or pick .torrent files, review what is inside them, and download only the
-        files worth keeping. The downloads run in your own BitComet and keep going after you
-        close this page.
+        Paste magnets or pick .torrent files, review what is inside them, and send only the files
+        worth keeping to BitComet. From there the download is BitComet's — pause it, watch it and
+        remove it in its own window.
       </p>
 
       {bitcometDown && (
@@ -402,9 +396,9 @@ export default function TorrentDownloader() {
               variant="primary"
               size="sm"
               disabled={readyCount === 0}
-              onClick={addAll}
+              onClick={sendAll}
             >
-              Add all to queue
+              Send all to BitComet
             </Button>
           </div>
 
@@ -446,12 +440,18 @@ export default function TorrentDownloader() {
                           variant="primary"
                           size="sm"
                           disabled={selected.size === 0}
-                          onClick={() => void addOne(t)}
+                          onClick={() => void sendOne(t)}
                         >
-                          Add
+                          Send
                         </Button>
                       </>
                     )}
+                    {/* Always available, fetching or not: a magnet is already
+                        running in BitComet while it looks for its metadata, so
+                        this is the only way to call one off. */}
+                    <Button size="sm" variant="ghost" onClick={() => void discardOne(t)}>
+                      Discard
+                    </Button>
                   </div>
                   {t.ready && (
                     <div style={{ marginTop: 8 }}>
@@ -475,67 +475,38 @@ export default function TorrentDownloader() {
         </div>
       )}
 
-      <div className="panel">
-        <div className="row">
-          <div className="step grow">Queue</div>
-          {rows.length > 0 && (
-            <>
-              <Button size="sm" disabled={!anyPaused} onClick={() => void resumeAll()}>
-                Resume all
-              </Button>
-              <Button size="sm" disabled={!anyActive} onClick={() => void stopAll()}>
-                Stop all
-              </Button>
-            </>
-          )}
-        </div>
-
-        {rows.length === 0 ? (
-          <div className="note info">Nothing queued yet.</div>
-        ) : (
-          rows.map((row) => (
-            <div key={row.infohash} style={{ padding: '10px 0' }}>
-              <div className="row">
-                <span className="grow" style={{ overflowWrap: 'anywhere', fontSize: 13.5 }}>
-                  {row.name ?? row.infohash.slice(0, 16)}
-                </span>
-                <span style={{ font: '12px var(--mono)', color: 'var(--faint)' }}>{row.state}</span>
-                {row.state === 'active' ? (
-                  <Button size="sm" onClick={() => void api.torrentPause(row.infohash)}>
-                    Pause
-                  </Button>
-                ) : (
-                  row.state === 'paused' && (
-                    <Button size="sm" onClick={() => void api.torrentResume(row.infohash)}>
-                      Resume
-                    </Button>
-                  )
-                )}
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => {
-                    const alsoFiles = window.confirm(
-                      'Delete the downloaded files too?\n\nOK removes the files, Cancel keeps them.',
-                    )
-                    void api.torrentRemove(row.infohash, alsoFiles)
-                  }}
-                >
-                  Remove
-                </Button>
-              </div>
-              <div className="led-track" style={{ margin: '6px 0 4px' }}>
-                <div className="led-fill" style={{ width: `${Math.min(100, row.progress)}%` }} />
-              </div>
-              <div style={{ font: '12px var(--mono)', color: 'var(--muted)' }}>
-                {formatBytes(row.completed_bytes)} / {formatBytes(row.total_bytes)} ·{' '}
-                {formatSpeed(row.speed)} · ETA {row.eta ?? '—'}
-              </div>
-              {row.last_error && <div className="note error">{row.last_error}</div>}
+      {sent.length > 0 && (
+        <div className="panel">
+          <div className="row" style={{ marginBottom: 4 }}>
+            <div className="step grow" style={{ margin: 0 }}>
+              4 · Sent to BitComet ({sent.length})
             </div>
-          ))
-        )}
-      </div>
+            {status?.url && (
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={() => window.open(status.url!, '_blank', 'noopener')}
+              >
+                Open BitComet
+              </Button>
+            )}
+          </div>
+
+          {/* No progress bars here on purpose. This is a receipt for what left
+              this page, not a queue -- polling BitComet to mirror its own
+              window would only ever be a slower, staler copy of it. */}
+          {sent.map((t) => (
+            <div key={t.infohash} className="row" style={{ padding: '6px 0' }}>
+              <span className="grow" style={{ overflowWrap: 'anywhere', fontSize: 13.5 }}>
+                {t.name ?? t.infohash.slice(0, 16)}
+              </span>
+              <span style={{ font: '12px var(--mono)', color: 'var(--faint)' }}>
+                downloading in BitComet
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
     </>
   )
 }

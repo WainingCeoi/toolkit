@@ -70,11 +70,12 @@ _SUCCESS_CODES = frozenset({"OK", "SKIPPED"})
 # /api/config/new_task/get -- 20 MB is what 2.20 happens to ship, not a rule.
 DEFAULT_TORRENT_MAX_SIZE = 20 * 1024 * 1024
 
-# Deliberately impatient, for the boot-time reconcile only. A BitComet that is
-# wedged rather than absent accepts the connection and then never answers, and
-# at the steady-state timeout that stalls the whole web server's startup behind
-# a torrent list nobody has asked for yet.
-STARTUP_TIMEOUT = 1.5
+# Deliberately impatient, for probe() only. A BitComet that is WEDGED rather
+# than absent accepts the connection and then never answers, so it cannot be
+# told apart from a healthy one by connecting -- only by waiting. The page asks
+# /status the moment it loads, and at the steady-state timeout that wedged case
+# would sit there for ten seconds before admitting anything is wrong.
+PROBE_TIMEOUT = 1.5
 
 # --- login envelope byte layout ------------------------------------------
 HEADER_LEN = 34
@@ -459,13 +460,16 @@ class BitCometClient:
     def probe(self) -> str | None:
         """BitComet's server name if it is reachable and remote access is on.
 
-        Never raises: startup and the dashboard both call this on machines
-        where BitComet may simply not be running. A real authenticated round
-        trip, not a look at the cached token -- the question is whether the API
-        answers now.
+        Never raises: the page calls this on machines where BitComet may simply
+        not be running. A real authenticated round trip, not a look at the
+        cached token -- the question is whether the API answers now.
+
+        Answers within PROBE_TIMEOUT rather than the steady-state one, because
+        this is the call the UI blocks on before it can render anything.
         """
         try:
-            self.new_task_config()
+            with self.deadline(PROBE_TIMEOUT):
+                self.new_task_config()
         except BitCometError:
             return None
         return self._server_name or "BitComet"

@@ -5,7 +5,6 @@ import {
   addTorrent,
   applyFilter,
   formatBytes,
-  formatSpeed,
   MB,
   parseMagnetLines,
   ruleKey,
@@ -56,10 +55,6 @@ describe('applyFilter', () => {
 })
 
 describe('formatters', () => {
-  it('renders a dash when the download is stalled', () => {
-    expect(formatSpeed(0)).toBe('—')
-  })
-
   it('scales bytes through the units', () => {
     expect(formatBytes(512)).toBe('512 B')
     expect(formatBytes(2048)).toBe('2.0 KB')

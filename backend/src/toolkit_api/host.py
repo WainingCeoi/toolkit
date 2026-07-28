@@ -1,17 +1,22 @@
-"""LAN host launcher — serve the built UI + API from ONE process on the local
-network.
+"""Server launcher — serve the built UI + API from ONE process.
 
-``make host`` (or ``uv run --frozen python -m toolkit_api.host``) binds
-``0.0.0.0`` so every device on the same Wi-Fi can reach the app at
-``http://<this-machine>.local:<port>``. It reads this host's own mDNS/Bonjour
-name from the OS (never hardcoded), auto-advances past a busy port, and prints
-a loud security notice because 0.0.0.0 exposes the app to everyone on the
-network — and this app has no authentication while its tools move and delete
-files on this Mac.
+Every ``make`` target that starts the backend comes through here, so that
+auto-advancing past a busy port is one behaviour in one place rather than
+something ``make host`` happens to have and the others do not.
 
-The plain ``make dev`` / ``make start`` commands stay on loopback — a
-hot-reload dev server is never exposed on the LAN. Set ``HOST=127.0.0.1`` to
-keep this launcher local-only; ``PORT`` sets the base port.
+``make host`` binds ``0.0.0.0`` so every device on the same Wi-Fi can reach the
+app at ``http://<this-machine>.local:<port>``. It reads this host's own
+mDNS/Bonjour name from the OS (never hardcoded) and prints a loud security
+notice, because 0.0.0.0 exposes the app to everyone on the network — and this
+app has no authentication while its tools move and delete files on this Mac.
+
+``make start`` runs the same launcher with ``HOST=127.0.0.1``, so it stays on
+loopback and prints no LAN warning. ``make dev`` cannot run the launcher (it
+needs Vite alongside uvicorn --reload), so it asks for the port up front with
+``--free-port`` instead; see _print_free_port.
+
+``PORT`` sets the base port; the launcher serves on the first free port at or
+above it.
 
 Single worker on purpose: the job registry, the live browser session, and the
 LibreOffice profile lock are in-process state — multiple workers would break
@@ -179,14 +184,31 @@ def _print_banner(
     print("\n".join(lines), flush=True)
 
 
-def main() -> None:
-    host = os.environ.get("HOST", "0.0.0.0").strip() or "0.0.0.0"
+def _base_port() -> int:
     try:
-        base = int(os.environ.get("PORT", str(BASE_PORT)))
+        return int(os.environ.get("PORT", str(BASE_PORT)))
     except ValueError:
         raise SystemExit(
             f"PORT must be an integer, got {os.environ.get('PORT')!r}"
         ) from None
+
+
+def _print_free_port() -> None:
+    """Print the first bindable port and exit, for ``make dev``.
+
+    dev cannot go through main(): it runs uvicorn --reload and Vite side by
+    side, and Vite fixes its ``/api`` proxy target when it boots. So the port
+    has to be chosen BEFORE either starts and handed to both, rather than
+    discovered inside the server process where Vite would never learn it.
+
+    Loopback, because that is the only thing dev ever binds.
+    """
+    print(free_port("127.0.0.1", _base_port()))
+
+
+def main() -> None:
+    host = os.environ.get("HOST", "0.0.0.0").strip() or "0.0.0.0"
+    base = _base_port()
 
     port = free_port(host, base)
     local_only = host in _LOOPBACK
@@ -203,4 +225,7 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    if "--free-port" in sys.argv:
+        _print_free_port()
+    else:
+        main()

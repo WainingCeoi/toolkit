@@ -22,9 +22,9 @@ import type {
   Subscription,
   SubsGeneratePayload,
   SubsHistoryItem,
-  TorrentCommitPayload,
   TorrentResolve,
-  TorrentRow,
+  TorrentSendPayload,
+  TorrentSent,
   TorrentStatus,
   WebPdfCapture,
   WebPdfStatus,
@@ -265,10 +265,11 @@ export const api = {
   subsDownload: (id: string, target: string) =>
     fetchBlob(`/subs/${id}/render?target=${target}`, `subscription-${target}`),
 
-  // torrent downloader
+  // torrent downloader — a dispatcher, not a queue. There is no list/pause/
+  // resume endpoint to call: once torrentSend resolves, the task is BitComet's.
   // /resolve is multipart on BOTH paths: one endpoint accepts a pasted magnet
   // or an uploaded .torrent, so a JSON body would 422.
-  // save_dir rides along with /resolve, not with the commit: BitComet fixes a
+  // save_dir rides along with /resolve, not with the send: BitComet fixes a
   // task's save folder when the task is created and cannot move it afterwards.
   torrentStatus: () => request<TorrentStatus>('/torrent/status'),
   torrentResolveMagnet: (magnet: string, saveDir = '') => {
@@ -285,19 +286,12 @@ export const api = {
   },
   torrentPollResolve: (infohash: string) =>
     request<TorrentResolve>(`/torrent/resolve/${infohash}`),
-  torrentCommit: (payload: TorrentCommitPayload) =>
-    request<{ infohash: string; state: string }>('/torrent', { method: 'POST', body: payload }),
-  torrentList: () => request<TorrentRow[]>('/torrent'),
-  torrentPause: (infohash: string) =>
-    request<{ state: string }>(`/torrent/${infohash}/pause`, { method: 'POST' }),
-  torrentResume: (infohash: string) =>
-    request<{ state: string }>(`/torrent/${infohash}/resume`, { method: 'POST' }),
-  torrentRemove: (infohash: string, deleteFiles = false) =>
-    request<{ state: string }>(`/torrent/${infohash}?delete_files=${deleteFiles}`, {
+  torrentSend: (payload: TorrentSendPayload) =>
+    request<TorrentSent>('/torrent', { method: 'POST', body: payload }),
+  // Cancels a staging that was never sent. A magnet runs while it fetches
+  // metadata, so abandoning one without this leaves it downloading in BitComet.
+  torrentDiscard: (infohash: string) =>
+    request<{ infohash: string; state: string }>(`/torrent/${infohash}`, {
       method: 'DELETE',
     }),
-  torrentPauseAll: () =>
-    request<{ paused: boolean }>('/torrent/pause-all', { method: 'POST' }),
-  torrentResumeAll: () =>
-    request<{ resumed: boolean }>('/torrent/resume-all', { method: 'POST' }),
 }

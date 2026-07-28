@@ -2,7 +2,9 @@
 # Run `make help` to see the targets. Recipe lines MUST be TAB-indented.
 SHELL := /bin/bash
 
-# Base API port. Override when :8000 is busy, e.g.:  make dev PORT=8010
+# BASE API port, not necessarily the one served: dev, start, backend and host all
+# advance to the first free port at or above it, and announce when they do. Set
+# it to move the whole search, e.g.:  make dev PORT=8010
 PORT ?= 8000
 
 # Optional backend extras. `docmd` pulls MinerU (Doc→Markdown), whose torch
@@ -18,8 +20,8 @@ EXTRA_FLAGS := $(if $(strip $(EXTRAS)),--extra $(strip $(EXTRAS)),)
 
 help:
 	@echo "make install   install backend (uv) + frontend (npm) dependencies"
-	@echo "make dev       run backend (:$(PORT)) + frontend (:5173) together, hot-reload"
-	@echo "make start     build the frontend, then serve API + UI from ONE server (127.0.0.1:$(PORT))"
+	@echo "make dev       run backend (:$(PORT)+) + frontend (:5173) together, hot-reload"
+	@echo "make start     build the frontend, then serve API + UI from ONE server (127.0.0.1:$(PORT)+)"
 	@echo "make host      build + serve API + UI to the whole LAN (http://<this-machine>.local:$(PORT))"
 	@echo "make build     build the frontend for production (frontend/dist)"
 	@echo "make test      backend tests + lint + a frontend build check"
@@ -34,20 +36,30 @@ install:
 	cd backend && uv sync $(EXTRA_FLAGS)
 	cd frontend && npm install
 
-# Development: both servers, one command, one Ctrl-C. Vite proxies /api -> :$(PORT).
+# Development: both servers, one command, one Ctrl-C. Vite proxies /api -> the backend.
 # Loopback only — the hot-reload dev server is never exposed on the LAN.
+#
+# The port is resolved ONCE, up front, and handed to both halves. dev cannot use
+# the launcher the way start/host do: Vite fixes its /api proxy target when it
+# boots, so a port chosen inside the server process is a port Vite never learns,
+# and every /api call would 502 against the busy original.
 dev:
-	@echo "backend  -> http://127.0.0.1:$(PORT)"
-	@echo "frontend -> http://localhost:5173"
-	@trap 'kill 0' EXIT INT TERM; \
-	( cd backend && uv run --frozen uvicorn toolkit_api.main:app --reload --port $(PORT) ) & \
-	( cd frontend && API_PORT=$(PORT) npm run dev ) & \
+	@cd backend; \
+	FREE=$$(PORT=$(PORT) uv run --frozen python -m toolkit_api.host --free-port) || exit $$?; \
+	cd ..; \
+	if [ "$$FREE" != "$(PORT)" ]; then echo "⚠  port $(PORT) was busy → backend on $$FREE"; fi; \
+	echo "backend  -> http://127.0.0.1:$$FREE"; \
+	echo "frontend -> http://localhost:5173"; \
+	trap 'kill 0' EXIT INT TERM; \
+	( cd backend && uv run --frozen uvicorn toolkit_api.main:app --reload --port $$FREE ) & \
+	( cd frontend && API_PORT=$$FREE npm run dev ) & \
 	wait
 
-# Production-style: one process serves the built UI and the API on :$(PORT) (loopback).
+# Production-style: one process serves the built UI and the API (loopback).
+# Same launcher as `host`, so a busy port auto-advances here too; HOST pins it to
+# loopback, which also suppresses the LAN security banner.
 start: build
-	@echo "serving API + UI -> http://127.0.0.1:$(PORT)"
-	cd backend && uv run --frozen uvicorn toolkit_api.main:app --port $(PORT)
+	cd backend && HOST=127.0.0.1 PORT=$(PORT) uv run --frozen python -m toolkit_api.host
 
 # LAN host: build the UI, then serve API + UI from ONE process bound to 0.0.0.0 so every
 # device on the same Wi-Fi can reach it at http://<this-machine>.local:$(PORT). The launcher
@@ -60,7 +72,11 @@ build:
 	cd frontend && npm run build
 
 backend:
-	cd backend && uv run --frozen uvicorn toolkit_api.main:app --reload --port $(PORT)
+	@cd backend; \
+	FREE=$$(PORT=$(PORT) uv run --frozen python -m toolkit_api.host --free-port) || exit $$?; \
+	if [ "$$FREE" != "$(PORT)" ]; then echo "⚠  port $(PORT) was busy → backend on $$FREE"; fi; \
+	echo "backend -> http://127.0.0.1:$$FREE"; \
+	uv run --frozen uvicorn toolkit_api.main:app --reload --port $$FREE
 
 frontend:
 	cd frontend && API_PORT=$(PORT) npm run dev

@@ -78,10 +78,9 @@ def create_app(state: AppState | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.state = state or build_state()
-        if app.state.state.torrents is not None:
-            # BitComet's task list can have moved on since our DB last saw it;
-            # re-link the two before serving a single request.
-            app.state.state.torrents.reconcile()
+        # Nothing to reconcile at boot: the torrent tool keeps no record of
+        # what it dispatched, so there is no second copy of BitComet's task
+        # list here that could have drifted from it while the app was down.
         yield
         # Session-scoped resources die with the process. Cancel in-flight jobs
         # first so their children (ffmpeg, …) are cleaned up before teardown.

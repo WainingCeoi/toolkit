@@ -352,30 +352,22 @@ export interface TorrentResolve {
   state: string
 }
 
-export interface TorrentRow {
-  infohash: string
-  name: string | null
-  state: string
-  pause_reason: string | null
-  save_dir: string
-  selected: string | null
-  total_bytes: number
-  completed_bytes: number
-  progress: number
-  speed: number
-  eta: string | null // BitComet formats the remaining time itself
-  added_at: string
-  completed_at: string | null
-  last_error: string | null
-}
-
 export interface TorrentStatus {
   running: boolean
   server: string | null
   detail: string | null
+  url: string | null // BitComet's own Web UI, for handing the user over to it
 }
 
-export interface TorrentCommitPayload {
+export interface TorrentSendPayload {
   infohash: string
   selected: number[]
+}
+
+// The handover receipt. There is no progress here and no row to poll: the task
+// is BitComet's from this point on.
+export interface TorrentSent {
+  infohash: string
+  task_id: string
+  name: string | null
 }
