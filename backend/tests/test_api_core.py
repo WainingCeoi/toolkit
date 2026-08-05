@@ -21,14 +21,14 @@ def wait_for_job(client, job_id, timeout=5.0):
     raise AssertionError(f"job {job_id} did not finish within {timeout}s")
 
 
-def test_tools_manifest_has_eleven_tools_in_three_categories(client):
+def test_tools_manifest_has_twelve_tools_in_three_categories(client):
     categories = client.get("/api/tools").json()
     assert [c["name"] for c in categories] == [
         "🎬 Media",
         "🗂️ Files & Tools",
         "🌐 Network",
     ]
-    assert sum(len(c["tools"]) for c in categories) == 11
+    assert sum(len(c["tools"]) for c in categories) == 12
 
 
 def test_disabled_tools_are_hidden_from_the_manifest(client, monkeypatch):
@@ -38,7 +38,7 @@ def test_disabled_tools_are_hidden_from_the_manifest(client, monkeypatch):
     assert "doc-to-markdown" not in slugs
     assert "remux" not in slugs
     assert "cache-purge" in slugs  # everything else still listed
-    assert sum(len(c["tools"]) for c in categories) == 9
+    assert sum(len(c["tools"]) for c in categories) == 10
 
 
 def test_disabling_a_whole_category_drops_the_category(client, monkeypatch):
@@ -51,7 +51,7 @@ def test_disabling_a_whole_category_drops_the_category(client, monkeypatch):
 def test_unset_disabled_tools_lists_everything(client, monkeypatch):
     monkeypatch.delenv("TOOLKIT_DISABLED_TOOLS", raising=False)
     categories = client.get("/api/tools").json()
-    assert sum(len(c["tools"]) for c in categories) == 11
+    assert sum(len(c["tools"]) for c in categories) == 12
 
 
 def test_health_reports_dependency_booleans(client):
@@ -196,6 +196,11 @@ def test_all_api_routers_are_wired(app_state):
         "/api/torrent/resolve",
         "/api/torrent/resolve/{infohash}",
         "/api/torrent/{infohash}",
+        "/api/watermark/health",
+        "/api/watermark/batch",
+        "/api/watermark/run",
+        "/api/watermark/{batch_id}/{image_id}/image",
+        "/api/watermark/{batch_id}/{image_id}/mask",
         "/sub/{sub_id}",
     }
     assert expected <= paths, f"unwired routes: {expected - paths}"

@@ -16,6 +16,7 @@ const pages = {
   'web-images-to-pdf': lazy(() => import('./pages/WebImagesToPdf')),
   'file-gatherer': lazy(() => import('./pages/FileGatherer')),
   'image-to-pdf': lazy(() => import('./pages/ImageToPdf')),
+  'watermark-remover': lazy(() => import('./pages/WatermarkRemover')),
   'doc-to-pdf': lazy(() => import('./pages/DocToPdf')),
   'doc-to-markdown': lazy(() => import('./pages/DocToMarkdown')),
   'cache-purge': lazy(() => import('./pages/CachePurge')),

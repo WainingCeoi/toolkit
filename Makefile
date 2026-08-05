@@ -7,14 +7,16 @@ SHELL := /bin/bash
 # it to move the whole search, e.g.:  make dev PORT=8010
 PORT ?= 8000
 
-# Optional backend extras. `docmd` pulls MinerU (Doc→Markdown), whose torch
-# dependency ships NO macOS x86_64 wheel — so it is skipped automatically on
-# Intel Macs, where installing it can only fail. Force either way:
-#   make install EXTRAS=docmd     (force on)
-#   make install EXTRAS=          (force off)
+# Optional backend extras. `docmd` pulls MinerU (Doc→Markdown) and `watermark`
+# pulls torch for LaMa inpainting (Watermark Remover); torch ships NO macOS
+# x86_64 wheel — so both are skipped automatically on Intel Macs, where
+# installing them can only fail. Force any subset:
+#   make install EXTRAS=docmd               (just MinerU)
+#   make install EXTRAS="docmd watermark"   (force both on)
+#   make install EXTRAS=                    (force off)
 EXTRAS ?= $(shell if [ "$$(uname -s)" = "Darwin" ] && [ "$$(uname -m)" = "x86_64" ]; \
-                  then echo ""; else echo "docmd"; fi)
-EXTRA_FLAGS := $(if $(strip $(EXTRAS)),--extra $(strip $(EXTRAS)),)
+                  then echo ""; else echo "docmd watermark"; fi)
+EXTRA_FLAGS := $(foreach extra,$(strip $(EXTRAS)),--extra $(extra))
 
 .PHONY: help install dev backend frontend build start host test lint clean
 
@@ -29,9 +31,10 @@ help:
 
 install:
 	@if [ -z "$(strip $(EXTRAS))" ]; then \
-	  echo "note: skipping the MinerU extra on this machine (no macOS x86_64 wheel)."; \
-	  echo "      Doc to Markdown will be unavailable; every other tool works."; \
-	  echo "      Hide it from the UI with TOOLKIT_DISABLED_TOOLS=doc-to-markdown in backend/.env"; \
+	  echo "note: skipping the MinerU and torch extras on this machine (no macOS x86_64 wheels)."; \
+	  echo "      Doc to Markdown will be unavailable and Watermark Remover falls back to its"; \
+	  echo "      cv2 inpainter; every other tool works. Hide Doc to Markdown from the UI with"; \
+	  echo "      TOOLKIT_DISABLED_TOOLS=doc-to-markdown in backend/.env"; \
 	fi
 	cd backend && uv sync $(EXTRA_FLAGS)
 	cd frontend && npm install

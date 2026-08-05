@@ -19,6 +19,7 @@ from toolkit_api.artifacts import ArtifactStore
 from toolkit_api.jobs import JobRegistry
 from toolkit_api.main import create_app
 from toolkit_api.state import AppState
+from toolkit_api.watermarks import WatermarkBatches
 
 # starlette's TestClient imports its HTTP client under the bare name `httpx`.
 # This project depends on httpx2 — pydantic's maintained successor — and
@@ -38,6 +39,7 @@ def app_state(tmp_path):
         store=Store(tmp_path / "sub.db"),
         jobs=JobRegistry(),
         artifacts=ArtifactStore(),
+        watermarks=WatermarkBatches(tmp_path / "watermark"),
     )
     yield state
     state.artifacts.cleanup()

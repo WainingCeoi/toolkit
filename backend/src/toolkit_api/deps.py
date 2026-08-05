@@ -9,6 +9,7 @@ from fastapi import Depends, HTTPException, Request
 from .artifacts import ArtifactStore
 from .jobs import JobRegistry
 from .state import AppState
+from .watermarks import WatermarkBatches
 
 
 def get_state(request: Request) -> AppState:
@@ -34,8 +35,18 @@ def get_torrents(request: Request):
     return manager
 
 
+def get_watermarks(request: Request) -> WatermarkBatches:
+    batches = request.app.state.state.watermarks
+    if batches is None:
+        raise HTTPException(
+            status_code=503, detail="The watermark workspace is not ready."
+        )
+    return batches
+
+
 StateDep = Annotated[AppState, Depends(get_state)]
 JobsDep = Annotated[JobRegistry, Depends(get_jobs)]
 ArtifactsDep = Annotated[ArtifactStore, Depends(get_artifacts)]
 StoreDep = Annotated[object, Depends(get_store)]
 TorrentsDep = Annotated[object, Depends(get_torrents)]
+WatermarksDep = Annotated[WatermarkBatches, Depends(get_watermarks)]

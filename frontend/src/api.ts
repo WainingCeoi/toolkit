@@ -26,6 +26,9 @@ import type {
   TorrentSendPayload,
   TorrentSent,
   TorrentStatus,
+  WatermarkBatch,
+  WatermarkHealth,
+  WatermarkRunPayload,
   WebPdfCapture,
   WebPdfStatus,
 } from './types/api'
@@ -294,4 +297,20 @@ export const api = {
     request<{ infohash: string; state: string }>(`/torrent/${infohash}`, {
       method: 'DELETE',
     }),
+
+  // watermark remover
+  watermarkHealth: () => request<WatermarkHealth>('/watermark/health'),
+  watermarkUpload: (formData: FormData) =>
+    request<WatermarkBatch>('/watermark/batch', { method: 'POST', body: formData }),
+  watermarkRun: (payload: WatermarkRunPayload) =>
+    request<JobStarted>('/watermark/run', { method: 'POST', body: payload }),
 }
+
+// The canvas editor loads these as <img>/fetch sources, not through request<T>.
+export const watermarkImageUrl = (batchId: string, imageId: string): string =>
+  `${BASE}/watermark/${batchId}/${imageId}/image`
+export const watermarkMaskUrl = (
+  batchId: string,
+  imageId: string,
+  sensitivity: number,
+): string => `${BASE}/watermark/${batchId}/${imageId}/mask?sensitivity=${sensitivity}`

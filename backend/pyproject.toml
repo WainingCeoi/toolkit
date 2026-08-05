@@ -17,6 +17,12 @@ dependencies = [
     "ffmpeg-progress-yield>=1.1.3",
     "ffmpeg-python>=0.2.0",
     "lxml>=6.1.1",
+    # Watermark Remover's mask detection and fast inpainting (dual top-hat,
+    # cv2.inpaint). opencv-python rather than -headless on purpose: mineru
+    # (docmd extra) depends on opencv-python, and the two dists both ship the
+    # cv2 package — declaring the same one keeps a single install either way.
+    "numpy>=2.1",
+    "opencv-python>=4.10",
     "packaging>=26.2",
     "pillow>=12.3.0",
     "pillow-heif>=1.4.0",
@@ -32,8 +38,15 @@ dependencies = [
 # MinerU's ML stack is ~1 GB and only Doc→Markdown needs it, so it stays optional:
 # `make install` includes it, a lean `uv sync` skips it, and the tool reports
 # "MinerU not installed" rather than failing.
+#
+# `watermark` is torch for the Watermark Remover's LaMa inpainter (the engine
+# downloads the big-lama TorchScript checkpoint itself on first use). It is NOT
+# simple-lama-inpainting: that wrapper pins numpy<2 and pillow<10, neither of
+# which exists for Python 3.14, so the engine carries the ~40 lines of pre/post
+# processing instead. Without this extra the tool still runs on cv2.inpaint.
 [project.optional-dependencies]
 docmd = ["mineru[core]>=3.4.4"]
+watermark = ["torch>=2.9"]
 
 # ruff is declared, not taken from PATH, so two machines lint identically.
 [dependency-groups]
@@ -43,18 +56,23 @@ dev = ["pytest>=9.1.1", "httpx2>=2.7.0", "ruff>=0.15.22"]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
-# `sources = ["src"]` strips the prefix so all three packages land at the wheel root.
+# `sources = ["src"]` strips the prefix so all four packages land at the wheel root.
 [tool.hatch.build.targets.wheel]
 sources = ["src"]
-only-include = ["src/subgen", "src/toolkit_engine", "src/toolkit_api"]
+only-include = ["src/subgen", "src/toolkit_engine", "src/toolkit_api", "src/watermark"]
 
 [tool.uv]
 package = true
 
 # Warnings are errors, so a new deprecation can't slip in unnoticed.
+# `slow` covers the LaMa inpainting tests (first run downloads a ~200 MB
+# checkpoint), deselected by default; run them with `uv run pytest -m slow`
+# (a later -m on the command line overrides the one from addopts).
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 filterwarnings = ["error"]
+markers = ["slow: needs the watermark extra (torch) and the LaMa checkpoint"]
+addopts = "-m 'not slow'"
 
 [tool.ruff]
 line-length = 88

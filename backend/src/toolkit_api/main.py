@@ -36,6 +36,7 @@ from .routers import (
     remux,
     subs,
     torrent,
+    watermark,
     webpdf,
 )
 from .state import AppState, build_state
@@ -115,6 +116,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
         subs.router,
         depsync.router,
         torrent.router,
+        watermark.router,
     ):
         app.include_router(api_router, prefix="/api")
     # Public subscription route for proxy clients: GET /sub/{id} (no /api). It

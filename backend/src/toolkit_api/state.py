@@ -12,6 +12,7 @@ from subgen.db import Store
 
 from .artifacts import ArtifactStore
 from .jobs import JobRegistry
+from .watermarks import WatermarkBatches
 
 
 @dataclass
@@ -33,6 +34,9 @@ class AppState:
     # state outlives the process, so it is not a JobRegistry. None when the
     # state was injected (tests) or BitComet's settings could not be read.
     torrents: Any = None
+    # Watermark Remover's upload staging: normalized working copies on disk,
+    # TTL-swept. None only when an injected state left it out.
+    watermarks: WatermarkBatches | None = None
 
 
 def build_torrent_manager():
@@ -77,4 +81,6 @@ def build_state() -> AppState:
         jobs=JobRegistry(),
         artifacts=ArtifactStore(),
         torrents=build_torrent_manager(),
+        # Same one-data-directory convention as the BitComet device id above.
+        watermarks=WatermarkBatches(Path(config.DB_PATH).parent / "watermark"),
     )

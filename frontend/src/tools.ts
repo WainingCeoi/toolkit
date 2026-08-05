@@ -5,9 +5,11 @@
 export const TOOL_EMOJI: Record<string, string> = {
   '/tools/magnet-scraper': '🧲',
   '/tools/remux': '🎬',
+  '/tools/torrent-downloader': '🌊',
   '/tools/web-images-to-pdf': '🌐',
   '/tools/file-gatherer': '📦',
   '/tools/image-to-pdf': '🖼️',
+  '/tools/watermark-remover': '🧽',
   '/tools/doc-to-pdf': '📄',
   '/tools/doc-to-markdown': '📝',
   '/tools/cache-purge': '🧹',

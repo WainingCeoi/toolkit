@@ -30,6 +30,7 @@ toolkit/
 | 🖼️  | **Image to PDF**    | Combine selected images into a single PDF.                                           |
 | 🎬  | **Remux Processor** | Parallel, lossless remuxing (stream-copy) of videos with configurable tracks.       |
 | 🌊  | **Torrent Downloader** | Add a magnet or `.torrent`, keep only the files worth keeping, and send it to BitComet to download. |
+| 🧽  | **Watermark Remover** | Auto-detect watermarks, correct the mask by hand, and inpaint them away (LaMa or cv2). |
 | 📦  | **File Gatherer**   | Recursively gather files by type from a folder and move them into one target.       |
 | 🛰️  | **Optimized-IP Subscription** | Rewrite nodes with optimized Cloudflare IPs and serve LAN subscriptions (Shadowrocket / Clash / Surge). |
 | 🧹  | **Cache Purge**     | Recursively find and delete cache / junk files from a folder.                       |
@@ -101,6 +102,8 @@ Settings are read from environment variables / `backend/.env` (copy
 | `SUB_DB_PATH` | `backend/data/sub.db` | Optimized-IP Subscription: SQLite database path |
 | `SUB_ACCESS_TOKEN` | empty | Require `?token=…` on subscription links |
 | `SUB_PUBLIC_HOST` | empty | Host used in subscription links; defaults to the Mac's `.local` name, then a LAN IP |
+| `WATERMARK_DEVICE` | `cpu` | Watermark Remover: device LaMa runs on (`cpu`, `mps`, `cuda`) |
+| `WATERMARK_LAMA_MODEL` | empty | Watermark Remover: path to a pre-downloaded `big-lama.pt` (skips the first-use download) |
 | `APP_CORS_ORIGINS` | Vite dev origins | CORS allowlist (only exercised when calling the API cross-origin) |
 | `APP_STATIC_DIR` | `../frontend/dist` | Built UI served by the single-server modes |
 | `HOST` / `PORT` | `0.0.0.0` / `8000` | `make host` bind address / base port (shell env, not `.env`) |
@@ -125,6 +128,7 @@ make clean                     # remove build artifacts
   *Options → Remote Access* and enable **both** switches ("via BitComet Mobile App" and
   "via Web UI"), then set a username and password; the app reads them from BitComet's own
   config, so there is nothing to configure twice
+- [torch](https://pytorch.org/) — required by **Watermark Remover**'s LaMa inpainter; installed with the backend via the `watermark` extra, and the big-lama checkpoint (~200 MB) downloads automatically on first use (cached under `~/.cache/torch`). Without it the tool still runs on its cv2 inpainter
 - [Google Chrome](https://www.google.com/chrome/) — required by **Web Images to PDF** (the matching driver is downloaded automatically)
 - [LibreOffice](https://www.libreoffice.org/) — required by **Doc to PDF** (`brew install --cask libreoffice`)
 - [MinerU](https://github.com/opendatalab/MinerU) — required by **Doc to Markdown**; installed with the backend via the `mineru[core]` dependency, its ML models download automatically on first run (cached under `~/.cache/huggingface`)
@@ -179,6 +183,36 @@ would leave it downloading with every file enabled.
 
 Pick the destination folder *before* you resolve: BitComet fixes a torrent's save
 folder as the task is created and cannot move it afterwards.
+
+### 🧽 Watermark Remover
+
+Drop up to 20 `png` / `jpg` / `webp` images and the backend proposes a
+watermark mask per image — a dual top-hat morphological filter tuned for the
+classic semi-transparent tiled text, deliberately over-eager because **you
+review every mask before anything changes**: each image gets a canvas editor
+with the mask tinted red, a brush and eraser (adjustable size, undo/reset),
+and a sensitivity slider that refetches the proposal. On run, the
+human-approved masks are dilated a few pixels and inpainted — **LaMa** (ML,
+best quality; the ~200 MB model downloads on first use) or **cv2** (instant,
+rougher on large areas). Progress streams per file; results show a draggable
+before/after divider, per-file downloads, and a zip of everything.
+
+Cleaned images are written as PNG regardless of input — re-encoding inpainted
+pixels as JPEG would stamp fresh artifacts right where the fill happened.
+
+The engine also runs headless over a folder, no web app involved:
+
+```bash
+cd backend && uv run python -m watermark clean IN_DIR OUT_DIR --inpainter lama
+```
+
+Headless means nobody corrects the mask, so CLI quality is auto-detection
+quality: solid on clearly visible overlays, but a watermark faint enough to
+hide inside the scene's own texture will not separate at any sensitivity —
+use the web page and its brush for those.
+
+> For images you own or are licensed to edit — removing someone else's
+> watermark from content you have no rights to is not what this is for.
 
 ### 📦 File Gatherer
 

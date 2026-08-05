@@ -70,6 +70,15 @@ CATEGORIES = [
                 description="Combine selected images into a single downloadable PDF.",
             ),
             ToolOut(
+                slug="watermark-remover",
+                title="🧽 Watermark Remover",
+                description=(
+                    "Auto-detect watermarks, correct the mask by hand, and "
+                    "inpaint them away — for images you own or are licensed "
+                    "to edit."
+                ),
+            ),
+            ToolOut(
                 slug="doc-to-pdf",
                 title="📄 Doc to PDF",
                 description=(

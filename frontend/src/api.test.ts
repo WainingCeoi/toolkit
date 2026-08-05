@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { api, artifactUrl } from './api'
+import { api, artifactUrl, watermarkImageUrl, watermarkMaskUrl } from './api'
 
 describe('api helpers', () => {
   it('builds artifact URLs under /api', () => {
@@ -44,6 +44,45 @@ describe('api helpers', () => {
     // the destination travels with /resolve instead.
     expect(JSON.parse(opts.body)).toEqual({ infohash: 'abc', selected: [1, 3] })
     vi.unstubAllGlobals()
+  })
+
+  it('uploads a watermark batch as multipart and runs it as JSON', async () => {
+    // A fresh Response per call — a body can only be read once.
+    const fetchMock = vi.fn().mockImplementation(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ job_id: 'j9' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      ),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const fd = new FormData()
+    fd.append('files', new Blob(['x']), 'a.png')
+    await api.watermarkUpload(fd)
+    await api.watermarkRun({ batch_id: 'b1', inpainter: 'cv2', masks: { i1: 'AA==' } })
+
+    const [uploadUrl, uploadOpts] = fetchMock.mock.calls[0]
+    expect(uploadUrl).toBe('/api/watermark/batch')
+    expect(uploadOpts.body).toBe(fd)
+
+    const [runUrl, runOpts] = fetchMock.mock.calls[1]
+    expect(runUrl).toBe('/api/watermark/run')
+    // The masks are base64 strings inside JSON — NOT another multipart form.
+    expect(JSON.parse(runOpts.body)).toEqual({
+      batch_id: 'b1',
+      inpainter: 'cv2',
+      masks: { i1: 'AA==' },
+    })
+    vi.unstubAllGlobals()
+  })
+
+  it('builds watermark image and mask URLs under /api', () => {
+    expect(watermarkImageUrl('b1', 'i1')).toBe('/api/watermark/b1/i1/image')
+    expect(watermarkMaskUrl('b1', 'i1', 70)).toBe(
+      '/api/watermark/b1/i1/mask?sensitivity=70',
+    )
   })
 
   it('sends a JSON body for POSTs', async () => {

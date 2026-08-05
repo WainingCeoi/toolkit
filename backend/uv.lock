@@ -2205,6 +2205,8 @@ dependencies = [
     { name = "ffmpeg-progress-yield" },
     { name = "ffmpeg-python" },
     { name = "lxml" },
+    { name = "numpy" },
+    { name = "opencv-python" },
     { name = "packaging" },
     { name = "pillow" },
     { name = "pillow-heif" },
@@ -2225,6 +2227,9 @@ dependencies = [
 docmd = [
     { name = "mineru", extra = ["core"] },
 ]
+watermark = [
+    { name = "torch" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -2242,6 +2247,8 @@ requires-dist = [
     { name = "ffmpeg-python", specifier = ">=0.2.0" },
     { name = "lxml", specifier = ">=6.1.1" },
     { name = "mineru", extras = ["core"], marker = "extra == 'docmd'", specifier = ">=3.4.4" },
+    { name = "numpy", specifier = ">=2.1" },
+    { name = "opencv-python", specifier = ">=4.10" },
     { name = "packaging", specifier = ">=26.2" },
     { name = "pillow", specifier = ">=12.3.0" },
     { name = "pillow-heif", specifier = ">=1.4.0" },
@@ -2254,10 +2261,11 @@ requires-dist = [
     { name = "segno", specifier = ">=1.6.6" },
     { name = "selenium", specifier = ">=4.46.0" },
     { name = "sse-starlette", specifier = ">=3.4.6" },
+    { name = "torch", marker = "extra == 'watermark'", specifier = ">=2.9" },
     { name = "uvicorn", specifier = ">=0.51.0" },
     { name = "webdriver-manager", specifier = ">=4.1.2" },
 ]
-provides-extras = ["docmd"]
+provides-extras = ["docmd", "watermark"]
 
 [package.metadata.requires-dev]
 dev = [

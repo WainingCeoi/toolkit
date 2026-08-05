@@ -335,6 +335,62 @@ export interface DownloadedBlob {
   filename: string
 }
 
+// --- Watermark Remover ------------------------------------------------------
+
+/** One staged image inside a watermark batch (mirrors WatermarkImageOut). */
+export interface WatermarkImage {
+  id: string
+  name: string
+  /** Dimensions of the normalized (EXIF-upright) working copy — the canvas size. */
+  width: number
+  height: number
+}
+
+/** Mirrors WatermarkBatchOut. */
+export interface WatermarkBatch {
+  batch_id: string
+  images: WatermarkImage[]
+}
+
+/** Mirrors WatermarkHealthOut. */
+export interface WatermarkHealth {
+  /** torch importable — the LaMa inpainter can run (cv2 always can). */
+  lama: boolean
+  device: string
+}
+
+/** Mirrors WatermarkRunIn. `masks` maps image id -> base64 PNG (white = remove). */
+export interface WatermarkRunPayload {
+  batch_id: string
+  inpainter: 'lama' | 'cv2'
+  masks: Record<string, string>
+  dilate_px?: number
+}
+
+export interface WatermarkFileResult {
+  image_id: string
+  name: string
+  artifact_id: string
+  /** Carried in the result so before/after can size itself from the snapshot. */
+  width: number
+  height: number
+}
+
+export interface WatermarkResult {
+  /**
+   * The batch these results came from. The snapshot outlives the page's local
+   * state, so this is what lets the results view rebuild "before" image URLs
+   * after a remount — and what tells it these are a PREVIOUS batch's results.
+   */
+  batch_id: string
+  done: string[]
+  failed: TupleFailure[]
+  files: WatermarkFileResult[]
+  /** Absent entirely when nothing cleaned, so there is no archive to offer. */
+  artifact_id?: string
+  filename?: string
+}
+
 // --- Torrent Downloader ---------------------------------------------------
 
 export interface TorrentFileRow {
