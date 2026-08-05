@@ -285,6 +285,74 @@ def test_colliding_output_stems_are_deduped_in_the_zip(client):
     assert len(names) == 2 and len(set(names)) == 2
 
 
+def test_a_crash_midway_still_hands_back_what_finished(client, app_state, monkeypatch):
+    # The real report: 7 of 8 images cleaned, the 8th took the run down, and
+    # the 7 were lost. Results are published per image, so they survive.
+    batch = upload(
+        client,
+        ("first.png", png_bytes((20, 10))),
+        ("second.png", png_bytes((20, 10))),
+    ).json()
+    real_put = app_state.artifacts.put_bytes
+    calls = {"n": 0}
+
+    def exploding_put(filename, content, media_type):
+        calls["n"] += 1
+        if calls["n"] == 2:  # second image, outside the per-file try/except
+            raise MemoryError("out of memory inpainting a huge image")
+        return real_put(filename, content, media_type)
+
+    monkeypatch.setattr(app_state.artifacts, "put_bytes", exploding_put)
+
+    masks = {
+        image["id"]: mask_b64(20, 10, box=(0, 0, 5, 5)) for image in batch["images"]
+    }
+    resp = client.post(
+        "/api/watermark/run",
+        json={"batch_id": batch["batch_id"], "inpainter": "cv2", "masks": masks},
+    )
+    snap = wait_for_job(client, resp.json()["job_id"])
+
+    assert snap["state"] == "failed"
+    assert "out of memory" in snap["error"]
+    # ...and the first image is still there, downloadable.
+    assert snap["result"]["done"] == ["first.png"]
+    harvested = snap["result"]["files"][0]
+    assert client.get(f"/api/artifacts/{harvested['artifact_id']}").status_code == 200
+
+
+def test_results_are_published_before_the_batch_ends(client, app_state):
+    # Not just on failure: a long batch should be able to hand back image 1
+    # while image 2 is still running.
+    batch = upload(client, ("a.png", png_bytes((20, 10)))).json()
+    image = batch["images"][0]
+    seen = []
+
+    real_submit = app_state.jobs.submit
+
+    def spy_submit(tool, names, worker):
+        def wrapper(job):
+            out = worker(job)
+            seen.append(job.snapshot()["result"])
+            return out
+
+        return real_submit(tool, names, wrapper)
+
+    app_state.jobs.submit = spy_submit
+    resp = client.post(
+        "/api/watermark/run",
+        json={
+            "batch_id": batch["batch_id"],
+            "inpainter": "cv2",
+            "masks": {image["id"]: mask_b64(20, 10, box=(0, 0, 5, 5))},
+        },
+    )
+    wait_for_job(client, resp.json()["job_id"])
+    # The worker had already published before returning, so the registry saw a
+    # result while the job was still "running".
+    assert seen and seen[0]["done"] == ["a.png"]
+
+
 def test_run_rejects_an_unknown_inpainter(client):
     batch = upload(client, ("a.png", png_bytes())).json()
     resp = client.post(

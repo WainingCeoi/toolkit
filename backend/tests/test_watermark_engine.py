@@ -125,6 +125,66 @@ def test_cv2_inpaint_moves_pixels_toward_the_unwatermarked_original():
     assert err_after < err_before * 0.5
 
 
+def test_inpainting_is_tiled_so_memory_does_not_track_image_size():
+    # LaMa's memory grows with the frame it is handed: 0.8 MP peaked at 12 GB
+    # and 3.1 MP at 25 GB on CPU, so a 36 MP photo took the whole process down.
+    # Tiling is what keeps the frame — and therefore the peak — bounded.
+    from watermark.pipeline import CONTEXT_PX, TILE_PX
+
+    seen = []
+
+    def recording_inpaint(rgb, mask):
+        seen.append(rgb.shape[:2])
+        return inpaint_cv2(rgb, mask)
+
+    big = np.full((2400, 3000, 3), 130, np.uint8)
+    mask = np.zeros((2400, 3000), np.uint8)
+    mask[::600, ::700] = 255  # spread out, so several tiles have work
+    remove_watermark(big, mask, recording_inpaint)
+
+    ceiling = TILE_PX + 2 * CONTEXT_PX
+    assert seen, "the inpainter was never called"
+    assert all(h <= ceiling and w <= ceiling for h, w in seen), (
+        f"a frame exceeded {ceiling}px: {sorted(set(seen))}"
+    )
+
+
+def test_tiles_with_nothing_masked_are_skipped_entirely():
+    # Cost should track the watermark's area, not the photo's.
+    calls = []
+
+    def counting_inpaint(rgb, mask):
+        calls.append(1)
+        return inpaint_cv2(rgb, mask)
+
+    big = np.full((2400, 3000, 3), 130, np.uint8)
+    mask = np.zeros((2400, 3000), np.uint8)
+    mask[10:30, 10:30] = 255  # one corner only
+    remove_watermark(big, mask, counting_inpaint)
+    assert len(calls) == 1, f"expected one tile of work, ran {len(calls)}"
+
+
+def test_only_masked_pixels_are_ever_rewritten():
+    # LaMa reconstructs the whole frame it is handed; compositing keeps
+    # everything the user did not mark bit-identical to the upload.
+    rgb = np.dstack([np.tile(np.arange(200, dtype=np.uint8), (150, 1))] * 3)
+    mask = np.zeros((150, 200), np.uint8)
+    mask[40:60, 40:60] = 255
+
+    def destructive(_rgb, _mask):
+        return np.zeros_like(_rgb)  # a "model" that rewrites everything
+
+    out = remove_watermark(rgb, mask, destructive, dilate_px=0)
+    assert (out[mask > 0] == 0).all()  # masked pixels came from the model
+    assert np.array_equal(out[mask == 0], rgb[mask == 0])  # the rest untouched
+
+
+def test_an_empty_mask_returns_the_image_unchanged():
+    rgb = np.full((40, 60, 3), 200, np.uint8)
+    out = remove_watermark(rgb, np.zeros((40, 60), np.uint8), inpaint_cv2)
+    assert np.array_equal(out, rgb)
+
+
 def test_get_inpainter_rejects_unknown_names():
     with pytest.raises(ValueError, match="Unknown inpainter 'photoshop'"):
         get_inpainter("photoshop")

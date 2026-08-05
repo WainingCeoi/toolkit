@@ -67,6 +67,17 @@ class Job:
             if error is not None:
                 item["error"] = error
 
+    def set_result(self, result: dict | None) -> None:
+        """Publish results so far, without finishing the job.
+
+        snapshot() already carries `result`, so anything published here reaches
+        the client on the next SSE frame. That is what lets a batch hand back
+        the items it already finished even if a later one dies — or takes the
+        whole process down with it.
+        """
+        with self._lock:
+            self.result = result
+
     # --- registry-side API ------------------------------------------------
     def snapshot(self) -> dict:
         with self._lock:

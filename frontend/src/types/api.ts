@@ -43,12 +43,19 @@ interface JobBase {
  * workers are free to bail out and return nothing once they observe the cancel
  * flag, and several do — see the `return None` paths in
  * backend/src/toolkit_api/routers/depsync.py.
+ *
+ * `failed` also carries `R | null`: a worker may publish partial results with
+ * job.set_result() as it goes (Watermark Remover does, per image), and those
+ * survive the failure. Most tools publish nothing, hence the null.
+ *
+ * `running` likewise — a job that publishes as it goes has results to show
+ * before it is finished.
  */
 export type Job<R> =
-  | (JobBase & { state: 'running'; result: null; error: null })
+  | (JobBase & { state: 'running'; result: R | null; error: null })
   | (JobBase & { state: 'done'; result: R; error: null })
   | (JobBase & { state: 'cancelled'; result: R | null; error: null })
-  | (JobBase & { state: 'failed'; result: null; error: string })
+  | (JobBase & { state: 'failed'; result: R | null; error: string })
 
 /** Every job-starting endpoint answers with this and nothing else. */
 export interface JobStarted {

@@ -113,10 +113,10 @@ export default function WatermarkRemover() {
     editors.current = {}
   }
 
-  // A cancelled run still carries the images it finished before stopping —
-  // the shared JobPanel says "showing partial results", so show them.
-  const finished = snapshot?.state === 'done' || snapshot?.state === 'cancelled'
-  const result = finished ? snapshot.result : null
+  // Results are shown in every state, because the worker publishes them per
+  // image: a run that dies on image 8 must still hand back images 1-7, and a
+  // cancelled or still-running one has finished images worth reaching too.
+  const result = snapshot?.result ?? null
   // A finished job from an earlier batch must not be read as this batch's
   // outcome (stale zip, stale filenames) once new images are staged.
   const staleForBatch = batch != null && result != null && result.batch_id !== batch.batch_id
@@ -336,9 +336,15 @@ export default function WatermarkRemover() {
             {result && (
               <>
                 {result.done.length > 0 && (
-                  <div className="note ok">
-                    ✅ Cleaned {result.done.length} image(s). Drag the divider
-                    to compare.
+                  <div className={`note ${snapshot.state === 'failed' ? 'warn' : 'ok'}`}>
+                    {snapshot.state === 'running' &&
+                      `${result.done.length} done so far — each is ready to download as it lands.`}
+                    {snapshot.state === 'done' &&
+                      `✅ Cleaned ${result.done.length} image(s). Drag the divider to compare.`}
+                    {snapshot.state === 'cancelled' &&
+                      `Stopped after ${result.done.length} image(s) — these are finished and safe to download.`}
+                    {snapshot.state === 'failed' &&
+                      `The run stopped early, but these ${result.done.length} image(s) finished and are safe to download.`}
                   </div>
                 )}
                 {result.artifact_id && (

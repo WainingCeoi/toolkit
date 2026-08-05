@@ -21,6 +21,50 @@ IMAGE_TYPES = ("png", "jpg", "jpeg", "webp")
 # that hugs the watermark too tightly leaves a one-pixel ghost outline behind.
 DEFAULT_DILATE_PX = 3
 
+# Inpainting runs in tiles of at most this many pixels a side, with the
+# surrounding CONTEXT_PX of real image as context. LaMa's memory grows with the
+# frame it is handed -- measured on CPU: 0.8 MP peaked at 12 GB and 3.1 MP at
+# 25 GB, so a 36 MP phone photo (8064x4536) needs well over 100 GB and takes
+# the process down before it ever returns. A tile keeps peak memory flat no
+# matter how large the image is, and skipping tiles with nothing masked makes
+# the cost track the watermark's area rather than the photo's.
+#
+# 640 is measured, not guessed: on a 12 MP frame, 640/96 peaked at 12.3 GB in
+# 56s where 1024/128 took 29.9 GB in 54s -- 2.4x the memory to save 2 seconds.
+# Smaller is not automatically better either; 512/96 was 14.0 GB in 63s, since
+# more tiles means paying the model's fixed cost more often.
+TILE_PX = 640
+CONTEXT_PX = 96
+
+
+def _inpaint_tiled(
+    rgb: np.ndarray,
+    mask: np.ndarray,
+    inpaint: Callable[[np.ndarray, np.ndarray], np.ndarray],
+) -> np.ndarray:
+    """Inpaint tile by tile, touching only tiles that contain masked pixels."""
+    height, width = mask.shape
+    out = rgb.copy()
+    for top in range(0, height, TILE_PX):
+        for left in range(0, width, TILE_PX):
+            bottom, right = min(top + TILE_PX, height), min(left + TILE_PX, width)
+            if not mask[top:bottom, left:right].any():
+                continue  # nothing to fill here
+            # Widen the frame handed to the inpainter so pixels at the tile
+            # edge are filled from real surroundings, not from the cut.
+            ctop, cleft = max(0, top - CONTEXT_PX), max(0, left - CONTEXT_PX)
+            cbottom = min(height, bottom + CONTEXT_PX)
+            cright = min(width, right + CONTEXT_PX)
+            patch = inpaint(
+                np.ascontiguousarray(rgb[ctop:cbottom, cleft:cright]),
+                np.ascontiguousarray(mask[ctop:cbottom, cleft:cright]),
+            )
+            core = mask[top:bottom, left:right] > 0
+            out[top:bottom, left:right][core] = patch[
+                top - ctop : bottom - ctop, left - cleft : right - cleft
+            ][core]
+    return out
+
 
 def remove_watermark(
     rgb: np.ndarray,
@@ -28,11 +72,19 @@ def remove_watermark(
     inpaint: Callable[[np.ndarray, np.ndarray], np.ndarray],
     dilate_px: int = DEFAULT_DILATE_PX,
 ) -> np.ndarray:
-    """Inpaint ``mask`` out of ``rgb`` and return the cleaned copy."""
+    """Inpaint ``mask`` out of ``rgb`` and return the cleaned copy.
+
+    Only masked pixels are ever written. LaMa reconstructs the whole frame it
+    is given, so without this it would subtly rewrite untouched parts of the
+    photo; compositing keeps the guarantee that what you did not mark is
+    bit-identical to what you uploaded.
+    """
     if dilate_px > 0:
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * dilate_px + 1,) * 2)
         mask = cv2.dilate(mask, kernel)
-    return inpaint(rgb, mask)
+    if not mask.any():
+        return rgb.copy()
+    return _inpaint_tiled(rgb, mask, inpaint)
 
 
 def list_images(folder: Path) -> list[Path]:

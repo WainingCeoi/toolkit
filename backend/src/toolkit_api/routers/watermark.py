@@ -228,6 +228,24 @@ def run(req: WatermarkRunIn, state: StateDep, watermarks: WatermarksDep):
         file_results: list[dict] = []
         buffer = io.BytesIO()
         archive = zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED)
+
+        def publish() -> dict:
+            """Hand back everything finished so far.
+
+            Called after every image, not just at the end: a batch can die on
+            its last file (a huge photo, an out-of-memory kill) and the images
+            already cleaned must not die with it. Each is its own artifact
+            the moment it is ready, so the zip is the only thing that waits.
+            """
+            partial = {
+                "batch_id": req.batch_id,
+                "done": list(done),
+                "failed": list(failed),
+                "files": list(file_results),
+            }
+            job.set_result(partial)
+            return partial
+
         # Pinned for the whole run: images are read lazily, one per iteration,
         # so an unpinned batch could be swept between two of its own images.
         with watermarks.pin(req.batch_id):
@@ -249,6 +267,7 @@ def run(req: WatermarkRunIn, state: StateDep, watermarks: WatermarksDep):
                 except Exception as e:  # noqa: BLE001 — per-file, batch goes on
                     job.update_item(idx, pct=100, state="failed", error=str(e))
                     failed.append((entry["name"], str(e)))
+                    publish()
                     continue
                 artifact_id = state.artifacts.put_bytes(out_name, png, "image/png")
                 archive.writestr(out_name, png)
@@ -265,22 +284,24 @@ def run(req: WatermarkRunIn, state: StateDep, watermarks: WatermarksDep):
                 )
                 done.append(out_name)
                 job.update_item(idx, pct=100, state="done")
+                publish()
         archive.close()
 
         # batch_id rides along so the results view survives a page unmount:
         # the snapshot outlives this page's local state, and the "before"
         # image is fetched from the batch.
-        result = {
-            "batch_id": req.batch_id,
-            "done": done,
-            "failed": failed,
-            "files": file_results,
-        }
+        result = publish()
         if done:
-            result["artifact_id"] = state.artifacts.put_bytes(
-                "cleaned_images.zip", buffer.getvalue(), "application/zip"
-            )
-            result["filename"] = "cleaned_images.zip"
+            # A fresh dict rather than mutating the published one, which a
+            # reader may be serialising for an SSE frame right now.
+            result = {
+                **result,
+                "artifact_id": state.artifacts.put_bytes(
+                    "cleaned_images.zip", buffer.getvalue(), "application/zip"
+                ),
+                "filename": "cleaned_images.zip",
+            }
+            job.set_result(result)
         return result
 
     job = state.jobs.submit("watermark", [entry["name"] for entry in selected], worker)
