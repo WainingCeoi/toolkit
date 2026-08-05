@@ -103,6 +103,73 @@ def test_a_high_resolution_watermark_is_still_found():
     assert np.count_nonzero(proposed) / proposed.size < 0.5
 
 
+def mixed_texture_pair(w=1000, h=700, alpha=42):
+    """The case that broke a global threshold: one photo, two very different
+    textures — smooth sky on top, high-frequency grass below — under one faint
+    grey tiled watermark. The sky needs a low threshold to catch the mark; the
+    grass responds harder than the mark does without containing any.
+    """
+    rng = np.random.default_rng(7)
+    img = np.zeros((h, w, 3), np.float32)
+    sky_h = int(h * 0.45)
+    ramp = np.linspace(210, 170, sky_h)[:, None]
+    img[:sky_h, :, 0] = ramp * 0.75
+    img[:sky_h, :, 1] = ramp * 0.88
+    img[:sky_h, :, 2] = ramp
+    grass = rng.normal(120, 34, (h - sky_h, w, 3))
+    grass[:, :, 0] *= 0.85
+    grass[:, :, 2] *= 0.55
+    grass += rng.normal(0, 26, (h - sky_h, w))[:, :, None]
+    img[sky_h:] = grass
+    base = np.clip(img, 0, 255).astype(np.uint8)
+
+    overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+    font = ImageFont.load_default(size=26)
+    for row, y in enumerate(range(20, h - 30, 96)):
+        for x in range(20 + (row % 2) * 90, w - 40, 190):
+            draw.text((x, y), "LOGO", font=font, fill=(235, 235, 235, alpha))
+    marked = Image.alpha_composite(Image.fromarray(base).convert("RGBA"), overlay)
+    truth = (np.asarray(overlay)[:, :, 3] > 0).astype(np.uint8) * 255
+    return base, np.asarray(marked.convert("RGB")), truth
+
+
+def test_a_faint_mark_is_caught_without_selecting_the_textured_half():
+    # Regression guard for the real complaint: raising sensitivity until a
+    # faint watermark was caught used to select unrelated parts of the photo.
+    # Local contrast normalisation is what separates them.
+    _clean, marked, truth = mixed_texture_pair()
+    proposed = propose_mask(marked, 90)
+    wm = truth > 0
+    hit = proposed > 0
+    assert recall(proposed, truth) >= 0.45, "the faint mark must still be found"
+    false_positives = (hit & ~wm).sum() / (~wm).sum()
+    assert false_positives < 0.15, (
+        f"{false_positives:.1%} of non-watermark pixels marked — the raw "
+        "top-hat needed 55% here to reach this recall, which is what made "
+        "the slider unusable"
+    )
+
+
+def test_the_top_of_the_slider_is_not_a_cliff():
+    # A linear threshold mapping put everything interesting in the last few
+    # steps, so 100 went from a usable mask to half the image.
+    _clean, marked, truth = mixed_texture_pair()
+    at_90 = np.count_nonzero(propose_mask(marked, 90)) / truth.size
+    at_100 = np.count_nonzero(propose_mask(marked, 100)) / truth.size
+    assert at_100 < at_90 * 2.5, (
+        f"sensitivity 100 marked {at_100:.1%} vs {at_90:.1%} at 90 — the top "
+        "of the slider should refine the mask, not blanket the photo"
+    )
+
+
+def test_a_flat_region_is_not_amplified_into_noise():
+    # Dividing by a local baseline blows up where the baseline is ~0 (a blown
+    # sky, a product render's white background) unless a floor holds it down.
+    flat = np.full((300, 400, 3), 250, np.uint8)
+    assert np.count_nonzero(propose_mask(flat, 100)) / flat[:, :, 0].size < 0.02
+
+
 def test_sensitivity_marks_monotonically_more_pixels():
     _clean, marked, _true = synthetic_pair()
     counts = [np.count_nonzero(propose_mask(marked, s)) for s in (10, 50, 90)]

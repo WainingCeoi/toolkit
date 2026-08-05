@@ -188,14 +188,26 @@ folder as the task is created and cannot move it afterwards.
 
 Drop up to 20 `png` / `jpg` / `webp` images and the backend proposes a
 watermark mask per image — a dual top-hat morphological filter tuned for the
-classic semi-transparent tiled text, deliberately over-eager because **you
-review every mask before anything changes**: each image gets a canvas editor
-with the mask tinted red, a brush and eraser (adjustable size, undo/reset),
-and a sensitivity slider that refetches the proposal. On run, the
-human-approved masks are dilated a few pixels and inpainted — **LaMa** (ML,
-best quality; the ~200 MB model downloads on first use) or **cv2** (instant,
-rougher on large areas). Progress streams per file; results show a draggable
+classic semi-transparent tiled text, normalised against each pixel's own
+neighbourhood so a faint mark on smooth sky is found without also selecting
+the grass. It stays deliberately over-eager, because **you review every mask
+before anything changes**: each image gets a canvas editor with the mask
+tinted red, a brush and eraser (adjustable size, undo/reset), and a
+sensitivity slider that refetches the proposal. On run, the human-approved
+masks are dilated a few pixels and inpainted — **LaMa** (ML, best quality;
+the ~200 MB model downloads on first use) or **cv2** (instant, rougher on
+large areas). Progress streams per file; results show a draggable
 before/after divider, per-file downloads, and a zip of everything.
+
+Only the pixels you marked are ever written, and each image becomes available
+the moment it is done — so a run that stops early still hands back everything
+it finished. Large photos are inpainted in tiles, which is what keeps a 36 MP
+phone photo inside about 12 GB instead of the 100 GB+ it would otherwise ask
+for.
+
+Thin, high-contrast detail — tent seams, wires, railings — can still read as
+watermark to the filter. The eraser is the fix, and it is why the mask is
+yours to approve rather than applied automatically.
 
 Cleaned images are written as PNG regardless of input — re-encoding inpainted
 pixels as JPEG would stamp fresh artifacts right where the fill happened.
