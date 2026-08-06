@@ -242,10 +242,27 @@ a sibling's (one watermarking tool usually ran over all of them), and
 sensitivity widens each stamp. Coverage is still thinner over busy ground than
 over sky, where the mark is genuinely buried in the texture.
 
-Measured on a sample of eight photos: 5 detected, 3 skipped. The three that are
-skipped do carry watermarks — their overlay repeats on a ~300 px cell, so only
-about six copies fit in frame, below the nine tiles the fold needs, and no
-sibling can recover it either.
+A third route covers the mark too large for any single frame to fold: about six
+copies of a ~300 px cell, where the fold needs nine. Instances are located
+directly (a copy on smooth sky is a local response peak, and a patch cut around
+one correlates at the others at 0.92–0.94), then **pooled across the batch** —
+nine samples from nine different photographs, which is what makes averaging mean
+anything. What certifies it is that a real overlay repeats at the *same* pitch in
+every image: measured 294.0, 294.0, 294.0 across three photos, against
+321/236/173 and 311/306/213 for coincidental runs in clean frames.
+
+Measured on a sample of eight photos: **8 detected, 0 skipped**, with clean
+control frames still masking nothing at all. Masks from the pooled route are
+small — 0.20–0.27% of frame against 2.0–5.8% for the folded route — because only
+the copies that correlate confidently are stamped.
+
+> The pooled route's one gate is that pitch agreement, and it distinguishes a
+> watermark from coincidence but **not** from a structure that genuinely recurs
+> across a batch at one spacing — a tiled floor, a brick wall, a rank of windows,
+> photographed three or more times. Two things blunt that: matches must be evenly
+> spaced, which excludes repeats receding with perspective, and every mask still
+> faces the per-pixel evidence check. Two stronger gates were tried and both
+> measured worse than useless; see the notes in `pattern.py`.
 
 LaMa runs on the best accelerator it finds — CUDA, then Apple's MPS, then CPU.
 On an M-series Mac that is roughly 8× faster than CPU for output that differs

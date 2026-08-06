@@ -167,7 +167,7 @@ def clean_folder(
     # which is seconds against inpainting's minutes.
     marks = []
     if detector == PATTERN:
-        marks = collect_marks(_read_each(files), sensitivity)
+        marks = collect_marks(lambda: _read_each(files), sensitivity)
 
     cleaned: list[str] = []
     skipped: list[str] = []

@@ -63,7 +63,7 @@ the empty mask ``pattern`` returns, which the caller skips.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 
 import cv2
 import numpy as np
@@ -128,7 +128,8 @@ def propose_mask(
 
 
 def collect_marks(
-    images: Iterable[np.ndarray], sensitivity: int = DEFAULT_SENSITIVITY
+    load: Callable[[], Iterable[np.ndarray]],
+    sensitivity: int = DEFAULT_SENSITIVITY,
 ) -> list[Mark]:
     """Marks from a batch that can be reused on the rest of it (see pattern.py).
 
@@ -136,8 +137,12 @@ def collect_marks(
     ``propose_mask``. It only ever helps: an image that finds its own mark is
     unaffected, and one that does not gets the chance to be masked from a
     sibling's instead of skipped.
+
+    ``load`` yields the batch and may be called more than once — the sparse pass
+    needs a second look at the images — so hand over a function that re-reads
+    them, not an iterator that can only be walked once.
     """
-    return shareable_marks(images, sensitivity)
+    return shareable_marks(load, sensitivity)
 
 
 def propose_mask_detailed(

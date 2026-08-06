@@ -32,7 +32,7 @@ photo passed them by locking onto its own sky gradient. See detect.py.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 
 import cv2
 import numpy as np
@@ -121,6 +121,28 @@ _MIN_EVIDENCE_SHARE = 0.2
 # Footprint the evidence share is measured over — the mark's strong core, fixed
 # so the gate does not move when sensitivity widens the footprint being masked.
 _GATE_PCT = 90.0
+
+# --- the sparse route (see pooled_marks) ----------------------------------
+# Half-extents of the patch cut around a candidate anchor. Big enough to hold a
+# whole instance of the large marks this path exists for, since it is both the
+# subject that gets matched and the shape that gets stamped.
+_ANCHOR_HALF_H = 34
+_ANCHOR_HALF_W = 78
+# Candidate anchors tried per image, and the response filter that ranks them.
+_ANCHOR_COUNT = 12
+_ANCHOR_KERNEL = 13
+_NORM_WIN = 81
+_NORM_FLOOR = 2.0
+# Correlation a match needs to join a run, how many matches make one, how far off
+# an even spacing a member may sit, and how many matches are considered at all.
+_RUN_NCC = 0.35
+MIN_RUN = 3
+_RUN_TOL = 0.06
+_MAX_SITES = 40
+# Images that must independently produce a run, and how closely their pitches
+# must agree, before the batch is believed to share one overlay.
+_MIN_POOL_IMAGES = 3
+_PITCH_TOL = 0.04
 
 
 TRACE = {}
@@ -533,17 +555,31 @@ class Mark:
     only that the mark be present. So an image whose own recovery is refused can
     still be masked precisely from a sibling's mark, which is the common case in
     a batch: one watermarking tool ran over all of them.
+
+    ``pooled`` marks come from the sparse route (see pooled_marks) rather than
+    from folding one image, and are applied a little differently: their vertical
+    pitch is unknown, so the grid walk is skipped, and the per-image instance
+    count is not what established them.
     """
 
-    __slots__ = ("basis", "template", "patch", "crop_top", "crop_left", "cell")
+    __slots__ = (
+        "basis",
+        "template",
+        "patch",
+        "crop_top",
+        "crop_left",
+        "cell",
+        "pooled",
+    )
 
-    def __init__(self, basis, template, patch, crop_top, crop_left, cell):
+    def __init__(self, basis, template, patch, crop_top, crop_left, cell, pooled=False):
         self.basis = basis
         self.template = template
         self.patch = patch
         self.crop_top = crop_top
         self.crop_left = crop_left
         self.cell = cell
+        self.pooled = pooled
 
 
 def _work_size(rgb: np.ndarray) -> np.ndarray:
@@ -741,28 +777,44 @@ def apply_mark(
     # the two separate cleanly — 7 and 19 sites where the mark really is present,
     # against 0 to 5 for the foreign overlay and 0 for every clean control — so
     # the existing instance bar is all this needs.
-    if not own and len(sites) < MIN_INSTANCES:
+    #
+    # A pooled mark answers to MIN_RUN instead. MIN_INSTANCES asks one image to
+    # establish on its own that a repeat is real, and a pooled mark was already
+    # established elsewhere and more strongly: three photographs agreeing on the
+    # pitch to a spread of 0.000, and nine samples clearing the significance test
+    # that three could not. What is left for this image to show is that the mark
+    # is HERE, which its confident matches do. Relaxing it costs nothing at the
+    # clean-frame end either, since a clean batch never reaches a pooled mark --
+    # it is refused at pitch agreement, before any per-image count is consulted.
+    least_sites = MIN_RUN if mark.pooled else MIN_INSTANCES
+    if not own and len(sites) < least_sites:
         return None
 
     # Then walk the grid from the strongest match and snap each site to its own
     # local peak, which picks up instances too faint to win a maximum of their
     # own — over a bright tent roof, say — and absorbs the drift left by
     # rounding the pitch to whole pixels.
-    for i in range(-(anchor_y // py) - 1, (score.shape[0] - anchor_y) // py + 2):
-        for j in range(-(anchor_x // px) - 1, (score.shape[1] - anchor_x) // px + 2):
-            top = max(0, anchor_y + i * py - snap_y)
-            left = max(0, anchor_x + j * px - snap_x)
-            bottom = min(score.shape[0], anchor_y + i * py + snap_y + 1)
-            right = min(score.shape[1], anchor_x + j * px + snap_x + 1)
-            if top >= bottom or left >= right:
-                continue
-            window = score[top:bottom, left:right]
-            local = np.unravel_index(int(np.argmax(window)), window.shape)
-            if window[local] < MIN_NCC:
-                continue
-            sites.add((top + int(local[0]), left + int(local[1])))
+    #
+    # Skipped for a pooled mark: it was recovered from a row of instances, so only
+    # the pitch ALONG that row is known and there is no second axis to walk.
+    if not mark.pooled:
+        for i in range(-(anchor_y // py) - 1, (score.shape[0] - anchor_y) // py + 2):
+            for j in range(
+                -(anchor_x // px) - 1, (score.shape[1] - anchor_x) // px + 2
+            ):
+                top = max(0, anchor_y + i * py - snap_y)
+                left = max(0, anchor_x + j * px - snap_x)
+                bottom = min(score.shape[0], anchor_y + i * py + snap_y + 1)
+                right = min(score.shape[1], anchor_x + j * px + snap_x + 1)
+                if top >= bottom or left >= right:
+                    continue
+                window = score[top:bottom, left:right]
+                local = np.unravel_index(int(np.argmax(window)), window.shape)
+                if window[local] < MIN_NCC:
+                    continue
+                sites.add((top + int(local[0]), left + int(local[1])))
 
-    if len(sites) < MIN_INSTANCES:
+    if len(sites) < least_sites:
         return None
 
     def _paint(target: np.ndarray, shape: np.ndarray) -> None:
@@ -836,8 +888,10 @@ def propose_pattern_mask(rgb: np.ndarray, sensitivity: int) -> np.ndarray | None
     return apply_mark(rgb, mark, sensitivity)
 
 
-def shareable_marks(images: Iterable[np.ndarray], sensitivity: int = 50) -> list[Mark]:
-    """The marks in ``images`` that are fit to be reused on their siblings.
+def shareable_marks(
+    load: Callable[[], Iterable[np.ndarray]], sensitivity: int = 50
+) -> list[Mark]:
+    """Every mark this batch can reuse across itself.
 
     One watermarking tool usually ran over a whole batch, so an image whose own
     recovery is refused is very often carrying a mark that a sibling recovered
@@ -845,24 +899,241 @@ def shareable_marks(images: Iterable[np.ndarray], sensitivity: int = 50) -> list
     lattice, MIN_TILES tiles in frame, and a photograph quiet enough for a median
     to cancel — while applying a mark needs only that the mark be there.
 
-    A mark qualifies only if it masked its OWN image, which is what tells a real
-    overlay from a lattice fitted to scenery: offering every recovered mark
-    instead put a mask on a clean control frame. It must also carry a lattice
-    basis, since one from the axis-aligned fallback has no frame to rectify a
-    sibling into.
+    Two passes, cheapest first:
 
-    Consumes ``images`` one at a time and keeps only the marks — a template and
-    a 2x2 basis each — so a batch of 36 MP photos costs one of them in memory,
-    not all of them.
+    1. Fold each image on its own. A mark qualifies only if it masked its OWN
+       image, which is what tells a real overlay from a lattice fitted to
+       scenery: offering every recovered mark instead put a mask on a clean
+       control frame. It must also carry a lattice basis, since one from the
+       axis-aligned fallback has no frame to rectify a sibling into.
+    2. Only if some image came back empty, pool sparse instances across the
+       batch (see pooled_marks) for the marks too large for any one frame to
+       fold. This costs a dozen correlations per image, so it is skipped
+       entirely when the first pass already covered everything.
+
+    ``load`` is called once per pass and must yield the batch afresh each time;
+    images are consumed one at a time and only the marks are kept, so a batch of
+    36 MP photos costs one of them in memory rather than all of them.
     """
     marks: list[Mark] = []
-    for rgb in images:
+    unresolved = False
+    for rgb in load():
         mark = recover_mark(rgb)
-        if mark is None or mark.basis is None:
-            continue
-        if apply_mark(rgb, mark, sensitivity) is not None:
-            marks.append(mark)
+        if mark is not None and mark.basis is not None:
+            if apply_mark(rgb, mark, sensitivity) is not None:
+                marks.append(mark)
+                continue
+        unresolved = True
+    if unresolved:
+        marks.extend(pooled_marks(load()))
     return marks
+
+
+def _anchor_candidates(gray: np.ndarray) -> list[tuple[int, int]]:
+    """Places an instance plausibly sits: strong local response, quiet surroundings.
+
+    An anchor needs no semantics -- it only has to land within a fraction of a
+    cell of some copy, and the correlation below is forgiving to about half one.
+    A mark laid over smooth sky IS a local response peak in a quiet region, which
+    is enough to enumerate candidates and let the evidence decide between them.
+
+    (A local vision model was tried for this and cannot do it: two sizes of gemma4
+    answered "Adobe Stock" at the same four grid cells for three different photos,
+    and neither could read the real mark from a 5x magnified crop where it is
+    plainly legible. It hallucinates a stock-photo brand rather than declining.)
+    """
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (_ANCHOR_KERNEL,) * 2)
+    response = cv2.max(
+        cv2.morphologyEx(gray, cv2.MORPH_TOPHAT, kernel),
+        cv2.morphologyEx(gray, cv2.MORPH_BLACKHAT, kernel),
+    ).astype(np.float32)
+    normalised = response / (cv2.blur(response, (_NORM_WIN,) * 2) + _NORM_FLOOR)
+    texture = _local_texture(gray)
+    quiet = texture < np.percentile(texture, _QUIET_PCT)
+    field = np.where(quiet, cv2.GaussianBlur(normalised, (0, 0), sigmaX=9), 0)
+
+    found: list[tuple[int, int]] = []
+    work = field.copy()
+    for _ in range(_ANCHOR_COUNT):
+        cy, cx = np.unravel_index(int(np.argmax(work)), work.shape)
+        if work[cy, cx] <= 0:
+            break
+        found.append((int(cy), int(cx)))
+        work[
+            max(0, cy - 2 * _ANCHOR_HALF_H) : cy + 2 * _ANCHOR_HALF_H,
+            max(0, cx - 2 * _ANCHOR_HALF_W) : cx + 2 * _ANCHOR_HALF_W,
+        ] = 0
+    return found
+
+
+def _matched_sites(hp: np.ndarray, template: np.ndarray, least: float) -> np.ndarray:
+    """Every well-separated place ``template`` correlates at ``least``, best first."""
+    if template.std() < 1e-3:
+        return np.empty((0, 2), int)
+    score = cv2.matchTemplate(hp, template, cv2.TM_CCOEFF_NORMED)
+    floor = _MIN_WINDOW_STD_SHARE * float(template.std())
+    substance = _window_std(hp, template.shape)[: score.shape[0], : score.shape[1]]
+    guarded = np.where(substance >= floor, score, -1.0).astype(np.float32)
+    spread = np.ones((template.shape[0] + 1, template.shape[1] + 1), np.float32)
+    ys, xs = np.nonzero((guarded >= least) & (guarded >= cv2.dilate(guarded, spread)))
+    if len(ys) == 0:
+        return np.empty((0, 2), int)
+    order = np.argsort(-guarded[ys, xs])[:_MAX_SITES]
+    return np.column_stack([ys[order], xs[order]])
+
+
+def _best_run(points: np.ndarray) -> tuple[list[tuple[int, int]], float]:
+    """The largest evenly spaced collinear subset of ``points``, and its pitch."""
+    best: list[int] = []
+    pitch = 0.0
+    for i in range(len(points)):
+        for j in range(len(points)):
+            if i == j:
+                continue
+            step = points[j] - points[i]
+            length = float(np.hypot(*step))
+            if length < MIN_PERIOD:
+                continue
+            tolerance = max(6.0, _RUN_TOL * length)
+            run, k = [i], 1
+            while True:
+                target = points[i] + k * step
+                distance = np.abs(points - target).max(axis=1)
+                nearest = int(np.argmin(distance))
+                if distance[nearest] > tolerance:
+                    break
+                run.append(nearest)
+                k += 1
+            if len(run) > len(best):
+                best, pitch = run, length
+    return [(int(points[i][0]), int(points[i][1])) for i in best], pitch
+
+
+def _anchored_run(rgb: np.ndarray) -> dict | None:
+    """Instances of a sparse mark in one image, found without folding.
+
+    The fold needs MIN_TILES cells in frame. A mark on a ~300px cell puts about
+    six copies in a photograph, so it never gets there -- but the copies are still
+    plainly present, and cutting a patch around one of them correlates at the
+    others at 0.92-0.94. This finds them: try each candidate anchor, keep whichever
+    produces the longest evenly spaced run of matches. Scenery does not repeat on
+    a grid, so a run is evidence; how much is decided across the batch.
+    """
+    work = _work_size(rgb)
+    gray = cv2.cvtColor(work, cv2.COLOR_RGB2GRAY)
+    hp = _highpass(gray)
+    best: dict | None = None
+    for cy, cx in _anchor_candidates(gray):
+        top = int(np.clip(cy - _ANCHOR_HALF_H, 0, hp.shape[0] - 2 * _ANCHOR_HALF_H))
+        left = int(np.clip(cx - _ANCHOR_HALF_W, 0, hp.shape[1] - 2 * _ANCHOR_HALF_W))
+        patch = hp[top : top + 2 * _ANCHOR_HALF_H, left : left + 2 * _ANCHOR_HALF_W]
+        points = _matched_sites(hp, patch, _RUN_NCC)
+        if len(points) < MIN_RUN:
+            continue
+        run, pitch = _best_run(points)
+        if len(run) >= MIN_RUN and (best is None or len(run) > len(best["sites"])):
+            best = {"hp": hp, "sites": run, "pitch": pitch}
+    return best
+
+
+def pooled_marks(images: Iterable[np.ndarray]) -> list[Mark]:
+    """One mark pooled from sparse instances across the whole batch, or none.
+
+    This is the last resort, for the mark too large and too sparse for any single
+    image to recover: about six copies of a ~300px cell in frame, where the fold
+    needs nine. Locating them per image works (see _anchored_run) -- what a single
+    image cannot do is PROVE them. Measured on three such photos, a clean control
+    frame beat all three of them on both available gates: 0.972 against 0.41-0.46
+    on evidence share, and 2.29-3.23 against 1.34-2.97 on fold significance.
+    Three samples are simply too few for either test to mean anything.
+
+    The batch is the only place more samples exist, and pooling them supplies the
+    discriminator too. A real overlay repeats at the SAME pitch in every image it
+    was stamped on -- measured 294.0, 294.0, 294.0 across three photos, a spread
+    of 0.000 -- while coincidental runs in clean frames pick arbitrary pitches
+    that cannot agree: 321/236/173 and 311/306/213, spreads of 0.61 and 0.35.
+    Agreement across images is the one thing a single clean photograph cannot
+    manufacture, and it is why this runs per batch and never per image.
+
+    KNOWN RISK, stated plainly because it is the only gate that survived scrutiny
+    (see _pool_group for the two that did not): pitch agreement distinguishes a
+    watermark from coincidence, but not from a repeating structure that genuinely
+    recurs across a batch at one spacing -- a tiled floor, a brick wall, a rank of
+    windows, photographed three or more times. Such a batch could be masked here.
+    Two further gates blunt it rather than close it: matches must be EVENLY spaced,
+    which excludes repeats receding with perspective, and each image's mask still
+    faces the per-pixel evidence check. Masks from this route are also small, since
+    only the instances that correlate confidently are stamped -- measured 0.20-0.27%
+    of frame against 2.0-5.8% for the folded route.
+    """
+    runs = [run for run in (_anchored_run(rgb) for rgb in images) if run is not None]
+    if len(runs) < _MIN_POOL_IMAGES:
+        return []
+    # Grouped by pitch, not judged as one set, because a batch can carry more than
+    # one overlay -- the sample of eight carries two, on pitches of 294 and 114.
+    # Lumping them together makes their pitches "disagree" and throws away both.
+    return [
+        mark
+        for group in _pitch_groups(runs)
+        if (mark := _pool_group(group)) is not None
+    ]
+
+
+def _pitch_groups(runs: list[dict]) -> list[list[dict]]:
+    """Runs split into groups that agree on their pitch."""
+    groups: list[list[dict]] = []
+    for run in sorted(runs, key=lambda r: r["pitch"]):
+        if groups:
+            current = groups[-1]
+            pitches = [member["pitch"] for member in current] + [run["pitch"]]
+            spread = (max(pitches) - min(pitches)) / max(float(np.mean(pitches)), 1e-6)
+            if spread <= _PITCH_TOL:
+                current.append(run)
+                continue
+        groups.append([run])
+    return [group for group in groups if len(group) >= _MIN_POOL_IMAGES]
+
+
+def _pool_group(runs: list[dict]) -> Mark | None:
+    """One mark from a group of runs that agree on their pitch, or None."""
+    patches = []
+    for run in runs:
+        hp = run["hp"]
+        for y, x in run["sites"]:
+            if (
+                y + 2 * _ANCHOR_HALF_H <= hp.shape[0]
+                and x + 2 * _ANCHOR_HALF_W <= hp.shape[1]
+            ):
+                patches.append(
+                    hp[y : y + 2 * _ANCHOR_HALF_H, x : x + 2 * _ANCHOR_HALF_W]
+                )
+    if len(patches) < MIN_TILES:
+        return None
+
+    template = np.stack(patches).mean(axis=0).astype(np.float32)
+    if template.std() <= 1e-3:
+        return None
+    # No significance test here, deliberately. The fold's version -- aligned
+    # average against the same patches rolled to arbitrary offsets -- was tried
+    # and measured to be noise on this route: rolling a patch moves the mark
+    # rather than removing it, so the null scales with the mark and the ratio
+    # depends on where the rolls happen to land. Across marks of rising strength
+    # (alpha 70 to 255) it read 2.69, 2.96, 1.88, 2.34, 2.22 -- straddling the
+    # 2.0 threshold with no relation to how strong the mark was, so it rejected
+    # genuine marks by luck while adding no safety.
+    #
+    # A cross-image template agreement test was tried in its place and is worse:
+    # a CLEAN dithered batch scored 0.640 where the real sparse batch scored
+    # 0.428, because four patches per image leave each per-image template
+    # dominated by leftover background rather than by the mark.
+    #
+    # What actually separates is the pitch agreement above, and it separates
+    # widely. The residual risk this leaves is stated in pooled_marks.
+    # The whole pooled patch is both the subject to match and the shape to stamp:
+    # it was cut around an instance rather than folded out of a tile, so there is
+    # no wider tile for the mark to run out of. The cell is its own size, which is
+    # the closest two instances can sit, and is what separates the matches.
+    return Mark(None, template, template, 0, 0, template.shape, pooled=True)
 
 
 def propose_pattern_mask_shared(

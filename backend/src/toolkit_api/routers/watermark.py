@@ -172,7 +172,7 @@ def _collect_marks(paths: list[Path]) -> list:
             except Exception:  # noqa: BLE001,S112 — one unreadable copy is not fatal
                 continue
 
-    return collect_marks(each())
+    return collect_marks(each)
 
 
 @router.get("/{batch_id}/{image_id}/mask")

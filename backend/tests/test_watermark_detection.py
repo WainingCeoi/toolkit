@@ -168,7 +168,7 @@ def test_a_mark_from_one_image_masks_the_same_overlay_on_another(background, siz
     from watermark import pattern
 
     _clean, donor, _truth = tiled_pair(basis=RECTANGULAR)
-    marks = collect_marks([donor])
+    marks = collect_marks(lambda: [donor])
     assert marks, "the donor frame should offer its mark to the batch"
 
     _c, other, truth = tiled_pair(basis=RECTANGULAR, background=background, size=size)
@@ -186,7 +186,7 @@ def test_an_image_that_finds_its_own_mark_does_not_use_a_borrowed_one():
     from watermark import pattern
 
     _clean, donor, _t = tiled_pair(basis=RECTANGULAR, background="render_dither")
-    marks = collect_marks([donor])
+    marks = collect_marks(lambda: [donor])
     _c, own_frame, _t2 = tiled_pair(basis=RECTANGULAR)
     alone = pattern.propose_pattern_mask(own_frame, 50)
     assert alone is not None
@@ -200,7 +200,7 @@ def test_a_borrowed_mark_is_never_forced_onto_a_clean_frame(background):
     # that says nothing about the next image, and an over-eager match would
     # inpaint a photograph that has no watermark in it at all.
     _clean, marked, _truth = tiled_pair(basis=RECTANGULAR)
-    marks = collect_marks([marked])
+    marks = collect_marks(lambda: [marked])
     assert marks
     clean, _m, _t = tiled_pair(watermarked=False, background=background)
     mask, used = propose_mask_detailed(clean, 50, detector="pattern", marks=marks)
@@ -213,7 +213,7 @@ def test_a_mark_that_cannot_mask_its_own_image_is_not_offered_to_the_batch():
     # Offering every recovered mark instead of only the ones that masked their
     # own image put a mask on a clean control frame.
     clean, _m, _t = tiled_pair(watermarked=False, background="sky_grass")
-    assert collect_marks([clean]) == []
+    assert collect_marks(lambda: [clean]) == []
 
 
 @pytest.mark.parametrize("noise", [0.0, 1.0, 2.0], ids=["flat", "quantised", "faint"])
@@ -234,3 +234,88 @@ def test_a_featureless_frame_holds_no_instances(noise):
     frame = np.dstack([level] * 3)
     assert pattern.apply_mark(frame, mark, 50, own=False) is None
     assert pattern.propose_pattern_mask(frame, 50) is None
+
+
+# =========================================================================
+# The sparse route: marks too large for any single frame to fold
+# =========================================================================
+
+
+def _sparse_batch(count=3, size=(1300, 800), seed=0):
+    """Frames carrying a mark on a cell so large only a few copies fit.
+
+    A 300px cell puts about six instances in frame where the fold needs nine, so
+    no image here can recover its own mark however clear the mark is. Backgrounds
+    differ per frame, which is what lets pooling cancel the scenery.
+    """
+    out = []
+    for index in range(count):
+        _clean, marked, truth = tiled_pair(
+            basis=((0, 300), (300, 0)),
+            size=size,
+            background=["gradient", "sky_grass", "render_dither"][index % 3],
+            glyph_size=30,
+            alpha=70,
+        )
+        out.append((marked, truth))
+    return out
+
+
+def test_a_mark_too_sparse_to_fold_is_pooled_across_the_batch():
+    from watermark import pattern
+
+    batch = _sparse_batch()
+    for marked, _truth in batch:
+        assert pattern.recover_mark(marked) is None or (
+            pattern.propose_pattern_mask(marked, 50) is None
+        ), "fixture no longer needs the pooled route"
+
+    marks = pattern.pooled_marks([m for m, _t in batch])
+    assert marks, "three frames sharing one sparse overlay pooled into nothing"
+    assert marks[0].pooled is True
+
+
+@pytest.mark.parametrize("background", ["sky_grass", "render_dither", "gradient"])
+def test_a_clean_batch_never_pools_into_a_mark(background):
+    # The guard that makes the sparse route safe. Three collinear evenly spaced
+    # matches is a weak claim and clean frames do supply them — measured pitches
+    # of 321/236/173 on dithered frames and 311/306/213 on gradients. What they
+    # cannot do is AGREE: a real overlay repeats at the same pitch in every image
+    # it was stamped on (measured 294.0, 294.0, 294.0), and coincidence does not.
+    from watermark import pattern
+
+    frames = [
+        tiled_pair(watermarked=False, background=background, size=size)[0]
+        for size in ((1200, 800), (1100, 740), (1000, 680))
+    ]
+    assert pattern.pooled_marks(frames) == []
+    marks = collect_marks(lambda: iter(frames))
+    assert marks == []
+    for frame in frames:
+        mask, used = propose_mask_detailed(frame, 50, detector="pattern", marks=marks)
+        assert used == "none"
+        assert np.count_nonzero(mask) == 0
+
+
+def test_pooling_needs_several_images_and_is_skipped_when_folding_worked():
+    # Per image the sparse route cannot be trusted at all: on real photos a clean
+    # control frame beat all three of them on both available gates (0.972 against
+    # 0.41-0.46 on evidence share, 2.29-3.23 against 1.34-2.97 on significance).
+    # Only agreement between images carries it, so one image can never pool.
+    from watermark import pattern
+
+    batch = _sparse_batch()
+    assert pattern.pooled_marks([batch[0][0]]) == []
+    assert pattern.pooled_marks([batch[0][0], batch[1][0]]) == []
+
+    # And when every image folded on its own there is nothing to rescue, so the
+    # pass is not paid for.
+    _clean, easy, _truth = tiled_pair(basis=RECTANGULAR)
+    calls = []
+
+    def load():
+        calls.append(1)
+        return iter([easy])
+
+    collect_marks(load)
+    assert len(calls) == 1, "pooled pass ran despite the fold covering the batch"
