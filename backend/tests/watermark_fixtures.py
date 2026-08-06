@@ -98,9 +98,12 @@ def tiled_pair(
     """
     w, h = size
     clean = _background(background, w, h)
-    overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     if watermarked:
         stamp = _stamp(text, glyph_size, angle, color, alpha)
+        # Padded, so an instance hanging off the top or left edge still
+        # composites in bounds; cropped back to the frame afterwards.
+        pad_x, pad_y = stamp.width, stamp.height
+        canvas = Image.new("RGBA", (w + 2 * pad_x, h + 2 * pad_y), (0, 0, 0, 0))
         (v1y, v1x), (v2y, v2x) = basis
         # Enough integer combinations to cover the frame whatever the basis.
         reach = int(2 * (w + h) / max(1, min(abs(v1y) + abs(v1x), abs(v2y) + abs(v2x))))
@@ -108,17 +111,44 @@ def tiled_pair(
             for j in range(-reach, reach + 1):
                 y = i * v1y + j * v2y
                 x = i * v1x + j * v2x
-                if -stamp.height < y < h and -stamp.width < x < w:
-                    overlay.paste(stamp, (int(x), int(y)), stamp)
+                if -pad_y < y < h and -pad_x < x < w:
+                    # alpha_composite, NOT paste(…, mask=stamp): paste with an
+                    # RGBA image as its own mask premultiplies a second time,
+                    # which turned alpha 40 into 6 and colour 235 into 37 — a
+                    # mark that was meant to be light at 16% opacity became DARK
+                    # at 2%. Every measurement taken against those fixtures was
+                    # against a target far fainter, and of the wrong sign, than
+                    # the watermarks this tool is for.
+                    canvas.alpha_composite(stamp, (int(x) + pad_x, int(y) + pad_y))
+        overlay = canvas.crop((pad_x, pad_y, pad_x + w, pad_y + h))
+    else:
+        overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     marked = Image.alpha_composite(Image.fromarray(clean).convert("RGBA"), overlay)
-    truth = (np.asarray(overlay)[:, :, 3] > 0).astype(np.uint8) * 255
-    return clean, np.asarray(marked.convert("RGB")), truth
+
+    # Three-level truth. Glyph edges are antialiased down to an alpha of 1 or 2,
+    # which is neither visible nor recoverable; counting those as mark caps
+    # recall at whatever share of the stamp happens to be fringe, and counting a
+    # detector that does cover them as wrong is equally meaningless. So the
+    # fringe is a DON'T-CARE band that score() leaves out of both figures.
+    ink = np.asarray(overlay)[:, :, 3]
+    core = ink >= max(1, round(0.2 * int(ink.max())))
+    truth = np.where(core & (ink > 0), TRUTH_MARK, np.where(ink > 0, TRUTH_FRINGE, 0))
+    return clean, np.asarray(marked.convert("RGB")), truth.astype(np.uint8)
+
+
+TRUTH_MARK = 255
+TRUTH_FRINGE = 128
 
 
 def score(proposed: np.ndarray, truth: np.ndarray) -> tuple[float, float]:
-    """(recall, false-positive rate) of a proposed mask against ground truth."""
+    """(recall, false-positive rate) of a proposed mask against ground truth.
+
+    Recall is over the mark's core and false positives over clean pixels only;
+    the antialiasing fringe between them counts for neither (see tiled_pair).
+    """
     hit = proposed > 0
-    wm = truth > 0
+    wm = truth == TRUTH_MARK
+    clean = truth == 0
     recall = (hit & wm).sum() / max(wm.sum(), 1)
-    false_positives = (hit & ~wm).sum() / max((~wm).sum(), 1)
+    false_positives = (hit & clean).sum() / max(clean.sum(), 1)
     return float(recall), float(false_positives)

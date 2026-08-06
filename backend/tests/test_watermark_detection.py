@@ -36,9 +36,34 @@ def test_a_rectangular_lattice_is_recovered_and_masked_precisely():
     mask, used = propose(marked)
     assert used == "pattern"
     recall, false_positives = score(mask, truth)
-    assert recall > 0.05, "nothing of the mark was masked"
+    assert recall > 0.25, f"only {recall:.1%} of the mark was masked"
     # Precision is the point of this detector: it stamps instances of the
     # recovered mark, so it should hardly touch anything else.
+    assert false_positives < 0.02, f"{false_positives:.1%} of clean pixels masked"
+
+
+@pytest.mark.parametrize(
+    "kwargs,least",
+    [
+        (dict(background="render_dither"), 0.15),
+        (dict(background="gradient"), 0.60),
+        (dict(alpha=22), 0.20),
+        (dict(color=(20, 20, 20), alpha=55), 0.25),
+    ],
+    ids=["dither-bg", "gradient-bg", "faint-alpha-22", "dark-mark"],
+)
+def test_the_mark_is_found_across_opacities_and_backgrounds(kwargs, least):
+    # The dual top-hat answers light and dark marks alike, and the fold does not
+    # care either — these cases are here because the fixtures used to be unable
+    # to express them. Their watermark was composited with paste(im, box, im),
+    # which premultiplies twice: a light mark at 16% opacity was silently
+    # rendered as a DARK one at 2%, so every case looked the same, and looked
+    # nothing like the samples. See tiled_pair.
+    _clean, marked, truth = tiled_pair(basis=RECTANGULAR, **kwargs)
+    mask, used = propose(marked)
+    assert used == "pattern"
+    recall, false_positives = score(mask, truth)
+    assert recall > least, f"only {recall:.1%} of the mark was masked"
     assert false_positives < 0.02, f"{false_positives:.1%} of clean pixels masked"
 
 
@@ -104,5 +129,6 @@ def test_an_oblique_lattice_is_recovered(basis, angle):
     _clean, marked, truth = tiled_pair(basis=basis, angle=angle)
     mask, used = propose(marked)
     assert used == "pattern"
-    recall, _fp = score(mask, truth)
-    assert recall > 0.05
+    recall, false_positives = score(mask, truth)
+    assert recall > 0.25, f"only {recall:.1%} of the mark was masked"
+    assert false_positives < 0.02, f"{false_positives:.1%} of clean pixels masked"
