@@ -386,19 +386,17 @@ export interface WatermarkRunPayload {
 }
 
 export interface WatermarkFileResult {
+  /** Which uploaded image produced this output. */
   image_id: string
   name: string
   artifact_id: string
-  /** Carried in the result so before/after can size itself from the snapshot. */
-  width: number
-  height: number
 }
 
 export interface WatermarkResult {
   /**
    * The batch these results came from. The snapshot outlives the page's local
-   * state, so this is what lets the results view rebuild "before" image URLs
-   * after a remount — and what tells it these are a PREVIOUS batch's results.
+   * state, so this is what tells the results view whether it is looking at the
+   * outcome of the batch currently staged or of a PREVIOUS one.
    */
   batch_id: string
   done: string[]

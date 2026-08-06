@@ -52,10 +52,13 @@ absolutely. Measured against a synthetic hard case (smooth sky + textured
 grass, faint tiled text over both), at 60% recall this cut false positives
 from 55.1% of the image to 13.3% — 4.1x fewer.
 
-Over-detection is still fine by design, and the proposal is only a proposal:
-it is reviewed by a human with a brush and an eraser before anything is
-inpainted. A watermark faint enough to hide inside the scene's own texture
-will not separate at any sensitivity — that is what the brush is for.
+Over-detection used to be fine by design, because a human corrected the proposal
+with a brush before anything was inpainted. There is no brush now, so this
+detector is no longer the default and only runs when asked for by name: a mask
+nobody is going to correct has to be right, and this one marks thin image detail
+along with the mark. A watermark faint enough to hide inside the scene's own
+texture does not separate at any sensitivity, and the honest answer for those is
+the empty mask ``pattern`` returns, which the caller skips.
 """
 
 from __future__ import annotations

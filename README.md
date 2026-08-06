@@ -187,14 +187,21 @@ folder as the task is created and cannot move it afterwards.
 ### 🧽 Watermark Remover
 
 Drop up to 20 `png` / `jpg` / `webp` images and the backend proposes a
-watermark mask per image. Whatever it proposes, **you review every mask before
-anything changes**: each image gets a canvas editor with the mask tinted red, a
-brush and eraser (adjustable size, undo/reset), and a sensitivity slider that
-refetches the proposal. On run, the human-approved masks are dilated a few
-pixels and inpainted — **LaMa** (ML, best quality; the ~200 MB model downloads
-on first use) or **cv2** (instant, rougher on large areas). Progress streams
-per file; results show a draggable before/after divider, per-file downloads,
-and a zip of everything.
+watermark mask per image. **You see every mask before anything changes**: each
+image is drawn with its mask tinted red, over a sensitivity slider that
+refetches the proposal. On run the masks are dilated a few pixels and inpainted
+— **LaMa** (ML, best quality; the ~200 MB model downloads on first use) or
+**cv2** (instant, rougher on large areas). Progress streams per file; results
+are per-file downloads plus a zip of everything.
+
+The mask is reviewed, not painted. There was a brush and an eraser, and dropping
+them is deliberate: the detector masks the copies of a mark it actually
+recovered, or reports that it recovered nothing and the image is **skipped**.
+Hand-painting the second case masks whatever the person could see rather than
+the watermark, and inpainting that damaged photographs while leaving the
+watermark in place — measured at 2.6–6.8% of pixels moved by 31–58 grey levels,
+with the watermark still there afterwards. Doing nothing is the better answer,
+and the page says which images got it.
 
 Only the pixels you marked are ever written, and each image becomes available
 the moment it is done — so a run that stops early still hands back everything
@@ -228,10 +235,17 @@ mix the two, and the page says which ran.
 > recovered, against 0.00–0.20 where the period estimate had locked onto
 > scenery — 0.00 on the watermark-free photo.
 
-Recovering the pattern does not always work: on some images the period estimate
-locks onto scenery instead of the overlay, and those fall back. Coverage is
-also thinner over busy ground than over sky, where the mark is genuinely buried
-in the texture. Raise sensitivity to widen each stamp, or brush the rest in.
+Recovery does not always work, and when it does not the image is skipped rather
+than guessed at. Two things rescue images that would otherwise be: the mark is
+shared across the batch, so an image that cannot recover its own is masked from
+a sibling's (one watermarking tool usually ran over all of them), and
+sensitivity widens each stamp. Coverage is still thinner over busy ground than
+over sky, where the mark is genuinely buried in the texture.
+
+Measured on a sample of eight photos: 5 detected, 3 skipped. The three that are
+skipped do carry watermarks — their overlay repeats on a ~300 px cell, so only
+about six copies fit in frame, below the nine tiles the fold needs, and no
+sibling can recover it either.
 
 LaMa runs on the best accelerator it finds — CUDA, then Apple's MPS, then CPU.
 On an M-series Mac that is roughly 8× faster than CPU for output that differs
@@ -248,10 +262,10 @@ The engine also runs headless over a folder, no web app involved:
 cd backend && uv run python -m watermark clean IN_DIR OUT_DIR --inpainter lama
 ```
 
-Headless means nobody corrects the mask, so CLI quality is auto-detection
-quality: solid on clearly visible overlays, but a watermark faint enough to
-hide inside the scene's own texture will not separate at any sensitivity —
-use the web page and its brush for those.
+The CLI sees the whole folder at once, so it shares marks across it exactly as
+the web page does across a batch. It prints which images were skipped; a
+watermark faint enough to hide inside the scene's own texture does not separate
+at any sensitivity, and nothing is written for those.
 
 > For images you own or are licensed to edit — removing someone else's
 > watermark from content you have no rights to is not what this is for.

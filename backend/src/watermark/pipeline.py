@@ -23,8 +23,8 @@ from .inpaint import get_inpainter
 # is exercised against, browser canvas included.
 IMAGE_TYPES = ("png", "jpg", "jpeg", "webp")
 
-# The mask is grown a few px before inpainting: a proposal (or a brush stroke)
-# that hugs the watermark too tightly leaves a one-pixel ghost outline behind.
+# The mask is grown a few px before inpainting: a proposal that hugs the
+# watermark too tightly leaves a one-pixel ghost outline behind.
 DEFAULT_DILATE_PX = 3
 
 # Inpainting runs in tiles of at most this many pixels a side, with the

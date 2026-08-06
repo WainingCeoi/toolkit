@@ -219,7 +219,6 @@ def test_run_inpaints_only_the_masked_pixels(client):
     assert snap["result"]["batch_id"] == batch["batch_id"]
     file_entry = snap["result"]["files"][0]
     assert file_entry["image_id"] == image["id"]
-    assert (file_entry["width"], file_entry["height"]) == (80, 60)
     download = client.get(f"/api/artifacts/{file_entry['artifact_id']}")
     cleaned = np.asarray(Image.open(io.BytesIO(download.content)))
     assert cleaned[28, 40].mean() < 200  # square filled from its gray surround

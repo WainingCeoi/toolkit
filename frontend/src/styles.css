@@ -597,7 +597,7 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; gap: 6
 
 /* --- Watermark Remover ---------------------------------------------------
    The canvas renders at native image resolution and is CSS-scaled to fit its
-   card; MaskEditor maps pointer coordinates back into image pixels. */
+   card, so the mask overlay is never resampled to display it. */
 .wm-card {
   border: 1px solid var(--edge);
   border-radius: var(--radius-s);
@@ -612,9 +612,8 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; gap: 6
   margin: 10px 0;
   border: 1px solid var(--edge);
   border-radius: var(--radius-s);
-  cursor: crosshair;
-  touch-action: none; /* strokes must not scroll the page */
 }
+.wm-file { justify-content: space-between; padding: 6px 0; }
 .wm-toolbar { margin-bottom: 4px; }
 .wm-slider {
   display: flex;
@@ -628,47 +627,3 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; gap: 6
 .wm-hint { font: 12px var(--mono); color: var(--faint); flex: 1; }
 .wm-dims { font: 12px var(--mono); color: var(--faint); }
 
-/* Before/after reveal: after-image on top, clipped at the divider. */
-.ba {
-  position: relative;
-  margin-top: 10px;
-  max-width: 100%;
-  overflow: hidden;
-  border: 1px solid var(--edge);
-  border-radius: var(--radius-s);
-  cursor: ew-resize;
-  touch-action: none;
-  user-select: none;
-}
-.ba img {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  display: block;
-}
-.ba img:first-child { position: relative; } /* sizes the container */
-.ba-after { position: absolute; inset: 0; }
-.ba-divider {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 2px;
-  margin-left: -1px;
-  background: var(--amber);
-  box-shadow: 0 0 8px rgba(255, 178, 36, 0.7);
-  pointer-events: none;
-}
-.ba-tag {
-  position: absolute;
-  top: 8px;
-  font: 10px var(--mono);
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--text);
-  background: color-mix(in srgb, var(--bench) 75%, transparent);
-  border: 1px solid var(--edge);
-  border-radius: 999px;
-  padding: 2px 8px;
-  pointer-events: none;
-}

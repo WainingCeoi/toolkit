@@ -1,7 +1,12 @@
-// Watermark Remover — auto-detect a mask, fix it by hand on a canvas, inpaint.
-// The mask that runs is ALWAYS the human-approved one: the backend's proposal
-// (dual top-hat, deliberately over-eager) is only a starting point. One job
+// Watermark Remover — auto-detect a mask, review it, inpaint it away. One job
 // per batch; each cleaned image is its own artifact plus one zip of them all.
+//
+// The mask is reviewed, not edited. There used to be a brush and an eraser, and
+// dropping them is a deliberate narrowing: the detector masks the copies of a
+// mark it actually recovered, or reports that it recovered nothing and the image
+// is skipped. Hand-painting the second case masks whatever the person could see
+// rather than the watermark, and inpainting that damaged photographs while
+// leaving the watermark in place. What is shown is what runs.
 //
 // Results render from the job SNAPSHOT, not from the batch held in local
 // state: the jobs context keeps snapshots alive across navigation, so leaving
@@ -12,12 +17,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, artifactUrl, watermarkImageUrl, watermarkMaskUrl } from '../api'
 import { useToolJob } from '../jobs'
-import BeforeAfter from '../components/BeforeAfter'
 import Button from '../components/Button'
 import CodeBox from '../components/CodeBox'
 import FileDrop from '../components/FileDrop'
 import JobPanel from '../components/JobPanel'
-import MaskEditor, { type MaskEditorHandle } from '../components/MaskEditor'
+import MaskPreview, { type MaskPreviewHandle } from '../components/MaskPreview'
 import type {
   WatermarkBatch,
   WatermarkDetector,
@@ -41,11 +45,9 @@ export default function WatermarkRemover() {
   const [applied, setApplied] = useState<Record<string, number>>({})
   const [ready, setReady] = useState<Record<string, boolean>>({})
   const [noPattern, setNoPattern] = useState<Record<string, boolean>>({})
-  const [brush, setBrush] = useState(24)
-  const [mode, setMode] = useState<'brush' | 'eraser'>('brush')
   const [detector, setDetector] = useState<WatermarkDetector>('pattern')
   const [inpainter, setInpainter] = useState<'lama' | 'cv2'>('lama')
-  const editors = useRef<Record<string, MaskEditorHandle | null>>({})
+  const previews = useRef<Record<string, MaskPreviewHandle | null>>({})
 
   // Health lamps load independently of everything else on the page.
   const [health, setHealth] = useState<WatermarkHealth | null>(null)
@@ -85,7 +87,7 @@ export default function WatermarkRemover() {
       const fd = new FormData()
       files.forEach((f) => fd.append('files', f))
       const next = await api.watermarkUpload(fd)
-      editors.current = {}
+      previews.current = {}
       const defaults = Object.fromEntries(
         next.images.map((img) => [img.id, DEFAULT_SENSITIVITY]),
       )
@@ -107,7 +109,7 @@ export default function WatermarkRemover() {
     const masks: Record<string, string> = {}
     const pending: string[] = []
     for (const img of batch.images) {
-      const mask = editors.current[img.id]?.exportMask()
+      const mask = previews.current[img.id]?.exportMask()
       // null means the proposal has not landed yet. Sending nothing for that
       // image would inpaint an empty mask and "succeed" without changing it.
       if (mask) masks[img.id] = mask
@@ -124,7 +126,7 @@ export default function WatermarkRemover() {
     setBatch(null)
     setReady({})
     setNoPattern({})
-    editors.current = {}
+    previews.current = {}
   }
 
   // Results are shown in every state, because the worker publishes them per
@@ -142,9 +144,9 @@ export default function WatermarkRemover() {
         <h1>🧽 Watermark Remover</h1>
       </div>
       <p className="page-sub">
-        Auto-detect a watermark, correct the mask with a brush, and inpaint it
-        away — LaMa for quality, cv2 for speed. For images you own or are
-        licensed to edit.
+        Auto-detect a repeating watermark, review what will be removed, and
+        inpaint it away — LaMa for quality, cv2 for speed. For images you own or
+        are licensed to edit.
       </p>
 
       {health && (
@@ -188,8 +190,8 @@ export default function WatermarkRemover() {
         {!batch && !uploadError && (
           <div className="note info">
             Detection proposes a mask per image (tuned for semi-transparent
-            tiled text) — you review and fix every mask before anything is
-            changed.
+            tiled text) — you see exactly what will be removed before anything
+            is changed, and an image with no watermark found is left alone.
           </div>
         )}
       </div>
@@ -201,32 +203,8 @@ export default function WatermarkRemover() {
             <span>REVIEW MASKS ({batch.images.length})</span>
           </div>
           <div className="row wm-toolbar">
-            <Button
-              size="sm"
-              variant={mode === 'brush' ? 'primary' : 'secondary'}
-              onClick={() => setMode('brush')}
-            >
-              🖌 Brush
-            </Button>
-            <Button
-              size="sm"
-              variant={mode === 'eraser' ? 'primary' : 'secondary'}
-              onClick={() => setMode('eraser')}
-            >
-              ⌫ Eraser
-            </Button>
-            <label className="wm-slider">
-              size {brush}px
-              <input
-                type="range"
-                min={4}
-                max={80}
-                value={brush}
-                onChange={(e) => setBrush(Number(e.target.value))}
-              />
-            </label>
             <span className="wm-hint">
-              red = will be inpainted · brush adds, eraser restores
+              red = will be inpainted · sensitivity re-runs detection
             </span>
             <Button size="sm" variant="ghost" onClick={startOver}>
               Start over
@@ -248,8 +226,8 @@ export default function WatermarkRemover() {
             </select>
             <span className="wm-hint">
               {detector === 'pattern'
-                ? 'Recovers the repeated mark and masks only its copies, so edges and detail are left alone. Any image with no recoverable repeat falls back on its own.'
-                : 'Works on anything, including a single logo — but thin detail like seams and wires can read as watermark.'}
+                ? 'Recovers the repeated mark and masks only its copies, so edges and detail are left alone. A mark found on one image is tried on the rest of the batch; any image with no recoverable repeat is skipped, not guessed at.'
+                : 'Works on anything, including a single logo — but thin detail like seams and wires read as watermark too, and there is no brush to correct that. Prefer the pattern detector.'}
             </span>
           </div>
 
@@ -263,9 +241,9 @@ export default function WatermarkRemover() {
                   {img.width}×{img.height}
                 </span>
               </div>
-              <MaskEditor
+              <MaskPreview
                 ref={(handle) => {
-                  editors.current[img.id] = handle
+                  previews.current[img.id] = handle
                 }}
                 imageUrl={watermarkImageUrl(batch.batch_id, img.id)}
                 maskUrl={watermarkMaskUrl(
@@ -276,8 +254,6 @@ export default function WatermarkRemover() {
                 )}
                 width={img.width}
                 height={img.height}
-                brush={brush}
-                mode={mode}
                 onReady={(isReady) => markReady(img.id, isReady)}
                 onEmpty={(empty) => markEmpty(img.id, empty)}
               />
@@ -306,12 +282,6 @@ export default function WatermarkRemover() {
                     }
                   />
                 </label>
-                <Button size="sm" onClick={() => editors.current[img.id]?.undo()}>
-                  Undo
-                </Button>
-                <Button size="sm" onClick={() => editors.current[img.id]?.reset()}>
-                  Reset mask
-                </Button>
               </div>
             </div>
           ))}
@@ -377,7 +347,7 @@ export default function WatermarkRemover() {
                     {snapshot.state === 'running' &&
                       `${result.done.length} done so far — each is ready to download as it lands.`}
                     {snapshot.state === 'done' &&
-                      `✅ Cleaned ${result.done.length} image(s). Drag the divider to compare.`}
+                      `✅ Cleaned ${result.done.length} image(s).`}
                     {snapshot.state === 'cancelled' &&
                       `Stopped after ${result.done.length} image(s) — these are finished and safe to download.`}
                     {snapshot.state === 'failed' &&
@@ -390,19 +360,11 @@ export default function WatermarkRemover() {
                   </Button>
                 )}
                 {result.files.map((file) => (
-                  <div className="wm-card" key={file.artifact_id}>
-                    <div className="row" style={{ justifyContent: 'space-between' }}>
-                      <strong>{file.name}</strong>
-                      <Button as="a" size="sm" href={artifactUrl(file.artifact_id)}>
-                        ⬇ Download
-                      </Button>
-                    </div>
-                    <BeforeAfter
-                      before={watermarkImageUrl(result.batch_id, file.image_id)}
-                      after={artifactUrl(file.artifact_id)}
-                      width={file.width}
-                      height={file.height}
-                    />
+                  <div className="row wm-file" key={file.artifact_id}>
+                    <strong>{file.name}</strong>
+                    <Button as="a" size="sm" href={artifactUrl(file.artifact_id)}>
+                      ⬇ Download
+                    </Button>
                   </div>
                 ))}
                 {result.skipped.length > 0 && (

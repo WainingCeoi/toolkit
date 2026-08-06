@@ -332,13 +332,11 @@ def run(req: WatermarkRunIn, state: StateDep, watermarks: WatermarksDep):
                 archive.writestr(out_name, png)
                 file_results.append(
                     {
+                        # Which input produced this output. The name alone does
+                        # not say, since two inputs can dedupe to one stem.
                         "image_id": entry["id"],
                         "name": out_name,
                         "artifact_id": artifact_id,
-                        # Dimensions travel with the result so the before/after
-                        # view can size itself from the snapshot alone.
-                        "width": entry["width"],
-                        "height": entry["height"],
                     }
                 )
                 done.append(out_name)

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { canvasPoint, maskToOverlay, overlayToMask, TINT } from './mask'
+import { maskToOverlay, overlayToMask, TINT } from './mask'
 
 // One RGBA pixel per call site keeps the fixtures readable.
 const px = (r: number, g: number, b: number, a: number) =>
@@ -44,12 +44,3 @@ describe('mask pixel conversions', () => {
   })
 })
 
-describe('canvasPoint', () => {
-  it('maps CSS coordinates back to image pixels on a scaled canvas', () => {
-    // A 1000×500 canvas displayed at 250×125 (4x downscale).
-    const rect = { left: 10, top: 20, width: 250, height: 125 }
-    expect(canvasPoint(rect, 1000, 500, 10, 20)).toEqual({ x: 0, y: 0 })
-    expect(canvasPoint(rect, 1000, 500, 260, 145)).toEqual({ x: 1000, y: 500 })
-    expect(canvasPoint(rect, 1000, 500, 135, 82.5)).toEqual({ x: 500, y: 250 })
-  })
-})
