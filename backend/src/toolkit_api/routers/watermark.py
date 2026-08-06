@@ -13,7 +13,6 @@ from __future__ import annotations
 import base64
 import binascii
 import io
-import os
 import zipfile
 from pathlib import Path
 from typing import Annotated
@@ -30,7 +29,12 @@ from watermark.detect import (
     TEXTURE,
     propose_mask_detailed,
 )
-from watermark.inpaint import DEVICE_ENV, INPAINTERS, get_inpainter, lama_available
+from watermark.inpaint import (
+    INPAINTERS,
+    get_inpainter,
+    lama_available,
+    resolve_device,
+)
 from watermark.pipeline import DEFAULT_DILATE_PX, IMAGE_TYPES, remove_watermark
 
 from ..deps import StateDep, WatermarksDep
@@ -72,10 +76,9 @@ class WatermarkRunIn(BaseModel):
 
 @router.get("/health", response_model=WatermarkHealthOut)
 def health() -> WatermarkHealthOut:
-    return WatermarkHealthOut(
-        lama=lama_available(),
-        device=os.environ.get(DEVICE_ENV, "cpu"),
-    )
+    # resolve_device imports torch to probe for an accelerator, which is why
+    # this is a request and not module state — creating the app stays clean.
+    return WatermarkHealthOut(lama=lama_available(), device=resolve_device())
 
 
 @router.post("/batch", response_model=WatermarkBatchOut)

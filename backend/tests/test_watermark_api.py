@@ -59,10 +59,17 @@ def mask_b64(width, height, box=None):
 # =========================================================================
 
 
-def test_watermark_health_reports_lama_and_device(client):
+def test_watermark_health_reports_lama_and_the_resolved_device(client):
     body = client.get("/api/watermark/health").json()
     assert set(body) == {"lama", "device"}
-    assert body["device"] == "cpu"
+    # Whatever this machine has — an accelerator is picked automatically, so
+    # pinning "cpu" here would fail on any Mac with MPS.
+    assert body["device"] in {"cpu", "mps", "cuda"}
+
+
+def test_watermark_device_env_pins_the_device(client, monkeypatch):
+    monkeypatch.setenv("WATERMARK_DEVICE", "cpu")
+    assert client.get("/api/watermark/health").json()["device"] == "cpu"
 
 
 def test_creating_the_app_never_imports_torch():
