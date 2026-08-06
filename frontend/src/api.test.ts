@@ -80,8 +80,13 @@ describe('api helpers', () => {
 
   it('builds watermark image and mask URLs under /api', () => {
     expect(watermarkImageUrl('b1', 'i1')).toBe('/api/watermark/b1/i1/image')
+    // The detector rides in the URL so changing it refetches the proposal,
+    // the same way the sensitivity slider does.
     expect(watermarkMaskUrl('b1', 'i1', 70)).toBe(
-      '/api/watermark/b1/i1/mask?sensitivity=70',
+      '/api/watermark/b1/i1/mask?sensitivity=70&detector=texture',
+    )
+    expect(watermarkMaskUrl('b1', 'i1', 40, 'pattern')).toBe(
+      '/api/watermark/b1/i1/mask?sensitivity=40&detector=pattern',
     )
   })
 

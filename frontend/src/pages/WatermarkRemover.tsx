@@ -18,7 +18,12 @@ import CodeBox from '../components/CodeBox'
 import FileDrop from '../components/FileDrop'
 import JobPanel from '../components/JobPanel'
 import MaskEditor, { type MaskEditorHandle } from '../components/MaskEditor'
-import type { WatermarkBatch, WatermarkHealth, WatermarkResult } from '../types/api'
+import type {
+  WatermarkBatch,
+  WatermarkDetector,
+  WatermarkHealth,
+  WatermarkResult,
+} from '../types/api'
 
 const ACCEPT = '.png,.jpg,.jpeg,.webp'
 const DEFAULT_SENSITIVITY = 50
@@ -37,6 +42,7 @@ export default function WatermarkRemover() {
   const [ready, setReady] = useState<Record<string, boolean>>({})
   const [brush, setBrush] = useState(24)
   const [mode, setMode] = useState<'brush' | 'eraser'>('brush')
+  const [detector, setDetector] = useState<WatermarkDetector>('texture')
   const [inpainter, setInpainter] = useState<'lama' | 'cv2'>('lama')
   const editors = useRef<Record<string, MaskEditorHandle | null>>({})
 
@@ -218,6 +224,26 @@ export default function WatermarkRemover() {
               Start over
             </Button>
           </div>
+          <div className="row wm-toolbar">
+            <label className="wm-slider" htmlFor="wm-detector">
+              detection
+            </label>
+            <select
+              id="wm-detector"
+              className="control"
+              style={{ width: 'auto' }}
+              value={detector}
+              onChange={(e) => setDetector(e.target.value as WatermarkDetector)}
+            >
+              <option value="texture">Standing out locally — any watermark</option>
+              <option value="pattern">Repeating pattern — tiled watermarks</option>
+            </select>
+            <span className="wm-hint">
+              {detector === 'pattern'
+                ? 'Recovers the repeated mark and masks only its copies, so edges and detail are left alone. Falls back per image when no repeat is found.'
+                : 'Works on anything, including a single logo — but thin detail like seams and wires can read as watermark.'}
+            </span>
+          </div>
 
           {batch.images.map((img) => (
             <div className="wm-card" key={img.id}>
@@ -237,6 +263,7 @@ export default function WatermarkRemover() {
                   batch.batch_id,
                   img.id,
                   applied[img.id] ?? DEFAULT_SENSITIVITY,
+                  detector,
                 )}
                 width={img.width}
                 height={img.height}

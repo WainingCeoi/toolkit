@@ -10,7 +10,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from .detect import DEFAULT_SENSITIVITY
+from .detect import DEFAULT_SENSITIVITY, DETECTORS, TEXTURE
 from .inpaint import INPAINTERS, lama_available
 from .pipeline import DEFAULT_DILATE_PX, clean_folder
 
@@ -41,6 +41,15 @@ def main(argv: list[str] | None = None) -> int:
         help=f"how eagerly to mask (default: {DEFAULT_SENSITIVITY})",
     )
     clean.add_argument(
+        "--detector",
+        choices=DETECTORS,
+        default=TEXTURE,
+        help="texture: judge each pixel against its neighbourhood, works on "
+        "anything; pattern: recover a repeating watermark and mask only its "
+        "instances — far more precise when the mark really is tiled, and it "
+        f"falls back to texture per image when it is not (default: {TEXTURE})",
+    )
+    clean.add_argument(
         "--dilate",
         type=int,
         default=DEFAULT_DILATE_PX,
@@ -67,6 +76,7 @@ def main(argv: list[str] | None = None) -> int:
             inpainter=args.inpainter,
             sensitivity=args.sensitivity,
             dilate_px=args.dilate,
+            detector=args.detector,
             on_progress=on_progress,
         )
     except ValueError as e:

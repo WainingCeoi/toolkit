@@ -8,7 +8,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from .detect import DEFAULT_SENSITIVITY, propose_mask
+from .detect import DEFAULT_SENSITIVITY, TEXTURE, propose_mask
 from .imgio import encode_png, load_rgb
 from .inpaint import get_inpainter
 
@@ -122,6 +122,7 @@ def clean_folder(
     inpainter: str = "lama",
     sensitivity: int = DEFAULT_SENSITIVITY,
     dilate_px: int = DEFAULT_DILATE_PX,
+    detector: str = TEXTURE,
     on_progress: Callable[[int, int], bool] | None = None,
 ) -> tuple[list[str], list[tuple[str, str]]]:
     """Headless batch: auto-mask and inpaint every image in ``in_dir``.
@@ -151,7 +152,7 @@ def clean_folder(
     ):
         try:
             rgb = load_rgb(path.read_bytes())
-            mask = propose_mask(rgb, sensitivity)
+            mask = propose_mask(rgb, sensitivity, detector)
             out = remove_watermark(rgb, mask, inpaint, dilate_px)
             (dst / out_name).write_bytes(encode_png(out))
             cleaned.append(out_name)

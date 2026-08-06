@@ -19,7 +19,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 from watermark import imgio
 from watermark.__main__ import main
-from watermark.detect import propose_mask
+from watermark.detect import propose_mask, propose_mask_detailed
 from watermark.inpaint import get_inpainter, inpaint_cv2
 from watermark.pipeline import remove_watermark
 
@@ -161,6 +161,48 @@ def test_the_top_of_the_slider_is_not_a_cliff():
         f"sensitivity 100 marked {at_100:.1%} vs {at_90:.1%} at 90 — the top "
         "of the slider should refine the mask, not blanket the photo"
     )
+
+
+def test_the_pattern_detector_ignores_an_edge_that_texture_flags():
+    # The point of recovering the mark: a hard edge is not part of the repeat,
+    # so pattern must leave it far more intact than the texture detector does.
+    _clean, marked, _truth = mixed_texture_pair()
+    marked = marked.copy()
+    marked[:, 480:486] = 255  # a bright seam, like a tent edge or a railing
+
+    pattern_mask, used = propose_mask_detailed(marked, 50, detector="pattern")
+    if used != "pattern":
+        pytest.skip("no repeat recovered from this fixture")
+    texture_mask = propose_mask_detailed(marked, 50, detector="texture")[0]
+
+    # Compare only the seam's own columns, which contain no watermark that the
+    # bright fill did not overwrite.
+    seam = slice(480, 486)
+    by_pattern = np.count_nonzero(pattern_mask[:, seam]) / pattern_mask[:, seam].size
+    by_texture = np.count_nonzero(texture_mask[:, seam]) / texture_mask[:, seam].size
+    assert by_pattern < by_texture, (
+        f"pattern marked {by_pattern:.1%} of the seam and texture {by_texture:.1%}; "
+        "confining the mask to the repeat is the entire point"
+    )
+
+
+def test_asking_for_pattern_on_an_image_with_no_repeat_falls_back():
+    flat = np.full((400, 500, 3), 180, np.uint8)
+    flat[100:300, 150:350] = 120  # one block, nothing repeating
+    _mask, used = propose_mask_detailed(flat, 50, detector="pattern")
+    assert used == "texture"
+
+
+def test_the_default_detector_is_texture():
+    # Pattern recovery cannot tell a watermark from any other frame-consistent
+    # structure, so it is opt-in rather than guessed at.
+    _clean, marked, _truth = mixed_texture_pair()
+    assert propose_mask_detailed(marked, 50)[1] == "texture"
+
+
+def test_an_unknown_detector_is_rejected():
+    with pytest.raises(ValueError, match="Unknown detector 'magic'"):
+        propose_mask_detailed(np.zeros((40, 40, 3), np.uint8), 50, detector="magic")
 
 
 def test_a_flat_region_is_not_amplified_into_noise():

@@ -24,7 +24,12 @@ from pydantic import BaseModel
 
 from toolkit_engine.fsutil import dedupe_filenames
 from watermark import imgio
-from watermark.detect import DEFAULT_SENSITIVITY, propose_mask
+from watermark.detect import (
+    DEFAULT_SENSITIVITY,
+    DETECTORS,
+    TEXTURE,
+    propose_mask_detailed,
+)
 from watermark.inpaint import DEVICE_ENV, INPAINTERS, get_inpainter, lama_available
 from watermark.pipeline import DEFAULT_DILATE_PX, IMAGE_TYPES, remove_watermark
 
@@ -150,14 +155,31 @@ def auto_mask(
     image_id: str,
     watermarks: WatermarksDep,
     sensitivity: Annotated[int, Query(ge=0, le=100)] = DEFAULT_SENSITIVITY,
+    detector: str = TEXTURE,
 ) -> Response:
-    """The proposed mask as a PNG (white = watermark), recomputed per call."""
+    """The proposed mask as a PNG (white = watermark), recomputed per call.
+
+    ``X-Watermark-Detector`` names the detector that actually ran: asking for
+    ``pattern`` on an image with no recoverable repeat answers with the
+    ``texture`` mask instead, and the header is how the page knows.
+    """
+    if detector not in DETECTORS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"❌ Unknown detector: {detector}. Choose from: {', '.join(DETECTORS)}."
+            ),
+        )
     entry = watermarks.image(batch_id, image_id)
     if entry is None:
         raise HTTPException(status_code=404, detail="Unknown or expired batch.")
     rgb = imgio.load_rgb(entry["path"].read_bytes())
-    mask = propose_mask(rgb, sensitivity)
-    return Response(content=imgio.encode_png(mask), media_type="image/png")
+    mask, used = propose_mask_detailed(rgb, sensitivity, detector)
+    return Response(
+        content=imgio.encode_png(mask),
+        media_type="image/png",
+        headers={"X-Watermark-Detector": used},
+    )
 
 
 @router.post("/run", response_model=JobStartedOut)

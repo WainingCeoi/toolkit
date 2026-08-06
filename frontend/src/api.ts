@@ -27,6 +27,7 @@ import type {
   TorrentSent,
   TorrentStatus,
   WatermarkBatch,
+  WatermarkDetector,
   WatermarkHealth,
   WatermarkRunPayload,
   WebPdfCapture,
@@ -313,4 +314,7 @@ export const watermarkMaskUrl = (
   batchId: string,
   imageId: string,
   sensitivity: number,
-): string => `${BASE}/watermark/${batchId}/${imageId}/mask?sensitivity=${sensitivity}`
+  detector: WatermarkDetector = 'texture',
+): string =>
+  `${BASE}/watermark/${batchId}/${imageId}/mask` +
+  `?sensitivity=${sensitivity}&detector=${detector}`

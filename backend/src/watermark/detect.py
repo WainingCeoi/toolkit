@@ -1,4 +1,25 @@
-"""Watermark mask proposal: a dual top-hat filter for semi-transparent text.
+"""Watermark mask proposal.
+
+Two detectors, chosen by the caller:
+
+- ``texture`` (below, the default) judges each pixel against its own
+  neighbourhood. It applies to any watermark, including a single corner logo,
+  at the cost of also flagging thin image detail — tent seams, wires, railings.
+- ``pattern`` (pattern.py) recovers a repeating watermark by folding its tiles
+  together and matching the recovered mark back. When it works it is far more
+  precise, marking pattern instances and nothing else, but it needs the
+  watermark to actually repeat on a grid.
+
+The choice is deliberately the user's rather than automatic. Whether a fold
+"found something" turns out not to distinguish a watermark from any other
+structure consistent across the frame: on test images a CLEAN photo scored 4.7
+on a fold-significance test (it had locked onto the sky's own gradient) while
+genuinely watermarked photos scored 0.9-1.1. Since nothing here can reliably
+tell those apart, and the person looking at the image can, ``pattern`` is
+offered as a mode instead of guessed at. Asking for it and not getting it
+falls back to ``texture``, and the caller is told which ran.
+
+The texture detector: a dual top-hat filter for semi-transparent text.
 
 Tiled text is a thin structure, locally brighter (light text) or darker (dark
 text) than its surroundings. The white top-hat (image minus its opening)
@@ -33,7 +54,14 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
+from .pattern import propose_pattern_mask
+
 DEFAULT_SENSITIVITY = 50
+
+# Which detector to use, and which produced a mask.
+PATTERN = "pattern"
+TEXTURE = "texture"
+DETECTORS = (TEXTURE, PATTERN)
 
 # Longest image side the filter actually looks at (see module docstring).
 _DETECT_MAX = 1600
@@ -64,8 +92,40 @@ _THRESHOLD_MAX = 5.0
 _THRESHOLD_MIN = 1.45
 
 
-def propose_mask(rgb: np.ndarray, sensitivity: int = DEFAULT_SENSITIVITY) -> np.ndarray:
-    """Propose a binary watermark mask (H, W) uint8 of {0, 255}.
+def propose_mask(
+    rgb: np.ndarray,
+    sensitivity: int = DEFAULT_SENSITIVITY,
+    detector: str = TEXTURE,
+) -> np.ndarray:
+    """Propose a binary watermark mask (H, W) uint8 of {0, 255}."""
+    return propose_mask_detailed(rgb, sensitivity, detector)[0]
+
+
+def propose_mask_detailed(
+    rgb: np.ndarray,
+    sensitivity: int = DEFAULT_SENSITIVITY,
+    detector: str = TEXTURE,
+) -> tuple[np.ndarray, str]:
+    """The mask plus which detector actually produced it.
+
+    Asking for PATTERN on an image with no recoverable repeat falls back to
+    TEXTURE, so the returned name can differ from the one requested.
+    """
+    if detector not in DETECTORS:
+        raise ValueError(
+            f"Unknown detector {detector!r} (choose from: {', '.join(DETECTORS)})."
+        )
+    if detector == PATTERN:
+        pattern = propose_pattern_mask(rgb, sensitivity)
+        if pattern is not None:
+            return pattern, PATTERN
+    return propose_texture_mask(rgb, sensitivity), TEXTURE
+
+
+def propose_texture_mask(
+    rgb: np.ndarray, sensitivity: int = DEFAULT_SENSITIVITY
+) -> np.ndarray:
+    """Mask pixels that stand out from their own neighbourhood.
 
     Higher ``sensitivity`` always marks a superset of what a lower one marks
     (the threshold moves; the morphology is monotone), so the slider behaves

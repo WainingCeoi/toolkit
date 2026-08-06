@@ -206,8 +206,26 @@ phone photo inside about 12 GB instead of the 100 GB+ it would otherwise ask
 for.
 
 Thin, high-contrast detail — tent seams, wires, railings — can still read as
-watermark to the filter. The eraser is the fix, and it is why the mask is
+watermark to that filter. The eraser is the fix, and it is why the mask is
 yours to approve rather than applied automatically.
+
+For the common case of a **tiled** watermark, switch detection to *Repeating
+pattern*. Instead of judging pixels, it recovers the mark itself: it finds the
+grid the overlay repeats on and medians all the tiles together, so the mark —
+identical in every tile — survives while the photograph cancels out. That is
+contrast amplification done statistically, and it makes a mark far too faint
+to see anywhere on its own perfectly legible. The recovered mark is then
+matched back over the image and only its copies are masked, so seams, wires
+and detail are untouched. When no repeat can be recovered it falls back to the
+texture detector for that image.
+
+> Pattern detection is a mode you choose, not a guess. Nothing in the image
+> reliably distinguishes a repeating watermark from any other structure
+> consistent across the frame — on test images a *clean* photo passed a
+> fold-significance check by locking onto its own sky gradient, while genuinely
+> watermarked photos scored lower. You can see which is which; the detector
+> cannot.
+
 
 Cleaned images are written as PNG regardless of input — re-encoding inpainted
 pixels as JPEG would stamp fresh artifacts right where the fill happened.

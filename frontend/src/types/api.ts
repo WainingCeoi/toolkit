@@ -359,6 +359,17 @@ export interface WatermarkBatch {
   images: WatermarkImage[]
 }
 
+/**
+ * Which mask proposer to use.
+ *
+ * `texture` judges each pixel against its neighbourhood — works on any
+ * watermark, also flags thin image detail. `pattern` recovers a repeating
+ * watermark and masks only its instances; when the mark really is tiled it is
+ * far more precise, and it falls back to `texture` per image when no repeat
+ * can be recovered (the `X-Watermark-Detector` response header says which ran).
+ */
+export type WatermarkDetector = 'texture' | 'pattern'
+
 /** Mirrors WatermarkHealthOut. */
 export interface WatermarkHealth {
   /** torch importable — the LaMa inpainter can run (cv2 always can). */
