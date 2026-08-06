@@ -82,6 +82,17 @@ _CROP_FRACTION = 0.62
 # than one the grid predicts.
 _MIN_NCC_UNPROMPTED = 0.45
 
+# A stamped pixel is kept only where the image's response exceeds this multiple
+# of its own neighbourhood's response. Deliberately near 1: the stamp already
+# asserts the pixel is part of the mark's shape, so this only has to reject
+# stamps that landed somewhere genuinely featureless.
+_EVIDENCE_RATIO = 1.0
+_EVIDENCE_WINDOW = 81
+_EVIDENCE_FLOOR = 1.0
+# If this little of the stamped area survives that check, the repeat was an
+# artefact of the period estimate rather than ink on the photo.
+_MIN_EVIDENCE_SHARE = 0.2
+
 
 def _highpass(gray: np.ndarray) -> np.ndarray:
     g = gray.astype(np.float32)
@@ -266,7 +277,7 @@ def propose_pattern_mask(rgb: np.ndarray, sensitivity: int) -> np.ndarray | None
     template = _fold_template(hp, texture, py, px)
     if template is None:
         return None
-    patch, patch_top, patch_left = _crop_to_mark(template)
+    patch, _crop_top, _crop_left = _crop_to_mark(template)
     if min(patch.shape) < 12 or patch.std() <= 1e-3:
         return None
     if patch.shape[0] >= hp.shape[0] or patch.shape[1] >= hp.shape[1]:
@@ -329,15 +340,33 @@ def propose_pattern_mask(rgb: np.ndarray, sensitivity: int) -> np.ndarray | None
     if len(sites) < MIN_INSTANCES:
         return None
     for sy, sx in sites:
-        # A site is where the CROP matched; the tile starts that far back.
-        top, left = sy - patch_top, sx - patch_left
-        src_y, src_x = max(0, -top), max(0, -left)
-        top, left = max(0, top), max(0, left)
-        region = mask[top : top + stamp_h - src_y, left : left + stamp_w - src_x]
+        # A site IS the stamp's top-left: matchTemplate reports where the crop
+        # begins, and the stamp is that same crop.
+        region = mask[sy : sy + stamp_h, sx : sx + stamp_w]
         if region.size == 0:
             continue
-        piece = stamp[src_y : src_y + region.shape[0], src_x : src_x + region.shape[1]]
-        region[:] = np.maximum(region, piece)
+        region[:] = np.maximum(region, stamp[: region.shape[0], : region.shape[1]])
+
+    # Confirm each stamped pixel against the image itself. The grid says where
+    # instances *should* be; this keeps only the pixels where the photo really
+    # does deviate from its surroundings, so a stamp landing on clean sky
+    # contributes nothing. It tightens true instances and erases phantom ones.
+    # Judged LOCALLY, against the response typical of each pixel's own
+    # surroundings. A global cut would repeat the very mistake the texture
+    # detector had to fix: the median response over a photo with any texture in
+    # it sits far above a faint overlay on smooth sky, so a global threshold
+    # deletes exactly the marks this mode exists to find.
+    deviation = np.abs(hp)
+    baseline = cv2.blur(deviation, (_EVIDENCE_WINDOW, _EVIDENCE_WINDOW))
+    stamped = int(np.count_nonzero(mask))
+    if stamped == 0:
+        return None
+    mask[deviation < _EVIDENCE_RATIO * (baseline + _EVIDENCE_FLOOR)] = 0
+
+    # If almost nothing survived, the "pattern" was an artefact of the period
+    # estimate rather than something present in the photo.
+    if np.count_nonzero(mask) < _MIN_EVIDENCE_SHARE * stamped:
+        return None
 
     if scale > 1:
         mask = cv2.resize(mask, (width, height), interpolation=cv2.INTER_NEAREST)

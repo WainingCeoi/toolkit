@@ -193,11 +193,23 @@ def test_asking_for_pattern_on_an_image_with_no_repeat_falls_back():
     assert used == "texture"
 
 
-def test_the_default_detector_is_texture():
-    # Pattern recovery cannot tell a watermark from any other frame-consistent
-    # structure, so it is opt-in rather than guessed at.
-    _clean, marked, _truth = mixed_texture_pair()
-    assert propose_mask_detailed(marked, 50)[1] == "texture"
+def test_the_default_detector_is_pattern():
+    from watermark.detect import DEFAULT_DETECTOR
+
+    assert DEFAULT_DETECTOR == "pattern"
+
+
+def test_a_clean_photo_is_never_given_an_invented_pattern():
+    # This is what makes pattern safe to lead with. Folding alone cannot tell a
+    # watermark from any frame-consistent structure — a clean photo passes
+    # fold significance by locking onto its own sky gradient — so every stamp
+    # is checked against the image, and a clean photo leaves nothing standing.
+    clean, _marked, _truth = mixed_texture_pair()
+    mask, used = propose_mask_detailed(clean, 50, detector="pattern")
+    assert used == "texture", "a watermark-free photo must not yield a pattern mask"
+    # Whatever the texture fallback then finds should be negligible, not a grid
+    # of stamps laid over clean sky.
+    assert np.count_nonzero(mask) / mask.size < 0.005
 
 
 def test_an_unknown_detector_is_rejected():

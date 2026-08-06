@@ -42,7 +42,7 @@ export default function WatermarkRemover() {
   const [ready, setReady] = useState<Record<string, boolean>>({})
   const [brush, setBrush] = useState(24)
   const [mode, setMode] = useState<'brush' | 'eraser'>('brush')
-  const [detector, setDetector] = useState<WatermarkDetector>('texture')
+  const [detector, setDetector] = useState<WatermarkDetector>('pattern')
   const [inpainter, setInpainter] = useState<'lama' | 'cv2'>('lama')
   const editors = useRef<Record<string, MaskEditorHandle | null>>({})
 
@@ -235,12 +235,12 @@ export default function WatermarkRemover() {
               value={detector}
               onChange={(e) => setDetector(e.target.value as WatermarkDetector)}
             >
+              <option value="pattern">Repeating pattern — recovers a tiled mark</option>
               <option value="texture">Standing out locally — any watermark</option>
-              <option value="pattern">Repeating pattern — tiled watermarks</option>
             </select>
             <span className="wm-hint">
               {detector === 'pattern'
-                ? 'Recovers the repeated mark and masks only its copies, so edges and detail are left alone. Falls back per image when no repeat is found.'
+                ? 'Recovers the repeated mark and masks only its copies, so edges and detail are left alone. Any image with no recoverable repeat falls back on its own.'
                 : 'Works on anything, including a single logo — but thin detail like seams and wires can read as watermark.'}
             </span>
           </div>

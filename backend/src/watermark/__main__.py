@@ -10,7 +10,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from .detect import DEFAULT_SENSITIVITY, DETECTORS, TEXTURE
+from .detect import DEFAULT_DETECTOR, DEFAULT_SENSITIVITY, DETECTORS
 from .inpaint import INPAINTERS, lama_available
 from .pipeline import DEFAULT_DILATE_PX, clean_folder
 
@@ -43,11 +43,11 @@ def main(argv: list[str] | None = None) -> int:
     clean.add_argument(
         "--detector",
         choices=DETECTORS,
-        default=TEXTURE,
+        default=DEFAULT_DETECTOR,
         help="texture: judge each pixel against its neighbourhood, works on "
         "anything; pattern: recover a repeating watermark and mask only its "
         "instances — far more precise when the mark really is tiled, and it "
-        f"falls back to texture per image when it is not (default: {TEXTURE})",
+        f"falls back to texture per image when it is not (default: {DEFAULT_DETECTOR})",
     )
     clean.add_argument(
         "--dilate",

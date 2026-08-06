@@ -187,17 +187,14 @@ folder as the task is created and cannot move it afterwards.
 ### 🧽 Watermark Remover
 
 Drop up to 20 `png` / `jpg` / `webp` images and the backend proposes a
-watermark mask per image — a dual top-hat morphological filter tuned for the
-classic semi-transparent tiled text, normalised against each pixel's own
-neighbourhood so a faint mark on smooth sky is found without also selecting
-the grass. It stays deliberately over-eager, because **you review every mask
-before anything changes**: each image gets a canvas editor with the mask
-tinted red, a brush and eraser (adjustable size, undo/reset), and a
-sensitivity slider that refetches the proposal. On run, the human-approved
-masks are dilated a few pixels and inpainted — **LaMa** (ML, best quality;
-the ~200 MB model downloads on first use) or **cv2** (instant, rougher on
-large areas). Progress streams per file; results show a draggable
-before/after divider, per-file downloads, and a zip of everything.
+watermark mask per image. Whatever it proposes, **you review every mask before
+anything changes**: each image gets a canvas editor with the mask tinted red, a
+brush and eraser (adjustable size, undo/reset), and a sensitivity slider that
+refetches the proposal. On run, the human-approved masks are dilated a few
+pixels and inpainted — **LaMa** (ML, best quality; the ~200 MB model downloads
+on first use) or **cv2** (instant, rougher on large areas). Progress streams
+per file; results show a draggable before/after divider, per-file downloads,
+and a zip of everything.
 
 Only the pixels you marked are ever written, and each image becomes available
 the moment it is done — so a run that stops early still hands back everything
@@ -205,26 +202,36 @@ it finished. Large photos are inpainted in tiles, which is what keeps a 36 MP
 phone photo inside about 12 GB instead of the 100 GB+ it would otherwise ask
 for.
 
-Thin, high-contrast detail — tent seams, wires, railings — can still read as
-watermark to that filter. The eraser is the fix, and it is why the mask is
-yours to approve rather than applied automatically.
+There are two detectors, and the default — *Repeating pattern* — recovers the
+mark itself rather than judging pixels. It finds the grid the overlay repeats
+on and medians all the tiles together, so the mark, identical in every tile,
+survives while the photograph cancels out. That is contrast amplification done
+statistically, and it makes a mark far too faint to see anywhere on its own
+perfectly legible: on one 36 MP photo, folding 29 sky tiles recovered a logo
+and its lettering clearly enough to read. The recovered mark is then matched
+back over the image and **only its copies are masked**, so seams, wires and
+detail are untouched.
 
-For the common case of a **tiled** watermark, switch detection to *Repeating
-pattern*. Instead of judging pixels, it recovers the mark itself: it finds the
-grid the overlay repeats on and medians all the tiles together, so the mark —
-identical in every tile — survives while the photograph cancels out. That is
-contrast amplification done statistically, and it makes a mark far too faint
-to see anywhere on its own perfectly legible. The recovered mark is then
-matched back over the image and only its copies are masked, so seams, wires
-and detail are untouched. When no repeat can be recovered it falls back to the
-texture detector for that image.
+Every stamp is then checked against the photo, and kept only where the image
+really does deviate there. That check is what lets this lead: it is how the
+tool knows when the "repeat" it found was an artefact rather than ink. Any
+image where little of the stamp survives falls back, on its own, to the second
+detector — a dual top-hat filter normalised against each pixel's own
+neighbourhood, which works on any watermark including a single corner logo, at
+the cost of also flagging thin detail like tent seams and railings. A batch can
+mix the two, and the page says which ran.
 
-> Pattern detection is a mode you choose, not a guess. Nothing in the image
-> reliably distinguishes a repeating watermark from any other structure
-> consistent across the frame — on test images a *clean* photo passed a
-> fold-significance check by locking onto its own sky gradient, while genuinely
-> watermarked photos scored lower. You can see which is which; the detector
-> cannot.
+> Folding alone is not evidence of a watermark. A *clean* test photo passed a
+> fold-significance check by locking onto its own sky gradient, scoring higher
+> than genuinely watermarked photos. Verifying each stamp against the image is
+> what separates them: 0.53–0.57 of the stamp survived where a mark was really
+> recovered, against 0.00–0.20 where the period estimate had locked onto
+> scenery — 0.00 on the watermark-free photo.
+
+Recovering the pattern does not always work: on some images the period estimate
+locks onto scenery instead of the overlay, and those fall back. Coverage is
+also thinner over busy ground than over sky, where the mark is genuinely buried
+in the texture. Raise sensitivity to widen each stamp, or brush the rest in.
 
 LaMa runs on the best accelerator it finds — CUDA, then Apple's MPS, then CPU.
 On an M-series Mac that is roughly 8× faster than CPU for output that differs

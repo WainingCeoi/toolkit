@@ -24,9 +24,9 @@ from pydantic import BaseModel
 from toolkit_engine.fsutil import dedupe_filenames
 from watermark import imgio
 from watermark.detect import (
+    DEFAULT_DETECTOR,
     DEFAULT_SENSITIVITY,
     DETECTORS,
-    TEXTURE,
     propose_mask_detailed,
 )
 from watermark.inpaint import (
@@ -158,7 +158,7 @@ def auto_mask(
     image_id: str,
     watermarks: WatermarksDep,
     sensitivity: Annotated[int, Query(ge=0, le=100)] = DEFAULT_SENSITIVITY,
-    detector: str = TEXTURE,
+    detector: str = DEFAULT_DETECTOR,
 ) -> Response:
     """The proposed mask as a PNG (white = watermark), recomputed per call.
 

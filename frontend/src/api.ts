@@ -314,7 +314,7 @@ export const watermarkMaskUrl = (
   batchId: string,
   imageId: string,
   sensitivity: number,
-  detector: WatermarkDetector = 'texture',
+  detector: WatermarkDetector = 'pattern',
 ): string =>
   `${BASE}/watermark/${batchId}/${imageId}/mask` +
   `?sensitivity=${sensitivity}&detector=${detector}`
