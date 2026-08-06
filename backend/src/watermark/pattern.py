@@ -50,6 +50,15 @@ MIN_PERIOD = 45
 AXIS_TOLERANCE = 8
 # Harmonics summed when scoring a candidate pitch.
 _HARMONICS = 4
+# Autocorrelation peaks considered when fitting the lattice, how far off a whole
+# number a peak's lattice coordinates may sit, and how many peaks a candidate
+# basis must explain before it is believed.
+_PEAK_COUNT = 60
+_LATTICE_TOL = 0.18
+_MIN_SUPPORT = 5
+# Largest lag, as a share of each dimension, where enough of the image still
+# overlaps itself for the correlation to carry evidence.
+_MAX_LAG_SHARE = 0.35
 # The quietest share of the photo, which is where the overlay is measurable.
 _QUIET_PCT = 45.0
 
@@ -179,6 +188,113 @@ def _rect_period(hp: np.ndarray, texture: np.ndarray) -> tuple[int, int] | None:
     return py, px
 
 
+def _peaks(prominence: np.ndarray, count: int) -> list[tuple[float, float]]:
+    """The strongest autocorrelation offsets, as (dy, dx) in the half-plane."""
+    height, width = prominence.shape
+    cy, cx = height // 2, width // 2
+    work = prominence.copy()
+    yy, xx = np.mgrid[0:height, 0:width]
+    work[(yy - cy) ** 2 + (xx - cx) ** 2 < MIN_PERIOD**2] = -np.inf
+    work[:cy, :] = -np.inf  # autocorrelation is symmetric; one half is enough
+    # Far lags have too little of the image overlapping itself to mean
+    # anything, and the masked estimate is forced to zero out there. Left in,
+    # the step down to that zero reads as an enormous ridge once the smooth
+    # trend is subtracted, and every "peak" lands on the cliff instead of on
+    # the overlay.
+    reach_y, reach_x = int(height * _MAX_LAG_SHARE), int(width * _MAX_LAG_SHARE)
+    work[cy + reach_y :, :] = -np.inf
+    work[:, : cx - reach_x] = -np.inf
+    work[:, cx + reach_x :] = -np.inf
+    found = []
+    for _ in range(count):
+        idx = np.unravel_index(int(np.argmax(work)), work.shape)
+        if not np.isfinite(work[idx]) or work[idx] <= 0:
+            break
+        found.append((float(idx[0] - cy), float(idx[1] - cx)))
+        y0, x0 = idx
+        radius = max(8, MIN_PERIOD // 2)
+        work[
+            max(0, y0 - radius) : y0 + radius + 1, max(0, x0 - radius) : x0 + radius + 1
+        ] = -np.inf
+    return found
+
+
+def _fit_lattice(peaks: list[tuple[float, float]]) -> np.ndarray | None:
+    """A 2x2 basis whose integer combinations explain the peaks, or None.
+
+    The overlay's grid is frequently NOT axis-aligned — measured on sample
+    photos, the strongest peak sat at 16 degrees in one and 76 in another — so
+    the repeat cannot be described by a row pitch and a column pitch. Two
+    arbitrary vectors can describe any of them.
+
+    Candidate pairs are scored by how many of the other peaks they explain as
+    near-integer combinations, then by being short. Shortness matters as much
+    as support: a doubled or tripled vector explains the peaks just as well,
+    but folding on it puts several instances in one tile, and the crop taken
+    from that tile then straddles them and matches nothing cleanly.
+    """
+    best_basis, best_key = None, None
+    for a_index, first in enumerate(peaks):
+        for second in peaks[a_index + 1 :]:
+            basis = np.array(
+                [[first[1], second[1]], [first[0], second[0]]], np.float64
+            )  # columns are the vectors, rows are (x, y)
+            area = abs(np.linalg.det(basis))
+            if area < MIN_PERIOD**2 * 0.25:  # near-collinear or far too small
+                continue
+            inverse = np.linalg.inv(basis)
+            supported = []
+            for peak in peaks:
+                coords = inverse @ np.array([peak[1], peak[0]], np.float64)
+                if np.all(np.abs(coords - np.round(coords)) <= _LATTICE_TOL):
+                    supported.append((np.round(coords), peak))
+            length = np.hypot(*first) + np.hypot(*second)
+            key = (len(supported), -length)
+            if len(supported) >= _MIN_SUPPORT and (best_key is None or key > best_key):
+                best_basis, best_key = (basis, supported), key
+
+    if best_basis is None:
+        return None
+    basis, supported = best_basis
+    # Refit from every supported peak at once, which puts the vectors on a
+    # sub-pixel footing. Rounding a pitch to whole pixels drifts a little in
+    # each tile, and over a dozen tiles that smears the fold.
+    integer_coords = np.array([c for c, _p in supported]).T  # 2 x N
+    observed = np.array([[p[1], p[0]] for _c, p in supported]).T  # 2 x N
+    gram = integer_coords @ integer_coords.T
+    if abs(np.linalg.det(gram)) < 1e-9:
+        return basis
+    refined = observed @ integer_coords.T @ np.linalg.inv(gram)
+    return refined if abs(np.linalg.det(refined)) > MIN_PERIOD**2 * 0.25 else basis
+
+
+def _warp_to_lattice(basis: np.ndarray, shape: tuple[int, int]):
+    """An affine that makes the lattice axis-aligned, plus the resulting cell.
+
+    Once warped, the overlay repeats on whole rows and columns, so the folding,
+    matching and stamping code needs to know nothing about oblique grids — it
+    all happens in this rectified space and the mask is warped back at the end.
+    """
+    cell_x = int(round(np.hypot(basis[0, 0], basis[1, 0])))
+    cell_y = int(round(np.hypot(basis[0, 1], basis[1, 1])))
+    if cell_x < MIN_PERIOD or cell_y < MIN_PERIOD:
+        return None
+    linear = np.diag([cell_x, cell_y]).astype(np.float64) @ np.linalg.inv(basis)
+
+    height, width = shape
+    corners = np.array([[0, width, 0, width], [0, 0, height, height]], np.float64)
+    mapped = linear @ corners
+    offset = -mapped.min(axis=1)
+    out_w = int(np.ceil(mapped[0].max() + offset[0]))
+    out_h = int(np.ceil(mapped[1].max() + offset[1]))
+    # A pathological shear can blow the rectified frame up; refuse rather than
+    # allocate hundreds of megabytes for a guess.
+    if out_w <= 0 or out_h <= 0 or out_w * out_h > 4 * width * height:
+        return None
+    forward = np.hstack([linear, offset.reshape(2, 1)])
+    return forward, (cell_y, cell_x), (out_h, out_w)
+
+
 def _fold_template(
     hp: np.ndarray, texture: np.ndarray, py: int, px: int
 ) -> np.ndarray | None:
@@ -267,10 +383,32 @@ def propose_pattern_mask(rgb: np.ndarray, sensitivity: int) -> np.ndarray | None
     gray = cv2.cvtColor(work, cv2.COLOR_RGB2GRAY)
     hp = _highpass(gray)
     texture = _local_texture(gray)
-    period = _rect_period(hp, texture)
-    if period is None:
-        return None
-    py, px = period
+
+    # Rectify onto the overlay's own grid first. Everything downstream then
+    # works in rows and columns, whatever angle the real lattice sits at.
+    rectify = None
+    quiet = (texture < np.percentile(texture, _QUIET_PCT)).astype(np.float32)
+    if quiet.mean() >= 0.05:
+        ac = _masked_autocorrelation(hp, quiet)
+        prominence = ac - cv2.GaussianBlur(ac, (0, 0), sigmaX=9)
+        basis = _fit_lattice(_peaks(prominence, _PEAK_COUNT))
+        if basis is not None:
+            rectify = _warp_to_lattice(basis, hp.shape)
+
+    if rectify is not None:
+        forward, (py, px), (out_h, out_w) = rectify
+        hp = cv2.warpAffine(hp, forward, (out_w, out_h), flags=cv2.INTER_LINEAR)
+        gray = cv2.warpAffine(gray, forward, (out_w, out_h), flags=cv2.INTER_LINEAR)
+        texture = cv2.warpAffine(
+            texture, forward, (out_w, out_h), flags=cv2.INTER_LINEAR
+        )
+    else:
+        # No lattice recovered; fall back to a plain row/column pitch, which
+        # still serves the axis-aligned case.
+        period = _rect_period(hp, texture)
+        if period is None:
+            return None
+        py, px = period
     if py < MIN_PERIOD or px < MIN_PERIOD:
         return None
 
@@ -368,6 +506,16 @@ def propose_pattern_mask(rgb: np.ndarray, sensitivity: int) -> np.ndarray | None
     if np.count_nonzero(mask) < _MIN_EVIDENCE_SHARE * stamped:
         return None
 
+    if rectify is not None:
+        # Back out of the rectified frame. Nearest-neighbour: this is a binary
+        # mask, and it gets dilated before inpainting anyway.
+        forward = rectify[0]
+        mask = cv2.warpAffine(
+            mask,
+            forward,
+            (work.shape[1], work.shape[0]),
+            flags=cv2.INTER_NEAREST | cv2.WARP_INVERSE_MAP,
+        )
     if scale > 1:
         mask = cv2.resize(mask, (width, height), interpolation=cv2.INTER_NEAREST)
     return mask
