@@ -45,6 +45,22 @@ def _background(kind: str, w: int, h: int) -> np.ndarray:
         img[sky_h:] = grass
         return np.clip(img, 0, 255).astype(np.uint8)
 
+    if kind == "grass":
+        # Busy over the WHOLE frame, with no quiet corner anywhere. This is what
+        # defeats the fold rather than the mark being faint: its median needs
+        # tiles the photograph does not fill, and a sample hillside offered one
+        # quiet tile out of 43. The mark stays perfectly legible locally, so a
+        # sibling's mark still matches it — that is the case batch sharing is for.
+        img = rng.normal(128, 30, (h, w, 3))
+        img[:, :, 0] *= 0.9
+        img[:, :, 2] *= 0.6
+        img += rng.normal(0, 22, (h, w))[:, :, None]
+        # Some large-scale structure too, so it reads as terrain and not static.
+        rows = np.linspace(0, 3 * np.pi, h)[:, None]
+        cols = np.linspace(0, 2 * np.pi, w)[None, :]
+        img += (18 * np.sin(rows) * np.cos(cols))[:, :, None]
+        return np.clip(img, 0, 255).astype(np.uint8)
+
     if kind == "render_dither":
         # A 3D render: flat white paper plus a finely dithered ground texture.
         # The dither is the distractor that stole the period estimate on the

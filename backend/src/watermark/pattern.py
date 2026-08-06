@@ -32,6 +32,8 @@ photo passed them by locking onto its own sky gradient. See detect.py.
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Sequence
+
 import cv2
 import numpy as np
 
@@ -94,6 +96,17 @@ _CROP_FRACTION = 0.62
 # A location with no prior reason to hold an instance must correlate better
 # than one the grid predicts.
 _MIN_NCC_UNPROMPTED = 0.45
+
+# A correlation peak is only believed where the image itself has something under
+# it, as a share of the template's own variation. Normalised correlation divides
+# by the window's standard deviation, so over a FLAT window -- a blown-out sky,
+# the white background of a product render -- it divides ~0 by ~0 and OpenCV
+# hands back 1.0. Measured on a render sample: every one of its correlation
+# peaks scored 1.000 over windows of standard deviation 0.0000, while genuine
+# instances elsewhere sat at 2.4-3.9 against a template deviation of 2.07. Those
+# perfect scores are arithmetic, not evidence, and without this they anchor the
+# grid walk in empty sky.
+_MIN_WINDOW_STD_SHARE = 0.25
 
 # A stamped pixel is kept only where the image's response exceeds this multiple
 # of its own neighbourhood's response. Deliberately near 1: the stamp already
@@ -506,37 +519,76 @@ def _crop_to_mark(template: np.ndarray) -> tuple[np.ndarray, int, int]:
     return template[top : top + 2 * half_y, left : left + 2 * half_x], top, left
 
 
-def propose_pattern_mask(rgb: np.ndarray, sensitivity: int) -> np.ndarray | None:
-    """Mask the instances of a repeating watermark, or None if there is no
-    convincing repeating pattern to mask."""
-    TRACE.clear()
-    TRACE["stop"] = "fired"
+class Mark:
+    """A recovered watermark, reusable on other images of the same batch.
+
+    Everything needed to mask an instance without recovering it again: the
+    lattice it repeats on, the tile-sized template folded out of it, the crop
+    that correlation locks onto, and where that crop sits in the tile.
+
+    This exists because recovering a mark and applying one have completely
+    different requirements. Recovery needs a correct primitive lattice, at least
+    MIN_TILES tiles of the frame, and a quiet enough photograph for a median
+    over those tiles to cancel the scenery. Applying one needs none of that --
+    only that the mark be present. So an image whose own recovery is refused can
+    still be masked precisely from a sibling's mark, which is the common case in
+    a batch: one watermarking tool ran over all of them.
+    """
+
+    __slots__ = ("basis", "template", "patch", "crop_top", "crop_left", "cell")
+
+    def __init__(self, basis, template, patch, crop_top, crop_left, cell):
+        self.basis = basis
+        self.template = template
+        self.patch = patch
+        self.crop_top = crop_top
+        self.crop_left = crop_left
+        self.cell = cell
+
+
+def _work_size(rgb: np.ndarray) -> np.ndarray:
+    """The image at the bounded working size the whole detector runs at."""
     height, width = rgb.shape[:2]
     scale = max(height, width) / WORK_MAX
-    if scale > 1:
-        work = cv2.resize(
-            rgb,
-            (max(1, round(width / scale)), max(1, round(height / scale))),
-            interpolation=cv2.INTER_AREA,
-        )
-    else:
-        work = rgb
+    if scale <= 1:
+        return rgb
+    return cv2.resize(
+        rgb,
+        (max(1, round(width / scale)), max(1, round(height / scale))),
+        interpolation=cv2.INTER_AREA,
+    )
 
+
+def _rectify(hp: np.ndarray, basis: np.ndarray | None):
+    """Warp onto the lattice's own axes, or None if there is no usable lattice."""
+    if basis is None:
+        return None
+    return _warp_to_lattice(basis, hp.shape)
+
+
+def recover_mark(rgb: np.ndarray) -> Mark | None:
+    """Recover the repeating mark in this image, or None if it cannot be.
+
+    None here does NOT mean "no watermark" -- see Mark. It means this image
+    cannot produce a template, most often because the photograph is busy
+    everywhere (the fold's median never cancels it) or because too few tiles of
+    the lattice fit in the frame.
+    """
+    work = _work_size(rgb)
     gray = cv2.cvtColor(work, cv2.COLOR_RGB2GRAY)
     hp = _highpass(gray)
     texture = _local_texture(gray)
 
     # Rectify onto the overlay's own grid first. Everything downstream then
     # works in rows and columns, whatever angle the real lattice sits at.
-    rectify = None
-    cover = None
+    basis = None
     quiet = (texture < np.percentile(texture, _QUIET_PCT)).astype(np.float32)
     if quiet.mean() >= 0.05:
         ac = _masked_autocorrelation(hp, quiet).astype(np.float32)
         basis = _fit_rectifying_lattice(ac)
-        if basis is not None:
-            rectify = _warp_to_lattice(basis, hp.shape)
+    rectify = _rectify(hp, basis)
 
+    cover = None
     if rectify is not None:
         forward, (py, px), (out_h, out_w) = rectify
         cover = cv2.warpAffine(
@@ -546,13 +598,16 @@ def propose_pattern_mask(rgb: np.ndarray, sensitivity: int) -> np.ndarray | None
             flags=cv2.INTER_NEAREST,
         )
         hp = cv2.warpAffine(hp, forward, (out_w, out_h), flags=cv2.INTER_LINEAR)
-        gray = cv2.warpAffine(gray, forward, (out_w, out_h), flags=cv2.INTER_LINEAR)
         texture = cv2.warpAffine(
             texture, forward, (out_w, out_h), flags=cv2.INTER_LINEAR
         )
     else:
-        # No lattice recovered; fall back to a plain row/column pitch, which
-        # still serves the axis-aligned case.
+        # No usable lattice — either none was fitted, or the one fitted could not
+        # be warped onto. Fall back to a plain row/column pitch, which still
+        # serves the axis-aligned case. The basis is dropped rather than carried:
+        # nothing downstream rectified with it, so keeping it would describe a
+        # frame this mark was never measured in.
+        basis = None
         period = _rect_period(hp, texture)
         if period is None:
             return None
@@ -568,9 +623,61 @@ def propose_pattern_mask(rgb: np.ndarray, sensitivity: int) -> np.ndarray | None
         return None
     if patch.shape[0] >= hp.shape[0] or patch.shape[1] >= hp.shape[1]:
         return None
+    return Mark(basis, template, patch, crop_top, crop_left, (py, px))
+
+
+def _window_std(hp: np.ndarray, shape: tuple[int, int]) -> np.ndarray:
+    """Standard deviation of ``hp`` under every placement of a shape-sized window.
+
+    Laid out to index like a matchTemplate score map, so a peak can be checked
+    against the variation actually present beneath it (see _MIN_WINDOW_STD_SHARE).
+    """
+    high, wide = shape
+    mean = cv2.blur(hp, (wide, high))
+    mean_square = cv2.blur(hp * hp, (wide, high))
+    deviation = np.sqrt(np.maximum(mean_square - mean * mean, 0))
+    top, left = high // 2, wide // 2
+    return deviation[top : top + hp.shape[0], left : left + hp.shape[1]]
+
+
+def apply_mark(
+    rgb: np.ndarray, mark: Mark, sensitivity: int, own: bool = True
+) -> np.ndarray | None:
+    """Mask every instance of ``mark`` in this image, or None if there are none.
+
+    ``own`` False means the mark came from a different image, which raises the
+    bar: it must correlate confidently in at least MIN_INSTANCES places before
+    the grid walk is allowed to extend it anywhere.
+    """
+    height, width = rgb.shape[:2]
+    work = _work_size(rgb)
+    gray = cv2.cvtColor(work, cv2.COLOR_RGB2GRAY)
+    hp = _highpass(gray)
+
+    rectify = _rectify(hp, mark.basis)
+    if mark.basis is not None and rectify is None:
+        return None
+    if rectify is not None:
+        forward, (py, px), (out_h, out_w) = rectify
+        hp = cv2.warpAffine(hp, forward, (out_w, out_h), flags=cv2.INTER_LINEAR)
+        gray = cv2.warpAffine(gray, forward, (out_w, out_h), flags=cv2.INTER_LINEAR)
+    else:
+        py, px = mark.cell
+
+    template, patch = mark.template, mark.patch
+    crop_top, crop_left = mark.crop_top, mark.crop_left
+    if patch.shape[0] >= hp.shape[0] or patch.shape[1] >= hp.shape[1]:
+        return None
 
     score = cv2.matchTemplate(hp, patch, cv2.TM_CCOEFF_NORMED)
-    if score.max() < MIN_NCC:
+    # Discard peaks with nothing beneath them before anything reads this map,
+    # the anchor included.
+    floor = _MIN_WINDOW_STD_SHARE * float(patch.std())
+    substance = _window_std(hp, patch.shape)[: score.shape[0], : score.shape[1]]
+    score = np.where(substance >= floor, score, -1.0).astype(np.float32)
+
+    least = MIN_NCC if own else _MIN_NCC_UNPROMPTED
+    if score.max() < least:
         return None
 
     # Anchor on the best match, then visit every grid site from there. Sites
@@ -625,6 +732,17 @@ def propose_pattern_mask(rgb: np.ndarray, sensitivity: int) -> np.ndarray | None
     peaks = (score >= _MIN_NCC_UNPROMPTED) & (score >= cv2.dilate(score, neighbourhood))
     for y, x in zip(*np.nonzero(peaks), strict=True):
         sites.add((int(y), int(x)))
+
+    # A borrowed mark has to prove it belongs here BEFORE the grid walk below
+    # extends it, because the walk admits sites on the weaker MIN_NCC bar and so
+    # would spread a foreign mark across a frame from one lucky anchor. Measured:
+    # walking ungated put a mask on three images carrying a completely different
+    # overlay, and on a clean control frame. Counted on confident matches alone
+    # the two separate cleanly — 7 and 19 sites where the mark really is present,
+    # against 0 to 5 for the foreign overlay and 0 for every clean control — so
+    # the existing instance bar is all this needs.
+    if not own and len(sites) < MIN_INSTANCES:
+        return None
 
     # Then walk the grid from the strongest match and snap each site to its own
     # local peak, which picks up instances too faint to win a maximum of their
@@ -704,6 +822,68 @@ def propose_pattern_mask(rgb: np.ndarray, sensitivity: int) -> np.ndarray | None
             (work.shape[1], work.shape[0]),
             flags=cv2.INTER_NEAREST | cv2.WARP_INVERSE_MAP,
         )
-    if scale > 1:
+    if mask.shape != (height, width):
         mask = cv2.resize(mask, (width, height), interpolation=cv2.INTER_NEAREST)
     return mask
+
+
+def propose_pattern_mask(rgb: np.ndarray, sensitivity: int) -> np.ndarray | None:
+    """Mask the instances of a repeating watermark, or None if there is no
+    convincing repeating pattern to mask."""
+    mark = recover_mark(rgb)
+    if mark is None:
+        return None
+    return apply_mark(rgb, mark, sensitivity)
+
+
+def shareable_marks(images: Iterable[np.ndarray], sensitivity: int = 50) -> list[Mark]:
+    """The marks in ``images`` that are fit to be reused on their siblings.
+
+    One watermarking tool usually ran over a whole batch, so an image whose own
+    recovery is refused is very often carrying a mark that a sibling recovered
+    perfectly well. Recovery is the fragile half — it needs a correct primitive
+    lattice, MIN_TILES tiles in frame, and a photograph quiet enough for a median
+    to cancel — while applying a mark needs only that the mark be there.
+
+    A mark qualifies only if it masked its OWN image, which is what tells a real
+    overlay from a lattice fitted to scenery: offering every recovered mark
+    instead put a mask on a clean control frame. It must also carry a lattice
+    basis, since one from the axis-aligned fallback has no frame to rectify a
+    sibling into.
+
+    Consumes ``images`` one at a time and keeps only the marks — a template and
+    a 2x2 basis each — so a batch of 36 MP photos costs one of them in memory,
+    not all of them.
+    """
+    marks: list[Mark] = []
+    for rgb in images:
+        mark = recover_mark(rgb)
+        if mark is None or mark.basis is None:
+            continue
+        if apply_mark(rgb, mark, sensitivity) is not None:
+            marks.append(mark)
+    return marks
+
+
+def propose_pattern_mask_shared(
+    rgb: np.ndarray, sensitivity: int, marks: Sequence[Mark]
+) -> np.ndarray | None:
+    """This image's own mask, or failing that one borrowed from ``marks``.
+
+    Borrowing is deliberately timid. A borrowed mark must clear the higher
+    unprompted correlation bar, is trusted only where it actually correlates
+    rather than walked across a grid, and still faces every existing gate
+    including the per-pixel evidence check. Measured on a sample of eight: two of
+    the five images that came back empty carry the same overlay as three that
+    succeeded, and both are now masked from a sibling's mark — 4.6% and 4.4% of
+    frame against 5.8% for the image the mark came from — while all three clean
+    controls refuse every mark offered to them.
+    """
+    own = propose_pattern_mask(rgb, sensitivity)
+    if own is not None:
+        return own
+    for mark in marks:
+        borrowed = apply_mark(rgb, mark, sensitivity, own=False)
+        if borrowed is not None:
+            return borrowed
+    return None

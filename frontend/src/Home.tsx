@@ -2,7 +2,7 @@
 // that loads independently of everything else.
 
 import { useEffect, useState, type CSSProperties } from 'react'
-import { Link } from 'react-router-dom'
+import { Link } from 'react-router'
 import { api } from './api'
 import { CATEGORY_ACCENT } from './tools'
 import type { Category, Health } from './types/api'

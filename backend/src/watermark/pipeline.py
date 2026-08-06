@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import cv2
 import numpy as np
 
-from .detect import DEFAULT_DETECTOR, DEFAULT_SENSITIVITY, propose_mask
+from .detect import (
+    DEFAULT_DETECTOR,
+    DEFAULT_SENSITIVITY,
+    PATTERN,
+    collect_marks,
+    propose_mask,
+)
 from .imgio import encode_png, load_rgb
 from .inpaint import get_inpainter
 
@@ -116,6 +122,15 @@ def _unique_names(paths: list[Path]) -> list[str]:
     return names
 
 
+def _read_each(files: list[Path]) -> Iterator[np.ndarray]:
+    """Every readable image in turn, skipping any that will fail later anyway."""
+    for path in files:
+        try:
+            yield load_rgb(path.read_bytes())
+        except Exception:  # noqa: BLE001,S112 — reported per file by the caller
+            continue
+
+
 def clean_folder(
     in_dir: str | Path,
     out_dir: str | Path,
@@ -146,6 +161,14 @@ def clean_folder(
     files = list_images(src)
     dst.mkdir(parents=True, exist_ok=True)
 
+    # Learn the batch's marks before masking any of it, so an image that cannot
+    # recover its own can still be masked from a sibling's. Images are read one
+    # at a time and only the marks are kept; the pass costs detection twice over,
+    # which is seconds against inpainting's minutes.
+    marks = []
+    if detector == PATTERN:
+        marks = collect_marks(_read_each(files), sensitivity)
+
     cleaned: list[str] = []
     skipped: list[str] = []
     failed: list[tuple[str, str]] = []
@@ -154,7 +177,7 @@ def clean_folder(
     ):
         try:
             rgb = load_rgb(path.read_bytes())
-            mask = propose_mask(rgb, sensitivity, detector)
+            mask = propose_mask(rgb, sensitivity, detector, marks)
             if not mask.any():
                 # No watermark found. Copying the image out unchanged would
                 # pass a no-op off as a result.

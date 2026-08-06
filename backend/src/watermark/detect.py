@@ -60,10 +60,17 @@ will not separate at any sensitivity — that is what the brush is for.
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Sequence
+
 import cv2
 import numpy as np
 
-from .pattern import propose_pattern_mask
+from .pattern import (
+    Mark,
+    propose_pattern_mask,
+    propose_pattern_mask_shared,
+    shareable_marks,
+)
 
 DEFAULT_SENSITIVITY = 50
 
@@ -111,15 +118,30 @@ def propose_mask(
     rgb: np.ndarray,
     sensitivity: int = DEFAULT_SENSITIVITY,
     detector: str = DEFAULT_DETECTOR,
+    marks: Sequence[Mark] = (),
 ) -> np.ndarray:
     """Propose a binary watermark mask (H, W) uint8 of {0, 255}."""
-    return propose_mask_detailed(rgb, sensitivity, detector)[0]
+    return propose_mask_detailed(rgb, sensitivity, detector, marks)[0]
+
+
+def collect_marks(
+    images: Iterable[np.ndarray], sensitivity: int = DEFAULT_SENSITIVITY
+) -> list[Mark]:
+    """Marks from a batch that can be reused on the rest of it (see pattern.py).
+
+    Run this over the batch before masking any of it, and pass the result to
+    ``propose_mask``. It only ever helps: an image that finds its own mark is
+    unaffected, and one that does not gets the chance to be masked from a
+    sibling's instead of skipped.
+    """
+    return shareable_marks(images, sensitivity)
 
 
 def propose_mask_detailed(
     rgb: np.ndarray,
     sensitivity: int = DEFAULT_SENSITIVITY,
     detector: str = DEFAULT_DETECTOR,
+    marks: Sequence[Mark] = (),
 ) -> tuple[np.ndarray, str]:
     """The mask plus which detector produced it, or NONE and an empty mask.
 
@@ -138,7 +160,10 @@ def propose_mask_detailed(
         )
     if detector == TEXTURE:
         return propose_texture_mask(rgb, sensitivity), TEXTURE
-    pattern = propose_pattern_mask(rgb, sensitivity)
+    if marks:
+        pattern = propose_pattern_mask_shared(rgb, sensitivity, marks)
+    else:
+        pattern = propose_pattern_mask(rgb, sensitivity)
     if pattern is not None:
         return pattern, PATTERN
     return np.zeros(rgb.shape[:2], np.uint8), NONE

@@ -23,6 +23,7 @@ import shutil
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -101,6 +102,31 @@ class WatermarkBatches:
             if entry["id"] == image_id:
                 return entry
         return None
+
+    def marks(self, batch_id: str, collect: Callable[[list[Path]], list]) -> list:
+        """The batch's shareable watermark marks, computed once and remembered.
+
+        A mask request for one image needs what the whole batch knows, since a
+        mark recovered on any image can mask the others (see watermark.pattern).
+        Collecting it reads every image in the batch, so it happens on the first
+        mask request and is then cached for the batch's life — the page asks for
+        every image's mask, and doing this per request would read the batch once
+        per image.
+
+        ``collect`` is passed in rather than imported: this module stages files
+        and knows nothing about detection.
+        """
+        batch = self.get(batch_id)
+        if batch is None:
+            return []
+        # Deliberately outside the lock: collection is seconds of CPU, and
+        # holding the store's lock through it would stall every other request.
+        # Two concurrent first-requests can therefore both compute; they agree
+        # on the answer, and one simply overwrites the other.
+        if batch.get("marks") is None:
+            marks = collect([entry["path"] for entry in batch["images"]])
+            batch["marks"] = marks
+        return batch["marks"]
 
     @contextmanager
     def pin(self, batch_id: str):

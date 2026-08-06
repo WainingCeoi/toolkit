@@ -27,6 +27,8 @@ from watermark.detect import (
     DEFAULT_DETECTOR,
     DEFAULT_SENSITIVITY,
     DETECTORS,
+    PATTERN,
+    collect_marks,
     propose_mask_detailed,
 )
 from watermark.inpaint import (
@@ -152,6 +154,27 @@ def working_copy(
     return FileResponse(entry["path"], media_type="image/png")
 
 
+def _collect_marks(paths: list[Path]) -> list:
+    """Marks the whole batch can share, read one image at a time.
+
+    Collected at the default sensitivity whatever the slider says: sensitivity
+    decides how wide a footprint to stamp, while this decides whether a mark is
+    real at all, and recollecting the batch on every slider nudge would cost a
+    full re-read of it for an answer that does not change.
+    """
+
+    def each():
+        # A generator, so only one image is ever decoded at a time — a batch of
+        # 20 phone photos would be gigabytes held at once otherwise.
+        for path in paths:
+            try:
+                yield imgio.load_rgb(path.read_bytes())
+            except Exception:  # noqa: BLE001,S112 — one unreadable copy is not fatal
+                continue
+
+    return collect_marks(each())
+
+
 @router.get("/{batch_id}/{image_id}/mask")
 def auto_mask(
     batch_id: str,
@@ -177,7 +200,8 @@ def auto_mask(
     if entry is None:
         raise HTTPException(status_code=404, detail="Unknown or expired batch.")
     rgb = imgio.load_rgb(entry["path"].read_bytes())
-    mask, used = propose_mask_detailed(rgb, sensitivity, detector)
+    marks = watermarks.marks(batch_id, _collect_marks) if detector == PATTERN else []
+    mask, used = propose_mask_detailed(rgb, sensitivity, detector, marks)
     return Response(
         content=imgio.encode_png(mask),
         media_type="image/png",

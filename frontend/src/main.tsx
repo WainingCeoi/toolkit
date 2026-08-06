@@ -1,6 +1,6 @@
 import React, { Suspense, lazy } from 'react'
 import { createRoot } from 'react-dom/client'
-import { createHashRouter, RouterProvider } from 'react-router-dom'
+import { createHashRouter, RouterProvider } from 'react-router'
 import './styles.css'
 import Layout from './Layout'
 import Home from './Home'

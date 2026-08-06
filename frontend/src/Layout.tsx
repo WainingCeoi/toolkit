@@ -2,7 +2,7 @@
 // main outlet, and the job dock pinned along the bottom of every route.
 
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { NavLink, Link, Outlet } from 'react-router-dom'
+import { NavLink, Link, Outlet } from 'react-router'
 import { api } from './api'
 import { useJobs } from './jobs'
 import { LedBar } from './components/JobPanel'
