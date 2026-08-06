@@ -43,10 +43,15 @@ interface MaskEditorProps {
   mode: 'brush' | 'eraser'
   /** Fires false while a proposal is in flight, true once one has landed. */
   onReady?: (ready: boolean) => void
+  /** Fires true when the landed proposal marks nothing at all. */
+  onEmpty?: (empty: boolean) => void
 }
 
 const MaskEditor = forwardRef<MaskEditorHandle, MaskEditorProps>(
-  function MaskEditor({ imageUrl, maskUrl, width, height, brush, mode, onReady }, ref) {
+  function MaskEditor(
+    { imageUrl, maskUrl, width, height, brush, mode, onReady, onEmpty },
+    ref,
+  ) {
     const viewRef = useRef<HTMLCanvasElement>(null)
     const image = useRef<HTMLImageElement | null>(null)
     const overlay = useRef<HTMLCanvasElement | null>(null)
@@ -62,6 +67,8 @@ const MaskEditor = forwardRef<MaskEditorHandle, MaskEditorProps>(
     // the mask fetch on every render.
     const readyCb = useRef(onReady)
     readyCb.current = onReady
+    const emptyCb = useRef(onEmpty)
+    emptyCb.current = onEmpty
     // Read by pointer handlers without re-binding them on every prop change.
     const tool = useRef({ brush, mode })
     tool.current = { brush, mode }
@@ -125,6 +132,7 @@ const MaskEditor = forwardRef<MaskEditorHandle, MaskEditorProps>(
         overlayCtx().putImageData(pixels, 0, 0)
         loaded.current = true
         readyCb.current?.(true)
+        emptyCb.current?.(!pixels.data.some((_v, i) => i % 4 === 3 && pixels.data[i] > 0))
         redraw()
       }
       img.onerror = () => {

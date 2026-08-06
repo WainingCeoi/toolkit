@@ -73,6 +73,11 @@ TEXTURE = "texture"
 DETECTORS = (PATTERN, TEXTURE)
 DEFAULT_DETECTOR = PATTERN
 
+# Reported instead of a detector name when no watermark could be found, with an
+# empty mask. NOT a failure to handle quietly: it means "leave this image
+# alone", and the caller must skip it rather than inpaint anything.
+NONE = "none"
+
 # Longest image side the filter actually looks at (see module docstring).
 _DETECT_MAX = 1600
 
@@ -116,20 +121,27 @@ def propose_mask_detailed(
     sensitivity: int = DEFAULT_SENSITIVITY,
     detector: str = DEFAULT_DETECTOR,
 ) -> tuple[np.ndarray, str]:
-    """The mask plus which detector actually produced it.
+    """The mask plus which detector produced it, or NONE and an empty mask.
 
-    Asking for PATTERN on an image with no recoverable repeat falls back to
-    TEXTURE, so the returned name can differ from the one requested.
+    PATTERN does NOT fall back to TEXTURE. It used to, and that was actively
+    harmful: on a sample of eight photos, six had no recoverable repeat, so six
+    got a texture mask instead — which marks thin image detail like tent seams
+    and railings, not the watermark. Inpainting that damaged the photo AND left
+    the watermark in place, which is worse than doing nothing. Those images now
+    come back NONE with an empty mask, for the caller to skip and report.
+
+    TEXTURE still runs when it is asked for explicitly.
     """
     if detector not in DETECTORS:
         raise ValueError(
             f"Unknown detector {detector!r} (choose from: {', '.join(DETECTORS)})."
         )
-    if detector == PATTERN:
-        pattern = propose_pattern_mask(rgb, sensitivity)
-        if pattern is not None:
-            return pattern, PATTERN
-    return propose_texture_mask(rgb, sensitivity), TEXTURE
+    if detector == TEXTURE:
+        return propose_texture_mask(rgb, sensitivity), TEXTURE
+    pattern = propose_pattern_mask(rgb, sensitivity)
+    if pattern is not None:
+        return pattern, PATTERN
+    return np.zeros(rgb.shape[:2], np.uint8), NONE
 
 
 def propose_texture_mask(

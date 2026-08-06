@@ -403,6 +403,8 @@ export interface WatermarkResult {
   batch_id: string
   done: string[]
   failed: TupleFailure[]
+  /** Left untouched: no watermark could be found, so nothing was inpainted. */
+  skipped: string[]
   files: WatermarkFileResult[]
   /** Absent entirely when nothing cleaned, so there is no archive to offer. */
   artifact_id?: string

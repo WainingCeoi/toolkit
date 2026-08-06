@@ -82,8 +82,8 @@ def test_the_primitive_lattice_is_used_not_a_multiple_of_it():
 def test_a_clean_frame_is_never_pattern_masked(background):
     clean, _marked, _truth = tiled_pair(watermarked=False, background=background)
     mask, used = propose(clean)
-    assert used == "texture", "invented a repeating pattern in a clean frame"
-    assert np.count_nonzero(mask) / mask.size < 0.01
+    assert used == "none", "invented a repeating pattern in a clean frame"
+    assert np.count_nonzero(mask) == 0
 
 
 # =========================================================================

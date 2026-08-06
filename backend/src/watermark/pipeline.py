@@ -124,14 +124,15 @@ def clean_folder(
     dilate_px: int = DEFAULT_DILATE_PX,
     detector: str = DEFAULT_DETECTOR,
     on_progress: Callable[[int, int], bool] | None = None,
-) -> tuple[list[str], list[tuple[str, str]]]:
+) -> tuple[list[str], list[str], list[tuple[str, str]]]:
     """Headless batch: auto-mask and inpaint every image in ``in_dir``.
 
     Cleaned images are written to ``out_dir`` as PNGs (same stem — inpainted
     pixels re-encoded as JPEG would pick up fresh artifacts around the fill).
-    Returns (cleaned names, failed (name, error) pairs); a bad file never
-    aborts the batch. `on_progress(done, total)` is called after each file;
-    returning True stops the run early (cancellation).
+    Returns (cleaned names, skipped names, failed (name, error) pairs); a bad
+    file never aborts the batch, and an image with no watermark found is
+    skipped rather than copied out unchanged. `on_progress(done, total)` is
+    called after each file; returning True stops the run early (cancellation).
     """
     src = Path(in_dir).expanduser()
     dst = Path(out_dir).expanduser()
@@ -146,6 +147,7 @@ def clean_folder(
     dst.mkdir(parents=True, exist_ok=True)
 
     cleaned: list[str] = []
+    skipped: list[str] = []
     failed: list[tuple[str, str]] = []
     for idx, (path, out_name) in enumerate(
         zip(files, _unique_names(files), strict=True)
@@ -153,6 +155,13 @@ def clean_folder(
         try:
             rgb = load_rgb(path.read_bytes())
             mask = propose_mask(rgb, sensitivity, detector)
+            if not mask.any():
+                # No watermark found. Copying the image out unchanged would
+                # pass a no-op off as a result.
+                skipped.append(path.name)
+                if on_progress is not None and on_progress(idx + 1, len(files)):
+                    break
+                continue
             out = remove_watermark(rgb, mask, inpaint, dilate_px)
             (dst / out_name).write_bytes(encode_png(out))
             cleaned.append(out_name)
@@ -160,4 +169,4 @@ def clean_folder(
             failed.append((path.name, str(e)))
         if on_progress is not None and on_progress(idx + 1, len(files)):
             break
-    return cleaned, failed
+    return cleaned, skipped, failed

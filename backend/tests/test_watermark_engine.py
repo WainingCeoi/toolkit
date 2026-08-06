@@ -19,7 +19,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 from watermark import imgio
 from watermark.__main__ import main
-from watermark.detect import propose_mask, propose_mask_detailed
+from watermark.detect import propose_mask_detailed, propose_texture_mask
 from watermark.inpaint import get_inpainter, inpaint_cv2
 from watermark.pipeline import remove_watermark
 
@@ -76,7 +76,7 @@ def recall(proposed: np.ndarray, true_mask: np.ndarray) -> float:
 
 def test_default_sensitivity_finds_most_of_a_light_text_watermark():
     _clean, marked, true_mask = synthetic_pair()
-    proposed = propose_mask(marked)
+    proposed = propose_texture_mask(marked)
     assert recall(proposed, true_mask) >= 0.6
     # Over-detection is acceptable, blanketing the image is not: a mask that
     # marks half the picture would make the review step useless.
@@ -87,7 +87,7 @@ def test_dark_text_is_caught_by_the_black_tophat_half():
     _clean, marked, true_mask = synthetic_pair(
         color=(10, 10, 10), alpha=140, bg_range=(100, 200)
     )
-    assert recall(propose_mask(marked), true_mask) >= 0.6
+    assert recall(propose_texture_mask(marked), true_mask) >= 0.6
 
 
 def test_a_high_resolution_watermark_is_still_found():
@@ -97,7 +97,7 @@ def test_a_high_resolution_watermark_is_still_found():
     # because detection runs at a bounded working size and scales the mask
     # back up.
     _clean, marked, true_mask = synthetic_pair(size=(7200, 4800), font_size=260)
-    proposed = propose_mask(marked)
+    proposed = propose_texture_mask(marked)
     assert proposed.shape == true_mask.shape
     assert recall(proposed, true_mask) >= 0.6
     assert np.count_nonzero(proposed) / proposed.size < 0.5
@@ -139,7 +139,7 @@ def test_a_faint_mark_is_caught_without_selecting_the_textured_half():
     # faint watermark was caught used to select unrelated parts of the photo.
     # Local contrast normalisation is what separates them.
     _clean, marked, truth = mixed_texture_pair()
-    proposed = propose_mask(marked, 90)
+    proposed = propose_texture_mask(marked, 90)
     wm = truth > 0
     hit = proposed > 0
     assert recall(proposed, truth) >= 0.45, "the faint mark must still be found"
@@ -155,8 +155,8 @@ def test_the_top_of_the_slider_is_not_a_cliff():
     # A linear threshold mapping put everything interesting in the last few
     # steps, so 100 went from a usable mask to half the image.
     _clean, marked, truth = mixed_texture_pair()
-    at_90 = np.count_nonzero(propose_mask(marked, 90)) / truth.size
-    at_100 = np.count_nonzero(propose_mask(marked, 100)) / truth.size
+    at_90 = np.count_nonzero(propose_texture_mask(marked, 90)) / truth.size
+    at_100 = np.count_nonzero(propose_texture_mask(marked, 100)) / truth.size
     assert at_100 < at_90 * 2.5, (
         f"sensitivity 100 marked {at_100:.1%} vs {at_90:.1%} at 90 — the top "
         "of the slider should refine the mask, not blanket the photo"
@@ -186,11 +186,15 @@ def test_the_pattern_detector_ignores_an_edge_that_texture_flags():
     )
 
 
-def test_asking_for_pattern_on_an_image_with_no_repeat_falls_back():
+def test_asking_for_pattern_on_an_image_with_no_repeat_declines():
+    # It must NOT fall back to the texture mask. That fallback marked thin
+    # image detail and inpainted it, damaging photos while leaving their
+    # watermark in place.
     flat = np.full((400, 500, 3), 180, np.uint8)
     flat[100:300, 150:350] = 120  # one block, nothing repeating
-    _mask, used = propose_mask_detailed(flat, 50, detector="pattern")
-    assert used == "texture"
+    mask, used = propose_mask_detailed(flat, 50, detector="pattern")
+    assert used == "none"
+    assert np.count_nonzero(mask) == 0
 
 
 def test_the_default_detector_is_pattern():
@@ -206,10 +210,8 @@ def test_a_clean_photo_is_never_given_an_invented_pattern():
     # is checked against the image, and a clean photo leaves nothing standing.
     clean, _marked, _truth = mixed_texture_pair()
     mask, used = propose_mask_detailed(clean, 50, detector="pattern")
-    assert used == "texture", "a watermark-free photo must not yield a pattern mask"
-    # Whatever the texture fallback then finds should be negligible, not a grid
-    # of stamps laid over clean sky.
-    assert np.count_nonzero(mask) / mask.size < 0.005
+    assert used == "none", "a watermark-free photo must not yield a pattern mask"
+    assert np.count_nonzero(mask) == 0
 
 
 def test_an_unknown_detector_is_rejected():
@@ -221,12 +223,12 @@ def test_a_flat_region_is_not_amplified_into_noise():
     # Dividing by a local baseline blows up where the baseline is ~0 (a blown
     # sky, a product render's white background) unless a floor holds it down.
     flat = np.full((300, 400, 3), 250, np.uint8)
-    assert np.count_nonzero(propose_mask(flat, 100)) / flat[:, :, 0].size < 0.02
+    assert np.count_nonzero(propose_texture_mask(flat, 100)) / flat[:, :, 0].size < 0.02
 
 
 def test_sensitivity_marks_monotonically_more_pixels():
     _clean, marked, _true = synthetic_pair()
-    counts = [np.count_nonzero(propose_mask(marked, s)) for s in (10, 50, 90)]
+    counts = [np.count_nonzero(propose_texture_mask(marked, s)) for s in (10, 50, 90)]
     assert counts[0] <= counts[1] <= counts[2]
     # ...and the slider's ends actually differ, or it is decoration.
     assert counts[0] < counts[2]
@@ -318,7 +320,7 @@ def test_get_inpainter_rejects_unknown_names():
 
 def test_mask_roundtrips_through_png():
     _clean, marked, _true = synthetic_pair()
-    mask = propose_mask(marked)
+    mask = propose_texture_mask(marked)
     again = imgio.load_mask(imgio.encode_png(mask), mask.shape)
     assert np.array_equal(again, mask)
 
@@ -361,7 +363,8 @@ def write_marked_folder(folder, count=2):
 def test_cli_cleans_a_folder_with_cv2(tmp_path, capsys):
     src = write_marked_folder(tmp_path / "in")
     out = tmp_path / "out"
-    assert main(["clean", str(src), str(out), "--inpainter", "cv2"]) == 0
+    args = ["clean", str(src), str(out), "--inpainter", "cv2", "--detector", "texture"]
+    assert main(args) == 0
     assert sorted(p.name for p in out.iterdir()) == ["photo_0.png", "photo_1.png"]
     assert "[2/2]" in capsys.readouterr().out
 
@@ -375,7 +378,8 @@ def test_two_inputs_with_the_same_stem_both_survive(tmp_path, capsys):
     Image.fromarray(marked).save(src / "photo.png")
     Image.fromarray(marked).save(src / "photo.jpg")
     out = tmp_path / "out"
-    assert main(["clean", str(src), str(out), "--inpainter", "cv2"]) == 0
+    args = ["clean", str(src), str(out), "--inpainter", "cv2", "--detector", "texture"]
+    assert main(args) == 0
     assert sorted(p.name for p in out.iterdir()) == ["photo (2).png", "photo.png"]
 
 
@@ -383,14 +387,15 @@ def test_cli_refuses_to_write_into_its_own_input_folder(tmp_path, capsys):
     # Writing into the input folder would overwrite images the run has not
     # read yet, so the later ones would be cleaned twice.
     src = write_marked_folder(tmp_path / "in")
-    code = main(["clean", str(src), str(src), "--inpainter", "cv2"])
+    args = ["clean", str(src), str(src), "--inpainter", "cv2", "--detector", "texture"]
+    code = main(args)
     assert code == 2
     assert "must be different from the input folder" in capsys.readouterr().err
 
 
 def test_cli_reports_a_missing_input_folder(tmp_path, capsys):
     args = ["clean", str(tmp_path / "nope"), str(tmp_path / "out")]
-    code = main([*args, "--inpainter", "cv2"])
+    code = main([*args, "--inpainter", "cv2", "--detector", "texture"])
     assert code == 2
     assert "Input folder not found" in capsys.readouterr().err
 
@@ -398,7 +403,7 @@ def test_cli_reports_a_missing_input_folder(tmp_path, capsys):
 def test_cli_reports_an_empty_input_folder(tmp_path, capsys):
     (tmp_path / "in").mkdir()
     args = ["clean", str(tmp_path / "in"), str(tmp_path / "out")]
-    code = main([*args, "--inpainter", "cv2"])
+    code = main([*args, "--inpainter", "cv2", "--detector", "texture"])
     assert code == 2
     assert "no png/jpg/webp images" in capsys.readouterr().err
 
@@ -426,12 +431,27 @@ def test_cli_module_entrypoint_is_wired(tmp_path):
             str(tmp_path / "out"),
             "--inpainter",
             "cv2",
+            "--detector",
+            "texture",
         ],
         capture_output=True,
         text=True,
     )
     assert result.returncode == 0, result.stderr
     assert (tmp_path / "out" / "photo_0.png").is_file()
+
+
+def test_the_cli_reports_images_it_left_alone_rather_than_copying_them(
+    tmp_path, capsys
+):
+    # The default detector declines when it finds no repeat. Writing those
+    # images out unchanged would pass a no-op off as a cleaned result.
+    src = write_marked_folder(tmp_path / "in", count=2)
+    out = tmp_path / "out"
+    assert main(["clean", str(src), str(out), "--inpainter", "cv2"]) == 0
+    printed = capsys.readouterr().out
+    assert "skipped 2 image(s) with no watermark found" in printed
+    assert not list(out.iterdir()), "an image with no watermark found was written out"
 
 
 def test_importing_the_engine_never_imports_torch():

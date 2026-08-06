@@ -360,6 +360,28 @@ def test_results_are_published_before_the_batch_ends(client, app_state):
     assert seen and seen[0]["done"] == ["a.png"]
 
 
+def test_an_empty_mask_is_skipped_not_written_back(client):
+    # The detector declines on images with no recoverable watermark, which
+    # arrives here as an all-black mask. Inpainting nothing and calling the
+    # result "cleaned" would hand back a no-op dressed as a success.
+    batch = upload(client, ("plain.png", png_bytes((20, 10)))).json()
+    image = batch["images"][0]
+    resp = client.post(
+        "/api/watermark/run",
+        json={
+            "batch_id": batch["batch_id"],
+            "inpainter": "cv2",
+            "masks": {image["id"]: mask_b64(20, 10)},  # no box = nothing marked
+        },
+    )
+    snap = wait_for_job(client, resp.json()["job_id"])
+    assert snap["state"] == "done"
+    assert snap["result"]["skipped"] == ["plain.png"]
+    assert snap["result"]["done"] == []
+    assert snap["result"]["files"] == []
+    assert "artifact_id" not in snap["result"]
+
+
 def test_run_rejects_an_unknown_inpainter(client):
     batch = upload(client, ("a.png", png_bytes())).json()
     resp = client.post(

@@ -250,6 +250,7 @@ def run(req: WatermarkRunIn, state: StateDep, watermarks: WatermarksDep):
             job.set_message("Loading LaMa — the first run downloads a ~200 MB model…")
         done: list[str] = []
         failed: list[tuple[str, str]] = []
+        skipped: list[str] = []
         file_results: list[dict] = []
         buffer = io.BytesIO()
         archive = zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED)
@@ -266,6 +267,7 @@ def run(req: WatermarkRunIn, state: StateDep, watermarks: WatermarksDep):
                 "batch_id": req.batch_id,
                 "done": list(done),
                 "failed": list(failed),
+                "skipped": list(skipped),
                 "files": list(file_results),
             }
             job.set_result(partial)
@@ -286,6 +288,14 @@ def run(req: WatermarkRunIn, state: StateDep, watermarks: WatermarksDep):
                 try:
                     rgb = imgio.load_rgb(entry["path"].read_bytes())
                     mask = imgio.load_mask(masks[entry["id"]], rgb.shape[:2])
+                    if not mask.any():
+                        # Nothing to remove. Writing the image back unchanged
+                        # would present a no-op as a cleaned result, so say
+                        # plainly that it was left alone.
+                        skipped.append(entry["name"])
+                        job.update_item(idx, pct=100, state="done")
+                        publish()
+                        continue
                     png = imgio.encode_png(
                         remove_watermark(rgb, mask, inpaint, req.dilate_px)
                     )

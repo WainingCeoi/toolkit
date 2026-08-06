@@ -40,6 +40,7 @@ export default function WatermarkRemover() {
   const [draft, setDraft] = useState<Record<string, number>>({})
   const [applied, setApplied] = useState<Record<string, number>>({})
   const [ready, setReady] = useState<Record<string, boolean>>({})
+  const [noPattern, setNoPattern] = useState<Record<string, boolean>>({})
   const [brush, setBrush] = useState(24)
   const [mode, setMode] = useState<'brush' | 'eraser'>('brush')
   const [detector, setDetector] = useState<WatermarkDetector>('pattern')
@@ -69,6 +70,12 @@ export default function WatermarkRemover() {
 
   const markReady = useCallback((id: string, isReady: boolean) => {
     setReady((prev) => (prev[id] === isReady ? prev : { ...prev, [id]: isReady }))
+  }, [])
+
+  // An all-black proposal means the detector declined; the run will skip that
+  // image rather than inpaint anything, and the review panel should say so.
+  const markEmpty = useCallback((id: string, empty: boolean) => {
+    setNoPattern((prev) => (prev[id] === empty ? prev : { ...prev, [id]: empty }))
   }, [])
 
   async function detect() {
@@ -116,6 +123,7 @@ export default function WatermarkRemover() {
   function startOver() {
     setBatch(null)
     setReady({})
+    setNoPattern({})
     editors.current = {}
   }
 
@@ -251,6 +259,7 @@ export default function WatermarkRemover() {
                 <strong>{img.name}</strong>
                 <span className="wm-dims">
                   {ready[img.id] === false && 'detecting… · '}
+                  {noPattern[img.id] && 'no watermark found — will be skipped · '}
                   {img.width}×{img.height}
                 </span>
               </div>
@@ -270,6 +279,7 @@ export default function WatermarkRemover() {
                 brush={brush}
                 mode={mode}
                 onReady={(isReady) => markReady(img.id, isReady)}
+                onEmpty={(empty) => markEmpty(img.id, empty)}
               />
               <div className="row">
                 <label className="wm-slider">
@@ -395,6 +405,13 @@ export default function WatermarkRemover() {
                     />
                   </div>
                 ))}
+                {result.skipped.length > 0 && (
+                  <div className="note warn">
+                    Left untouched — no repeating watermark could be recovered,
+                    so nothing was inpainted rather than risk damaging the
+                    image: {result.skipped.join(', ')}
+                  </div>
+                )}
                 {result.failed.length > 0 && (
                   <details className="expander">
                     <summary>❌ {result.failed.length} failed</summary>
