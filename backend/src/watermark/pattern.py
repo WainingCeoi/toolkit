@@ -56,6 +56,10 @@ _HARMONICS = 4
 _PEAK_COUNT = 60
 _LATTICE_TOL = 0.18
 _MIN_SUPPORT = 5
+
+# --- PATCH: new constants -------------------------------------------------
+_REFINE_SCHEDULE = ((2, 10), (3, 7), (6, 5), (8, 3))
+_SCORE_ORDER = 3
 # Largest lag, as a share of each dimension, where enough of the image still
 # overlaps itself for the correlation to carry evidence.
 _MAX_LAG_SHARE = 0.35
@@ -101,6 +105,12 @@ _EVIDENCE_FLOOR = 1.0
 # If this little of the stamped area survives that check, the repeat was an
 # artefact of the period estimate rather than ink on the photo.
 _MIN_EVIDENCE_SHARE = 0.2
+# Footprint the evidence share is measured over — the mark's strong core, fixed
+# so the gate does not move when sensitivity widens the footprint being masked.
+_GATE_PCT = 90.0
+
+
+TRACE = {}
 
 
 def _highpass(gray: np.ndarray) -> np.ndarray:
@@ -188,6 +198,29 @@ def _rect_period(hp: np.ndarray, texture: np.ndarray) -> tuple[int, int] | None:
     return py, px
 
 
+def _lag_window(shape: tuple[int, int]) -> tuple[int, int, int, int]:
+    """Centre and usable lag reach of a shifted autocorrelation."""
+    height, width = shape
+    return (
+        height // 2,
+        width // 2,
+        int(height * _MAX_LAG_SHARE),
+        int(width * _MAX_LAG_SHARE),
+    )
+
+
+def _debias(ac: np.ndarray) -> np.ndarray:
+    """Remove additive separable structure -- f(dy) + g(dx) -- from an AC."""
+    cy, cx, ry, rx = _lag_window(ac.shape)
+    top, bottom = max(0, cy - ry), min(ac.shape[0], cy + ry + 1)
+    left, right = max(0, cx - rx), min(ac.shape[1], cx + rx + 1)
+    out = ac.copy()
+    view = out[top:bottom, left:right]
+    view -= np.median(view, axis=1, keepdims=True)
+    view -= np.median(view, axis=0, keepdims=True)
+    return out
+
+
 def _peaks(prominence: np.ndarray, count: int) -> list[tuple[float, float]]:
     """The strongest autocorrelation offsets, as (dy, dx) in the half-plane."""
     height, width = prominence.shape
@@ -268,6 +301,102 @@ def _fit_lattice(peaks: list[tuple[float, float]]) -> np.ndarray | None:
     return refined if abs(np.linalg.det(refined)) > MIN_PERIOD**2 * 0.25 else basis
 
 
+def _reduce_basis(basis: np.ndarray) -> np.ndarray:
+    """The shortest, most nearly orthogonal basis of the same lattice."""
+    a = basis[:, 0].astype(np.float64).copy()
+    b = basis[:, 1].astype(np.float64).copy()
+    for _ in range(64):
+        if b @ b < a @ a:
+            a, b = b, a
+        if a @ a <= 1e-12:
+            break
+        mu = round(float((b @ a) / (a @ a)))
+        if mu == 0:
+            break
+        b = b - mu * a
+    if b @ b < a @ a:
+        a, b = b, a
+    return np.column_stack([a, b])
+
+
+def _refine_basis(ac: np.ndarray, basis: np.ndarray) -> np.ndarray:
+    """Least-squares fit of the basis to where the AC peaks actually are."""
+    cy, cx, ry, rx = _lag_window(ac.shape)
+    basis = basis.astype(np.float64).copy()
+    for order, half in _REFINE_SCHEDULE:
+        coefficients, observed = [], []
+        for i in range(-order, order + 1):
+            for j in range(-order, order + 1):
+                if i == 0 and j == 0:
+                    continue
+                dx, dy = basis @ np.array([i, j], np.float64)
+                if dx * dx + dy * dy < MIN_PERIOD**2:
+                    continue
+                if abs(dy) > ry - half - 1 or abs(dx) > rx - half - 1:
+                    continue
+                y0, x0 = int(round(cy + dy)), int(round(cx + dx))
+                window = ac[y0 - half : y0 + half + 1, x0 - half : x0 + half + 1]
+                if window.size == 0:
+                    continue
+                weight = np.clip(window - np.median(window), 0, None)
+                if weight.sum() <= 1e-12:
+                    continue
+                gy, gx = np.mgrid[0 : window.shape[0], 0 : window.shape[1]]
+                oy = float((gy * weight).sum() / weight.sum()) - half
+                ox = float((gx * weight).sum() / weight.sum()) - half
+                observed.append([x0 - cx + ox, y0 - cy + oy])
+                coefficients.append([i, j])
+        if len(coefficients) < 4:
+            break
+        integer_coords = np.array(coefficients, np.float64).T
+        sites = np.array(observed, np.float64).T
+        gram = integer_coords @ integer_coords.T
+        if abs(np.linalg.det(gram)) < 1e-9:
+            break
+        candidate = sites @ integer_coords.T @ np.linalg.inv(gram)
+        if abs(np.linalg.det(candidate)) < MIN_PERIOD**2 * 0.25:
+            break
+        basis = candidate
+    return basis
+
+
+def _lattice_score(ac: np.ndarray, basis: np.ndarray) -> float:
+    """How much autocorrelation actually sits on this lattice's sites."""
+    cy, cx, ry, rx = _lag_window(ac.shape)
+    values = []
+    for i in range(-_SCORE_ORDER, _SCORE_ORDER + 1):
+        for j in range(-_SCORE_ORDER, _SCORE_ORDER + 1):
+            if i == 0 and j == 0:
+                continue
+            dx, dy = basis @ np.array([i, j], np.float64)
+            if dx * dx + dy * dy < MIN_PERIOD**2:
+                continue
+            if abs(dy) > ry - 1 or abs(dx) > rx - 1:
+                continue
+            values.append(float(ac[int(round(cy + dy)), int(round(cx + dx))]))
+    if len(values) < 4:
+        return -np.inf
+    return float(np.median(values))
+
+
+def _fit_rectifying_lattice(ac: np.ndarray) -> np.ndarray | None:
+    """The best lattice basis the autocorrelation supports, or None."""
+    debiased = _debias(ac)
+    best, best_score = None, -np.inf
+    for source in (ac, debiased):
+        prominence = source - cv2.GaussianBlur(source, (0, 0), sigmaX=9)
+        rough = _fit_lattice(_peaks(prominence, _PEAK_COUNT))
+        if rough is None:
+            continue
+        basis = _reduce_basis(_refine_basis(debiased, _reduce_basis(rough)))
+        if abs(np.linalg.det(basis)) < MIN_PERIOD**2 * 0.25:
+            continue
+        score = _lattice_score(debiased, basis)
+        if score > best_score:
+            best, best_score = basis, score
+    return best
+
+
 def _warp_to_lattice(basis: np.ndarray, shape: tuple[int, int]):
     """An affine that makes the lattice axis-aligned, plus the resulting cell.
 
@@ -296,14 +425,25 @@ def _warp_to_lattice(basis: np.ndarray, shape: tuple[int, int]):
 
 
 def _fold_template(
-    hp: np.ndarray, texture: np.ndarray, py: int, px: int
+    hp: np.ndarray,
+    texture: np.ndarray,
+    py: int,
+    px: int,
+    cover: np.ndarray | None = None,
 ) -> np.ndarray | None:
     """Median of the quietest tiles, per phase — the recovered mark."""
-    quiet = np.percentile(texture, 35)
+    if cover is None:
+        cover = np.ones(hp.shape, np.float32)
+    inside = cover > 0.5
+    if not inside.any():
+        return None
+    quiet = np.percentile(texture[inside], 35)
     tiles = []
     busy_tiles = []
     for top in range(0, hp.shape[0] - py + 1, py):
         for left in range(0, hp.shape[1] - px + 1, px):
+            if cover[top : top + py, left : left + px].mean() < 0.98:
+                continue
             cell = hp[top : top + py, left : left + px]
             if np.mean(texture[top : top + py, left : left + px] < quiet) > 0.85:
                 tiles.append(cell)
@@ -369,6 +509,8 @@ def _crop_to_mark(template: np.ndarray) -> tuple[np.ndarray, int, int]:
 def propose_pattern_mask(rgb: np.ndarray, sensitivity: int) -> np.ndarray | None:
     """Mask the instances of a repeating watermark, or None if there is no
     convincing repeating pattern to mask."""
+    TRACE.clear()
+    TRACE["stop"] = "fired"
     height, width = rgb.shape[:2]
     scale = max(height, width) / WORK_MAX
     if scale > 1:
@@ -387,16 +529,22 @@ def propose_pattern_mask(rgb: np.ndarray, sensitivity: int) -> np.ndarray | None
     # Rectify onto the overlay's own grid first. Everything downstream then
     # works in rows and columns, whatever angle the real lattice sits at.
     rectify = None
+    cover = None
     quiet = (texture < np.percentile(texture, _QUIET_PCT)).astype(np.float32)
     if quiet.mean() >= 0.05:
-        ac = _masked_autocorrelation(hp, quiet)
-        prominence = ac - cv2.GaussianBlur(ac, (0, 0), sigmaX=9)
-        basis = _fit_lattice(_peaks(prominence, _PEAK_COUNT))
+        ac = _masked_autocorrelation(hp, quiet).astype(np.float32)
+        basis = _fit_rectifying_lattice(ac)
         if basis is not None:
             rectify = _warp_to_lattice(basis, hp.shape)
 
     if rectify is not None:
         forward, (py, px), (out_h, out_w) = rectify
+        cover = cv2.warpAffine(
+            np.ones(hp.shape, np.float32),
+            forward,
+            (out_w, out_h),
+            flags=cv2.INTER_NEAREST,
+        )
         hp = cv2.warpAffine(hp, forward, (out_w, out_h), flags=cv2.INTER_LINEAR)
         gray = cv2.warpAffine(gray, forward, (out_w, out_h), flags=cv2.INTER_LINEAR)
         texture = cv2.warpAffine(
@@ -412,10 +560,10 @@ def propose_pattern_mask(rgb: np.ndarray, sensitivity: int) -> np.ndarray | None
     if py < MIN_PERIOD or px < MIN_PERIOD:
         return None
 
-    template = _fold_template(hp, texture, py, px)
+    template = _fold_template(hp, texture, py, px, cover)
     if template is None:
         return None
-    patch, _crop_top, _crop_left = _crop_to_mark(template)
+    patch, crop_top, crop_left = _crop_to_mark(template)
     if min(patch.shape) < 12 or patch.std() <= 1e-3:
         return None
     if patch.shape[0] >= hp.shape[0] or patch.shape[1] >= hp.shape[1]:
@@ -441,12 +589,33 @@ def propose_pattern_mask(rgb: np.ndarray, sensitivity: int) -> np.ndarray | None
     # Blur before thresholding: on a noisy template, judging bare pixels picks
     # specks out of the noise instead of the mark's body, and a speckled stamp
     # inpaints as a rash rather than a removed logo.
-    energy = cv2.GaussianBlur(np.abs(patch), (0, 0), sigmaX=2.0)
-    stamp = (energy >= np.percentile(energy, footprint_pct)).astype(np.uint8) * 255
-    stamp = cv2.morphologyEx(stamp, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
+    #
+    # Thresholded over the WHOLE TILE, not over the crop. The crop exists to
+    # give cross-correlation a distinctive subject; it spans _CROP_FRACTION of
+    # the tile in each axis, so barely a third of the tile's area, and the mark
+    # does not fit inside it — measured on the samples, the lettering beside the
+    # logo runs straight out of the crop, so no threshold could ever stamp it
+    # and it survived removal in full. Masking wants the mark's whole extent, so
+    # the stamp is the whole tile, offset back to where the crop began.
+    energy = cv2.GaussianBlur(np.abs(template), (0, 0), sigmaX=2.0)
+
+    def _stamp_at(percentile: float) -> np.ndarray:
+        cut = np.percentile(energy, percentile)
+        binary = (energy >= cut).astype(np.uint8) * 255
+        return cv2.morphologyEx(binary, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
+
+    stamp = _stamp_at(footprint_pct)
+    # The evidence-share gate below is judged on this FIXED reference footprint
+    # rather than on the stamp actually being returned. The gate asks "is the
+    # recovered repeat really ink on the photo"; measured on the stamp itself it
+    # instead re-measures the caller's own footprint choice, because a looser
+    # footprint necessarily reaches further into the tile's empty background and
+    # drives the survival share down. That coupling made a *higher* sensitivity
+    # return None — the slider at 100 reported "no watermark" on an image the
+    # same code found the mark in at 50, and the pipeline skips a None.
+    gate_stamp = _stamp_at(_GATE_PCT)
 
     mask = np.zeros(gray.shape, np.uint8)
-    stamp_h, stamp_w = stamp.shape
     sites: set[tuple[int, int]] = set()
 
     # Every place the recovered mark genuinely correlates. This catches the
@@ -477,13 +646,25 @@ def propose_pattern_mask(rgb: np.ndarray, sensitivity: int) -> np.ndarray | None
 
     if len(sites) < MIN_INSTANCES:
         return None
-    for sy, sx in sites:
-        # A site IS the stamp's top-left: matchTemplate reports where the crop
-        # begins, and the stamp is that same crop.
-        region = mask[sy : sy + stamp_h, sx : sx + stamp_w]
-        if region.size == 0:
-            continue
-        region[:] = np.maximum(region, stamp[: region.shape[0], : region.shape[1]])
+
+    def _paint(target: np.ndarray, shape: np.ndarray) -> None:
+        """Stamp ``shape`` at every site. A site is where the CROP matched, and
+        the crop began (crop_top, crop_left) into the tile, so the tile-sized
+        stamp starts that far back — which can be off the top or left edge."""
+        for sy, sx in sites:
+            top, left = sy - crop_top, sx - crop_left
+            src_y, src_x = max(0, -top), max(0, -left)
+            dst_y, dst_x = max(0, top), max(0, left)
+            high = min(shape.shape[0] - src_y, target.shape[0] - dst_y)
+            wide = min(shape.shape[1] - src_x, target.shape[1] - dst_x)
+            if high <= 0 or wide <= 0:
+                continue
+            region = target[dst_y : dst_y + high, dst_x : dst_x + wide]
+            region[:] = np.maximum(
+                region, shape[src_y : src_y + high, src_x : src_x + wide]
+            )
+
+    _paint(mask, stamp)
 
     # Confirm each stamped pixel against the image itself. The grid says where
     # instances *should* be; this keeps only the pixels where the photo really
@@ -496,14 +677,21 @@ def propose_pattern_mask(rgb: np.ndarray, sensitivity: int) -> np.ndarray | None
     # deletes exactly the marks this mode exists to find.
     deviation = np.abs(hp)
     baseline = cv2.blur(deviation, (_EVIDENCE_WINDOW, _EVIDENCE_WINDOW))
-    stamped = int(np.count_nonzero(mask))
-    if stamped == 0:
-        return None
-    mask[deviation < _EVIDENCE_RATIO * (baseline + _EVIDENCE_FLOOR)] = 0
+    supported = deviation >= _EVIDENCE_RATIO * (baseline + _EVIDENCE_FLOOR)
 
-    # If almost nothing survived, the "pattern" was an artefact of the period
-    # estimate rather than something present in the photo.
-    if np.count_nonzero(mask) < _MIN_EVIDENCE_SHARE * stamped:
+    # If almost nothing of the reference footprint survived, the "pattern" was an
+    # artefact of the period estimate rather than something present in the photo.
+    gate = np.zeros(gray.shape, np.uint8)
+    _paint(gate, gate_stamp)
+    reference = gate > 0
+    gate_area = int(np.count_nonzero(reference))
+    if gate_area == 0:
+        return None
+    if int(np.count_nonzero(reference & supported)) < _MIN_EVIDENCE_SHARE * gate_area:
+        return None
+
+    mask[~supported] = 0
+    if not mask.any():
         return None
 
     if rectify is not None:

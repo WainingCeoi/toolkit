@@ -87,23 +87,20 @@ def test_a_clean_frame_is_never_pattern_masked(background):
 
 
 # =========================================================================
-# Known gaps — kept as failing cases, not omitted
+# Oblique lattices — the shape most real overlays actually use
 # =========================================================================
 
 
-@pytest.mark.xfail(
-    reason="oblique lattices are not recovered yet: the masked autocorrelation's "
-    "strongest peaks lie on the dy=0 line, artefacts of the quiet region's own "
-    "shape, which outrank the real diagonal lattice. Suppressing that bias is "
-    "the next step; until then these fall back to the texture detector.",
-    strict=False,
-)
 @pytest.mark.parametrize(
     "basis,angle",
     [(SHALLOW_OBLIQUE, 11.0), (STEEP_OBLIQUE, -14.0)],
     ids=["shallow-11deg", "steep-76deg"],
 )
 def test_an_oblique_lattice_is_recovered(basis, angle):
+    # These were xfail: the lattice fitter found the right grid, but rectifying
+    # a sheared parallelogram onto a rectangle tripled the cell area and blew
+    # the frame guard, so every oblique case silently fell back. Reducing the
+    # basis and excluding the rectified frame's padding from the fold fixed it.
     _clean, marked, truth = tiled_pair(basis=basis, angle=angle)
     mask, used = propose(marked)
     assert used == "pattern"
