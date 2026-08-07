@@ -37,7 +37,12 @@ from watermark.inpaint import (
     lama_available,
     resolve_device,
 )
-from watermark.pipeline import DEFAULT_DILATE_PX, IMAGE_TYPES, remove_watermark
+from watermark.pipeline import (
+    DEFAULT_DILATE_PX,
+    IMAGE_TYPES,
+    remove_watermark,
+    would_destroy_content,
+)
 
 from ..deps import StateDep, WatermarksDep
 from ..schemas import JobStartedOut
@@ -275,6 +280,7 @@ def run(req: WatermarkRunIn, state: StateDep, watermarks: WatermarksDep):
         done: list[str] = []
         failed: list[tuple[str, str]] = []
         skipped: list[str] = []
+        protected: list[str] = []
         file_results: list[dict] = []
         buffer = io.BytesIO()
         archive = zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED)
@@ -292,6 +298,7 @@ def run(req: WatermarkRunIn, state: StateDep, watermarks: WatermarksDep):
                 "done": list(done),
                 "failed": list(failed),
                 "skipped": list(skipped),
+                "protected": list(protected),
                 "files": list(file_results),
             }
             job.set_result(partial)
@@ -317,6 +324,14 @@ def run(req: WatermarkRunIn, state: StateDep, watermarks: WatermarksDep):
                         # would present a no-op as a cleaned result, so say
                         # plainly that it was left alone.
                         skipped.append(entry["name"])
+                        job.update_item(idx, pct=100, state="done")
+                        publish()
+                        continue
+                    if would_destroy_content(rgb, mask, req.dilate_px):
+                        # The mark IS there, but the picture under it would not
+                        # survive the fill — a document whose text the mark sits
+                        # on. Leaving it alone is the answer, said out loud.
+                        protected.append(entry["name"])
                         job.update_item(idx, pct=100, state="done")
                         publish()
                         continue

@@ -184,10 +184,18 @@ def test_unknown_batch_and_image_are_404(client):
 
 
 def test_run_inpaints_only_the_masked_pixels(client):
-    # Flat gray with a white square; the mask covers the square. Inpainting
+    # Flat gray with a lighter square; the mask covers the square. Inpainting
     # must pull the square toward gray and leave far-away pixels untouched.
+    #
+    # The square is 32 grey levels above the ground, not the 127 it used to be,
+    # because this tool is for SEMI-TRANSPARENT overlays and the run now refuses
+    # an image when the fill would rewrite it beyond recognition (see
+    # would_destroy_content). A solid white block tripped that guard, which is
+    # the guard working: erasing it really would be a drastic rewrite. This test
+    # is about compositing only masked pixels, so it uses a mark of the kind the
+    # tool is actually meant to remove.
     rgb = np.full((60, 80, 3), 128, np.uint8)
-    rgb[20:36, 30:50] = 255
+    rgb[20:36, 30:50] = 160
     buffer = io.BytesIO()
     Image.fromarray(rgb).save(buffer, format="PNG")
 
@@ -221,7 +229,7 @@ def test_run_inpaints_only_the_masked_pixels(client):
     assert file_entry["image_id"] == image["id"]
     download = client.get(f"/api/artifacts/{file_entry['artifact_id']}")
     cleaned = np.asarray(Image.open(io.BytesIO(download.content)))
-    assert cleaned[28, 40].mean() < 200  # square filled from its gray surround
+    assert cleaned[28, 40].mean() < 145  # square filled from its gray surround
     assert np.array_equal(cleaned[:10, :10], rgb[:10, :10])  # far corner intact
 
     zip_download = client.get(f"/api/artifacts/{snap['result']['artifact_id']}")

@@ -403,3 +403,80 @@ def test_every_copy_the_lattice_predicts_is_masked(kwargs, least):
     covered, total = _site_coverage(tiled_pair(**kwargs)[1])
     assert total > 20, f"fixture predicted only {total} copies"
     assert covered / total > least, f"masked {covered}/{total} predicted copies"
+
+
+# =========================================================================
+# Refusing when removal would cost more than the watermark
+# =========================================================================
+
+
+def _document(width=1200, height=800, ground=246, ink=25):
+    """A spec-sheet-like frame: body text and rules on a light ground."""
+    from PIL import Image, ImageDraw, ImageFont
+
+    lines = [
+        "Projected area (m2)  Floor dimension (m)  Indoor area (m2)  Remark",
+        "75.69         6.7x6.7          32       Customizable size",
+        "Main framework    80x80x2.0mm galvanized steel pipe",
+        "Outer layer material  1050g/m2 PVDF tensioned membrane",
+        "Inner layer material  850gsm block out PVC",
+    ]
+    page = Image.new("RGB", (width, height), (ground,) * 3)
+    draw = ImageDraw.Draw(page)
+    font = ImageFont.load_default(size=19)
+    y = 60
+    for _block in range(4):
+        for line in lines:
+            draw.text((40, y), line, font=font, fill=(ink,) * 3)
+            y += 34
+        y += 18
+    for k in range(6):
+        rule = 50 + k * 130
+        draw.line((40, rule, width - 40, rule), fill=(150,) * 3, width=2)
+    return np.asarray(page)
+
+
+def _mark_onto(base):
+    """Tile the fixture's own overlay across an arbitrary background."""
+    height, width = base.shape[:2]
+    _c, marked, _t = tiled_pair(size=(width, height), basis=RECTANGULAR)
+    _c2, clean, _t2 = tiled_pair(size=(width, height), watermarked=False)
+    overlay = marked.astype(np.int16) - clean.astype(np.int16)
+    return np.clip(base.astype(np.int16) + overlay, 0, 255).astype(np.uint8)
+
+
+def test_a_watermarked_document_is_left_alone_rather_than_wrecked():
+    """The mark is found, and removing it anyway would be the wrong answer.
+
+    A watermark tiled over a DOCUMENT is genuinely present and genuinely masked,
+    but the strokes underneath carry the meaning and inpainting discards whatever
+    a mask covers. On the real spec sheet that prompted this it turned "Projected
+    area (m2)" into "Projected a m2", moving 13.35% of the frame by a mean of 39
+    grey levels. No sensitivity escapes it: at 0 the damage falls but residual
+    mark correlation is 0.412 against 0.441 untouched, so it removes nothing.
+    """
+    from watermark.pipeline import destruction, would_destroy_content
+
+    page = _mark_onto(_document())
+    mask, used = propose_mask_detailed(page, 50, detector="pattern")
+    assert used == "pattern", "fixture no longer carries a findable mark"
+    assert mask.any()
+    assert would_destroy_content(page, mask, 3), (
+        f"a document scored only {destruction(page, mask, 3):.0f}"
+    )
+
+
+@pytest.mark.parametrize("background", ["sky_grass", "render_dither", "gradient"])
+def test_an_ordinary_photograph_is_not_refused(background):
+    # The guard must not cost a single ordinary image. Measured over five
+    # documents and eight photographs the two populations do not overlap:
+    # documents scored 97-150 and photographs 40-79, so MAX_DESTRUCTION sits
+    # between them rather than being tuned against either.
+    from watermark.pipeline import destruction, would_destroy_content
+
+    _clean, marked, _truth = tiled_pair(basis=RECTANGULAR, background=background)
+    mask, used = propose_mask_detailed(marked, 50, detector="pattern")
+    assert used == "pattern"
+    assert not would_destroy_content(marked, mask, 3), (
+        f"refused a photograph, which scored {destruction(marked, mask, 3):.0f}"
+    )

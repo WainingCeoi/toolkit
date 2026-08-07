@@ -42,6 +42,12 @@ DEFAULT_DILATE_PX = 3
 TILE_PX = 640
 CONTEXT_PX = 96
 
+# Above this much rewriting, removal costs more than the watermark is worth and
+# the image is left alone instead (see would_destroy_content). Set between two
+# measured populations rather than tuned: documents scored 97-150 and
+# photographs 40-79, so this sits clear of both.
+MAX_DESTRUCTION = 88.0
+
 
 def _inpaint_tiled(
     rgb: np.ndarray,
@@ -93,6 +99,47 @@ def remove_watermark(
     return _inpaint_tiled(rgb, mask, inpaint)
 
 
+def destruction(rgb: np.ndarray, mask: np.ndarray, dilate_px: int) -> float:
+    """How violently removing ``mask`` rewrites the image, in grey levels.
+
+    The 90th percentile of the change over the pixels that change at all. It is
+    a direct measure of how much of the picture the fill has to invent: over the
+    smooth surfaces a watermark usually sits on there is little to invent and the
+    number is small, while over body text the fill replaces black strokes with
+    background and the number is large.
+
+    Probed with the cv2 inpainter whatever the caller will actually use, so the
+    reading means the same thing from run to run -- it is a property of what lies
+    under the mask, not of the inpainter's quality.
+    """
+    probe = remove_watermark(rgb, mask, get_inpainter("cv2"), dilate_px)
+    moved = np.abs(rgb.astype(np.int16) - probe.astype(np.int16)).max(axis=2)
+    changed = moved > 2
+    if not changed.any():
+        return 0.0
+    return float(np.percentile(moved[changed], 90))
+
+
+def would_destroy_content(rgb: np.ndarray, mask: np.ndarray, dilate_px: int) -> bool:
+    """Whether removing this mask would cost more than the watermark is worth.
+
+    A watermark tiled across a DOCUMENT is the case this exists for. The mark is
+    genuinely there and the mask is genuinely on it, but the strokes underneath
+    carry the meaning, and inpainting discards whatever a mask covers -- on a
+    real product spec sheet it turned "Projected area (m2)" into "Projected a m2".
+    No sensitivity setting escapes it: at 0 the damage falls but so does the
+    removal, leaving residual mark correlation at 0.412 against 0.441 untouched.
+
+    Measured over five documents (one real, four synthetic) and eight
+    photographs, this separates them with room to spare: documents scored 97-150
+    and photographs 40-79. Two cheaper signals were tried and rejected -- an
+    amplitude bound carries no information whatsoever (72.0% of true mark pixels
+    fall under 3x the template amplitude, against 72.4% of clean pixels), and
+    frame flatness flags the 3-D renders this tool is meant to clean.
+    """
+    return destruction(rgb, mask, dilate_px) > MAX_DESTRUCTION
+
+
 def list_images(folder: Path) -> list[Path]:
     """The images ``clean_folder`` would process, in name order."""
     return sorted(
@@ -139,15 +186,23 @@ def clean_folder(
     dilate_px: int = DEFAULT_DILATE_PX,
     detector: str = DEFAULT_DETECTOR,
     on_progress: Callable[[int, int], bool] | None = None,
-) -> tuple[list[str], list[str], list[tuple[str, str]]]:
+) -> tuple[list[str], list[str], list[str], list[tuple[str, str]]]:
     """Headless batch: auto-mask and inpaint every image in ``in_dir``.
 
     Cleaned images are written to ``out_dir`` as PNGs (same stem — inpainted
     pixels re-encoded as JPEG would pick up fresh artifacts around the fill).
-    Returns (cleaned names, skipped names, failed (name, error) pairs); a bad
-    file never aborts the batch, and an image with no watermark found is
-    skipped rather than copied out unchanged. `on_progress(done, total)` is
-    called after each file; returning True stops the run early (cancellation).
+    Returns (cleaned names, skipped names, protected names, failed (name, error)
+    pairs); a bad file never aborts the batch.
+
+    An image is SKIPPED when no watermark could be found -- copying it out
+    unchanged would pass a no-op off as a result. It is PROTECTED when a
+    watermark was found but removing it would destroy the picture underneath, as
+    on a document whose body text the mark overlaps; see would_destroy_content.
+    Both are left alone, and they are reported separately because they mean
+    opposite things about the image.
+
+    `on_progress(done, total)` is called after each file; returning True stops
+    the run early (cancellation).
     """
     src = Path(in_dir).expanduser()
     dst = Path(out_dir).expanduser()
@@ -171,6 +226,7 @@ def clean_folder(
 
     cleaned: list[str] = []
     skipped: list[str] = []
+    protected: list[str] = []
     failed: list[tuple[str, str]] = []
     for idx, (path, out_name) in enumerate(
         zip(files, _unique_names(files), strict=True)
@@ -185,6 +241,11 @@ def clean_folder(
                 if on_progress is not None and on_progress(idx + 1, len(files)):
                     break
                 continue
+            if would_destroy_content(rgb, mask, dilate_px):
+                protected.append(path.name)
+                if on_progress is not None and on_progress(idx + 1, len(files)):
+                    break
+                continue
             out = remove_watermark(rgb, mask, inpaint, dilate_px)
             (dst / out_name).write_bytes(encode_png(out))
             cleaned.append(out_name)
@@ -192,4 +253,4 @@ def clean_folder(
             failed.append((path.name, str(e)))
         if on_progress is not None and on_progress(idx + 1, len(files)):
             break
-    return cleaned, skipped, failed
+    return cleaned, skipped, protected, failed

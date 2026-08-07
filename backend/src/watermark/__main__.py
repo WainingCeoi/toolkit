@@ -70,7 +70,7 @@ def main(argv: list[str] | None = None) -> int:
         return False
 
     try:
-        cleaned, skipped, failed = clean_folder(
+        cleaned, skipped, protected, failed = clean_folder(
             args.in_dir,
             args.out_dir,
             inpainter=args.inpainter,
@@ -83,13 +83,23 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {e}", file=sys.stderr)
         return 2
 
-    if not cleaned and not failed and not skipped:
+    if not cleaned and not failed and not skipped and not protected:
         print(f"error: no png/jpg/webp images in {args.in_dir}", file=sys.stderr)
         return 2
     print(f"cleaned {len(cleaned)} image(s) -> {args.out_dir}")
     if skipped:
         print(f"skipped {len(skipped)} image(s) with no watermark found:")
         for name in skipped:
+            print(f"  {name}")
+    if protected:
+        # A different thing from "skipped", and worth its own words: the mark WAS
+        # found, and leaving the image alone is the deliberate answer.
+        print(
+            f"left {len(protected)} image(s) alone — a watermark was found, but "
+            "removing it would have destroyed the picture under it "
+            "(text or line art the mark sits on):"
+        )
+        for name in protected:
             print(f"  {name}")
     for name, error in failed:
         print(f"failed: {name}: {error}", file=sys.stderr)
