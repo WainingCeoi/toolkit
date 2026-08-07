@@ -769,53 +769,69 @@ def apply_mark(
     for y, x in zip(*np.nonzero(peaks), strict=True):
         sites.add((int(y), int(x)))
 
-    # A borrowed mark has to prove it belongs here BEFORE the grid walk below
-    # extends it, because the walk admits sites on the weaker MIN_NCC bar and so
-    # would spread a foreign mark across a frame from one lucky anchor. Measured:
-    # walking ungated put a mask on three images carrying a completely different
-    # overlay, and on a clean control frame. Counted on confident matches alone
-    # the two separate cleanly — 7 and 19 sites where the mark really is present,
-    # against 0 to 5 for the foreign overlay and 0 for every clean control — so
-    # the existing instance bar is all this needs.
+    # THE CORROBORATION, and now the only thing correlation is asked to decide:
+    # is this mark present in this image at all. It is judged on confidently
+    # correlating copies ALONE, before the lattice below is walked.
+    #
+    # Measured, this separates widely: 25, 39 and 75 confident copies on photos
+    # carrying the mark, and 7 and 19 where a sibling's mark was borrowed,
+    # against 0 to 5 for images carrying a completely different overlay and 0 for
+    # every clean control frame. Walking the lattice without this in front of it
+    # put a mask on three images with the wrong overlay and on a clean control.
     #
     # A pooled mark answers to MIN_RUN instead. MIN_INSTANCES asks one image to
     # establish on its own that a repeat is real, and a pooled mark was already
     # established elsewhere and more strongly: three photographs agreeing on the
-    # pitch to a spread of 0.000, and nine samples clearing the significance test
-    # that three could not. What is left for this image to show is that the mark
-    # is HERE, which its confident matches do. Relaxing it costs nothing at the
-    # clean-frame end either, since a clean batch never reaches a pooled mark --
-    # it is refused at pitch agreement, before any per-image count is consulted.
+    # pitch to a spread of 0.000. What is left for this image to show is that the
+    # mark is HERE, which its confident matches do. Relaxing it costs nothing at
+    # the clean-frame end either, since a clean batch never reaches a pooled mark
+    # -- it is refused at pitch agreement, before any per-image count is read.
     least_sites = MIN_RUN if mark.pooled else MIN_INSTANCES
-    if not own and len(sites) < least_sites:
-        return None
-
-    # Then walk the grid from the strongest match and snap each site to its own
-    # local peak, which picks up instances too faint to win a maximum of their
-    # own — over a bright tent roof, say — and absorbs the drift left by
-    # rounding the pitch to whole pixels.
-    #
-    # Skipped for a pooled mark: it was recovered from a row of instances, so only
-    # the pitch ALONG that row is known and there is no second axis to walk.
-    if not mark.pooled:
-        for i in range(-(anchor_y // py) - 1, (score.shape[0] - anchor_y) // py + 2):
-            for j in range(
-                -(anchor_x // px) - 1, (score.shape[1] - anchor_x) // px + 2
-            ):
-                top = max(0, anchor_y + i * py - snap_y)
-                left = max(0, anchor_x + j * px - snap_x)
-                bottom = min(score.shape[0], anchor_y + i * py + snap_y + 1)
-                right = min(score.shape[1], anchor_x + j * px + snap_x + 1)
-                if top >= bottom or left >= right:
-                    continue
-                window = score[top:bottom, left:right]
-                local = np.unravel_index(int(np.argmax(window)), window.shape)
-                if window[local] < MIN_NCC:
-                    continue
-                sites.add((top + int(local[0]), left + int(local[1])))
-
     if len(sites) < least_sites:
         return None
+
+    # Now spend the lattice. The overlay was laid on a regular grid, so once that
+    # grid is established every copy's position is KNOWN -- there is nothing left
+    # for an individual copy to prove, and requiring it to was throwing most of
+    # the watermark away. Measured over the sample, with every other gate
+    # untouched: requiring each copy to clear MIN_NCC masked 274 of 654 interior
+    # copies (41.9%) and 1 of 81 copies clipped by the frame edge (1.2%);
+    # stamping every site of the same lattice reaches 584/654 (89.3%) and 79/81
+    # (97.5%), and no clean control gained a single pixel.
+    #
+    # The copies this recovers are precisely the ones that could never have
+    # proved themselves. The overlay is fainter than the photograph's own grain
+    # -- peak amplitude 4-8 grey levels against a median high-pass of 4-9 -- so a
+    # copy with a colour boundary running under it correlates at 0.13-0.25 where
+    # one on smooth sky reaches 0.39. And a copy hanging off the frame edge has
+    # no score at all: cv2.matchTemplate only evaluates where the whole template
+    # fits, which leaves a 69x33px band around every frame, 9.1% of its area,
+    # structurally unreachable at any sensitivity.
+    #
+    # Sites are still snapped to a local correlation peak WHERE ONE EXISTS, which
+    # absorbs the drift left by rounding the pitch to whole pixels; where none
+    # does, the lattice position stands on its own. The range runs past the frame
+    # on both sides so a clipped copy is stamped too -- _paint clips it.
+    if not mark.pooled:
+        rows = range(-(anchor_y // py) - 2, (hp.shape[0] - anchor_y) // py + 3)
+        columns = range(-(anchor_x // px) - 2, (hp.shape[1] - anchor_x) // px + 3)
+        reach_y, reach_x = max(1, snap_y // 2), max(1, snap_x // 2)
+        for i in rows:
+            for j in columns:
+                site_y, site_x = anchor_y + i * py, anchor_x + j * px
+                if site_y + patch.shape[0] <= 0 or site_x + patch.shape[1] <= 0:
+                    continue
+                if site_y >= hp.shape[0] or site_x >= hp.shape[1]:
+                    continue
+                top, left = max(0, site_y - reach_y), max(0, site_x - reach_x)
+                bottom = min(score.shape[0], site_y + reach_y + 1)
+                right = min(score.shape[1], site_x + reach_x + 1)
+                if bottom > top and right > left:
+                    window = score[top:bottom, left:right]
+                    local = np.unravel_index(int(np.argmax(window)), window.shape)
+                    if window[local] >= MIN_NCC:
+                        site_y, site_x = top + int(local[0]), left + int(local[1])
+                sites.add((site_y, site_x))
 
     def _paint(target: np.ndarray, shape: np.ndarray) -> None:
         """Stamp ``shape`` at every site. A site is where the CROP matched, and

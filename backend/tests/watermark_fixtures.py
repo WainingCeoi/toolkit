@@ -103,6 +103,7 @@ def tiled_pair(
     background="sky_grass",
     color=(235, 235, 235),
     watermarked=True,
+    offset=(0, 0),
 ):
     """(clean, marked, truth_mask) for a watermark tiled on ``basis``.
 
@@ -111,6 +112,14 @@ def tiled_pair(
     produces the diagonal tiling real overlays actually use. ``watermarked``
     False returns a clean frame with an all-zero truth mask, for false-positive
     control.
+
+    ``offset`` (dy, dx) shifts the lattice's phase. It exists because without it
+    the lattice always happened to place whole copies inside the frame, so the
+    fixtures could not express a copy STRADDLING the frame edge -- and that case
+    is structurally different, not merely harder: cv2.matchTemplate only scores
+    where the whole template fits, so a straddling copy has no correlation score
+    at all and no threshold can reach it. On real photos that band is 9.1% of the
+    frame and held 81 copies, of which the detector once masked one.
     """
     w, h = size
     clean = _background(background, w, h)
@@ -123,10 +132,11 @@ def tiled_pair(
         (v1y, v1x), (v2y, v2x) = basis
         # Enough integer combinations to cover the frame whatever the basis.
         reach = int(2 * (w + h) / max(1, min(abs(v1y) + abs(v1x), abs(v2y) + abs(v2x))))
+        off_y, off_x = offset
         for i in range(-reach, reach + 1):
             for j in range(-reach, reach + 1):
-                y = i * v1y + j * v2y
-                x = i * v1x + j * v2x
+                y = i * v1y + j * v2y + off_y
+                x = i * v1x + j * v2x + off_x
                 if -pad_y < y < h and -pad_x < x < w:
                     # alpha_composite, NOT paste(…, mask=stamp): paste with an
                     # RGBA image as its own mask premultiplies a second time,

@@ -319,3 +319,87 @@ def test_pooling_needs_several_images_and_is_skipped_when_folding_worked():
 
     collect_marks(load)
     assert len(calls) == 1, "pooled pass ran despite the fold covering the batch"
+
+
+# =========================================================================
+# Spending the lattice: every copy's position is known once the grid is
+# =========================================================================
+
+
+def _site_coverage(marked):
+    """(copies whose position the mask covers, copies the lattice predicts)."""
+    import cv2
+
+    from watermark import pattern
+
+    mask, _kind = propose_mask_detailed(marked, 50, detector="pattern")
+    mark = pattern.recover_mark(marked)
+    assert mark is not None and mark.basis is not None
+    work = pattern._work_size(marked)
+    hp = pattern._highpass(cv2.cvtColor(work, cv2.COLOR_RGB2GRAY))
+    forward, (py, px), (out_h, out_w) = pattern._rectify(hp, mark.basis)
+    rect_hp = cv2.warpAffine(hp, forward, (out_w, out_h), flags=cv2.INTER_LINEAR)
+    inside = cv2.warpAffine(
+        np.ones(hp.shape, np.float32), forward, (out_w, out_h), flags=cv2.INTER_NEAREST
+    )
+    small = cv2.resize(
+        mask, (work.shape[1], work.shape[0]), interpolation=cv2.INTER_NEAREST
+    )
+    rect_mask = cv2.warpAffine(small, forward, (out_w, out_h), flags=cv2.INTER_NEAREST)
+    high, wide = mark.patch.shape
+    score = cv2.matchTemplate(rect_hp, mark.patch, cv2.TM_CCOEFF_NORMED)
+    _a, _b, _c, loc = cv2.minMaxLoc(score)
+    anchor_x, anchor_y = loc
+    covered = total = 0
+    for i in range(-(anchor_y // py) - 2, (rect_hp.shape[0] - anchor_y) // py + 3):
+        for j in range(-(anchor_x // px) - 2, (rect_hp.shape[1] - anchor_x) // px + 3):
+            cy, cx = anchor_y + i * py + high // 2, anchor_x + j * px + wide // 2
+            if not (0 <= cy < rect_hp.shape[0] and 0 <= cx < rect_hp.shape[1]):
+                continue
+            if inside[cy, cx] < 0.5:  # rectification padding, not photograph
+                continue
+            core = rect_mask[
+                max(0, cy - high // 3) : cy + high // 3,
+                max(0, cx - wide // 3) : cx + wide // 3,
+            ]
+            total += 1
+            covered += int(core.size > 0 and float((core > 0).mean()) > 0.05)
+    return covered, total
+
+
+@pytest.mark.parametrize(
+    "kwargs,least",
+    [
+        (dict(basis=RECTANGULAR), 0.95),
+        # Lattice phase shifted so copies STRADDLE the frame edge, which is
+        # structurally different from merely being faint: cv2.matchTemplate only
+        # scores where the whole template fits, so a straddling copy has no score
+        # at all and no threshold can reach it.
+        (dict(basis=RECTANGULAR, offset=(-28, -17)), 0.95),
+        (dict(basis=SHALLOW_OBLIQUE, angle=11.0), 0.95),
+        (dict(basis=RECTANGULAR, background="render_dither"), 0.85),
+    ],
+    ids=["rect", "straddling-the-edge", "oblique", "dither-bg"],
+)
+def test_every_copy_the_lattice_predicts_is_masked(kwargs, least):
+    """The grid is the answer, not a hint.
+
+    The overlay is laid on a regular lattice, so once that lattice is established
+    every copy's position is known and there is nothing left for an individual
+    copy to prove. Requiring each one to clear a correlation bar of its own threw
+    most of the watermark away: measured on this fixture it covered 39.0% of the
+    predicted copies, and on real photographs 41.9% of interior copies and 1.2%
+    of the ones clipped by the frame edge.
+
+    The copies this hits hardest are exactly the ones that cannot answer for
+    themselves — an overlay fainter than the photograph's own grain (4-8 grey
+    levels against a median high-pass of 4-9) correlates at 0.13-0.25 where a
+    colour boundary runs under it, against 0.39 on smooth sky.
+
+    Correlation still decides whether the mark is present at all, on confidently
+    matching copies alone, before any of this runs; and the per-pixel evidence
+    check still trims every stamp. Only the per-copy veto is gone.
+    """
+    covered, total = _site_coverage(tiled_pair(**kwargs)[1])
+    assert total > 20, f"fixture predicted only {total} copies"
+    assert covered / total > least, f"masked {covered}/{total} predicted copies"
