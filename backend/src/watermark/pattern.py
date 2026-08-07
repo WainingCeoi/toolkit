@@ -151,6 +151,23 @@ _MAX_SITES = 40
 # must agree, before the batch is believed to share one overlay.
 _MIN_POOL_IMAGES = 3
 _PITCH_TOL = 0.04
+# A run establishes one lattice vector. The pitch ACROSS it is voted for over this
+# range, reading the correlation surface within _CROSS_SNAP px of each predicted
+# site, and is believed only if the winner stands _CROSS_PROMINENCE robust
+# deviations above the rest of the vote. Measured: 5.65 and 22.9-26.6 where a
+# second pitch exists, against 0.90-3.68 on the clean batches that got as far as
+# being asked -- the bar sits between the weakest true reading and the strongest
+# false one, and _fold_on_grid then has to agree before the grid is used at all.
+_CROSS_MAX = 500
+_CROSS_SNAP = 6
+_CROSS_PROMINENCE = 4.5
+# What counts as the mark's ink when a folded cell is trimmed down to it: a share
+# of the mark's own peak, plus this much slack around the result. The trimmed mark
+# must also leave a quarter of the cell empty in both axes, which is the second
+# and independent test that the voted grid is real (see _fold_on_grid).
+_INK_SHARE = 0.25
+_INK_MARGIN = 6
+_INK_CELL_SHARE = 0.75
 
 
 TRACE = {}
@@ -565,9 +582,17 @@ class Mark:
     a batch: one watermarking tool ran over all of them.
 
     ``pooled`` marks come from the sparse route (see pooled_marks) rather than
-    from folding one image, and are applied a little differently: their vertical
-    pitch is unknown, so the grid walk is skipped, and the per-image instance
-    count is not what established them.
+    from folding one image, and the per-image instance count is not what
+    established them.
+
+    ``grid`` is the lattice the mark may be spent on -- every site of it gets
+    stamped, whether or not the copy there correlates. A folded mark always has
+    one, because folding cannot happen without a period in both axes. A pooled
+    mark has one only when the batch agreed on a pitch across the run as well as
+    along it (see _cross_pitch); without that it knows one axis, and a single
+    vector describes a line rather than a grid. ``cell`` is a different quantity
+    and stays separate: it is how far apart two copies can be told apart, which
+    for a pooled mark is its own footprint rather than the lattice step.
     """
 
     __slots__ = (
@@ -578,9 +603,20 @@ class Mark:
         "crop_left",
         "cell",
         "pooled",
+        "grid",
     )
 
-    def __init__(self, basis, template, patch, crop_top, crop_left, cell, pooled=False):
+    def __init__(
+        self,
+        basis,
+        template,
+        patch,
+        crop_top,
+        crop_left,
+        cell,
+        pooled=False,
+        grid=None,
+    ):
         self.basis = basis
         self.template = template
         self.patch = patch
@@ -588,6 +624,7 @@ class Mark:
         self.crop_left = crop_left
         self.cell = cell
         self.pooled = pooled
+        self.grid = grid
 
 
 def _work_size(rgb: np.ndarray) -> np.ndarray:
@@ -798,6 +835,11 @@ def apply_mark(
     if len(sites) < least_sites:
         return None
 
+    # The lattice this mark may be spent on. A folded mark rectified onto its own
+    # grid, so the frame's rows and columns ARE that grid; a pooled mark carries
+    # one only if the batch voted a pitch across its run as well as along it.
+    grid = mark.grid if mark.pooled else (py, px)
+
     # And they must sit ON the lattice, which is the other half of the same
     # bargain: if the grid is trusted enough to be stamped everywhere below, the
     # evidence for it has to be that the confident matches fall on its nodes.
@@ -813,11 +855,11 @@ def apply_mark(
     # wrongly fitted lattice used to cost a few stamps at whatever sites happened
     # to correlate; now it would cost the whole frame, so the lattice itself has
     # to be right rather than merely plausible.
-    if not mark.pooled:
+    if grid is not None:
         rows = np.array([y for y, _x in sites], np.float64)
         columns = np.array([x for _y, x in sites], np.float64)
-        off_y = np.abs(((rows - anchor_y) / py + 0.5) % 1.0 - 0.5)
-        off_x = np.abs(((columns - anchor_x) / px + 0.5) % 1.0 - 0.5)
+        off_y = np.abs(((rows - anchor_y) / grid[0] + 0.5) % 1.0 - 0.5)
+        off_x = np.abs(((columns - anchor_x) / grid[1] + 0.5) % 1.0 - 0.5)
         on_node = (off_y <= _NODE_TOLERANCE) & (off_x <= _NODE_TOLERANCE)
         if float(np.mean(on_node)) < _MIN_ON_LATTICE:
             return None
@@ -844,13 +886,16 @@ def apply_mark(
     # absorbs the drift left by rounding the pitch to whole pixels; where none
     # does, the lattice position stands on its own. The range runs past the frame
     # on both sides so a clipped copy is stamped too -- _paint clips it.
-    if not mark.pooled:
-        rows = range(-(anchor_y // py) - 2, (hp.shape[0] - anchor_y) // py + 3)
-        columns = range(-(anchor_x // px) - 2, (hp.shape[1] - anchor_x) // px + 3)
+    if grid is not None:
+        step_y, step_x = grid
+        rows = range(-(anchor_y // step_y) - 2, (hp.shape[0] - anchor_y) // step_y + 3)
+        columns = range(
+            -(anchor_x // step_x) - 2, (hp.shape[1] - anchor_x) // step_x + 3
+        )
         reach_y, reach_x = max(1, snap_y // 2), max(1, snap_x // 2)
         for i in rows:
             for j in columns:
-                site_y, site_x = anchor_y + i * py, anchor_x + j * px
+                site_y, site_x = anchor_y + i * step_y, anchor_x + j * step_x
                 if site_y + patch.shape[0] <= 0 or site_x + patch.shape[1] <= 0:
                     continue
                 if site_y >= hp.shape[0] or site_x >= hp.shape[1]:
@@ -1030,10 +1075,17 @@ def _matched_sites(hp: np.ndarray, template: np.ndarray, least: float) -> np.nda
     return np.column_stack([ys[order], xs[order]])
 
 
-def _best_run(points: np.ndarray) -> tuple[list[tuple[int, int]], float]:
-    """The largest evenly spaced collinear subset of ``points``, and its pitch."""
+def _best_run(points: np.ndarray) -> tuple[list[tuple[int, int]], float, np.ndarray]:
+    """The largest evenly spaced collinear subset of ``points``, its pitch, and
+    the step between consecutive members.
+
+    The step is kept as well as its length because it is one lattice vector, and
+    the pitch across it (see _cross_pitch) can only be looked for once the
+    direction it runs along is known.
+    """
     best: list[int] = []
     pitch = 0.0
+    stride = np.zeros(2, np.float64)
     for i in range(len(points)):
         for j in range(len(points)):
             if i == j:
@@ -1053,8 +1105,12 @@ def _best_run(points: np.ndarray) -> tuple[list[tuple[int, int]], float]:
                 run.append(nearest)
                 k += 1
             if len(run) > len(best):
-                best, pitch = run, length
-    return [(int(points[i][0]), int(points[i][1])) for i in best], pitch
+                best, pitch, stride = run, length, step
+    return (
+        [(int(points[i][0]), int(points[i][1])) for i in best],
+        pitch,
+        np.asarray(stride, np.float64),
+    )
 
 
 def _anchored_run(rgb: np.ndarray) -> dict | None:
@@ -1078,9 +1134,9 @@ def _anchored_run(rgb: np.ndarray) -> dict | None:
         points = _matched_sites(hp, patch, _RUN_NCC)
         if len(points) < MIN_RUN:
             continue
-        run, pitch = _best_run(points)
+        run, pitch, step = _best_run(points)
         if len(run) >= MIN_RUN and (best is None or len(run) > len(best["sites"])):
-            best = {"hp": hp, "sites": run, "pitch": pitch}
+            best = {"hp": hp, "sites": run, "pitch": pitch, "step": step}
     return best
 
 
@@ -1142,6 +1198,241 @@ def _pitch_groups(runs: list[dict]) -> list[list[dict]]:
     return [group for group in groups if len(group) >= _MIN_POOL_IMAGES]
 
 
+def _cross_pitch(runs: list[dict], template: np.ndarray) -> tuple[int, int] | None:
+    """The lattice step ACROSS the runs, voted on by the whole group, or None.
+
+    A run establishes one lattice vector. The overlay was laid on a grid, so there
+    is a second one, and finding it is what turns a line of found copies into
+    every copy's address -- which is the whole difference between masking three
+    instances of a mark and masking the nine that are there.
+
+    No single image can supply it. The copies on the other rows are precisely the
+    ones that never correlated: measured on the sample they read 0.03-0.14 where
+    the found row reads 0.49-0.88, because each sits over a colour boundary or a
+    busy region. Asked alone, the three images of that batch answer 288, 292 and
+    354 -- one of them plain wrong. Asked together they answer 292-297, a flat
+    plateau at the true 297.
+
+    So the vote is pooled, and it is taken on NEW evidence only. The anchor row is
+    already known and counting it rewards every candidate equally -- doing so, the
+    vote picked 346 over the true 297. Scoring only the rows a candidate ADDS
+    (y0 +/- k*pitch, k != 0) asks the one question that discriminates: does
+    stepping this far land on copies, or on photograph.
+
+    Believed only if the winner is prominent, since an argmax always exists. The
+    curve's own robust deviation is the yardstick: 5.65 on the batch that has a
+    second pitch, against 0.00 and 1.75 on clean batches that reached this point
+    at all -- and those two picked the shortest candidate on offer, which is what
+    a vote with nothing to find does, because the shortest step fits the most
+    sites into the frame.
+
+    Only axis-aligned runs are answered. A run lying along an axis has one
+    unambiguous perpendicular to search; an oblique one does not, and its second
+    vector is free in two dimensions, which is a far larger space to find a
+    coincidence in. Rectangular is also what the tiling tools actually emit.
+    """
+    steps = np.array([run["step"] for run in runs], np.float64)
+    horizontal = bool(np.all(np.abs(steps[:, 0]) <= AXIS_TOLERANCE))
+    vertical = bool(np.all(np.abs(steps[:, 1]) <= AXIS_TOLERANCE))
+    if horizontal == vertical:  # neither axis, or a degenerate zero step
+        return None
+
+    candidates = np.arange(MIN_PERIOD, _CROSS_MAX)
+    curves = []
+    for run in runs:
+        score = cv2.matchTemplate(run["hp"], template, cv2.TM_CCOEFF_NORMED)
+        # Read the surface with the run along its rows either way, so the vote
+        # below is written once. Transposing a correlation surface just swaps the
+        # axes of every site in it.
+        surface = score if horizontal else score.T
+        sites = [(y, x) if horizontal else (x, y) for y, x in run["sites"]]
+        along = int(round(run["pitch"]))
+        if along < MIN_PERIOD:
+            return None
+        start = min(x for _y, x in sites) % along
+        columns = np.arange(start, surface.shape[1], along)
+        anchor = min(y for y, _x in sites)
+        if len(columns) == 0:
+            return None
+        curves.append(_cross_votes(surface, candidates, anchor, columns))
+
+    vote = np.mean(curves, axis=0)
+    middle = float(np.median(vote))
+    spread = float(np.median(np.abs(vote - middle))) * 1.4826
+    winner = int(np.argmax(vote))
+    if (vote[winner] - middle) < _CROSS_PROMINENCE * max(spread, 1e-9):
+        return None
+
+    cross = int(candidates[winner])
+    along = int(round(float(np.mean([run["pitch"] for run in runs]))))
+    return (cross, along) if horizontal else (along, cross)
+
+
+def _cross_votes(
+    surface: np.ndarray, candidates: np.ndarray, anchor: int, columns: np.ndarray
+) -> np.ndarray:
+    """For each candidate step, how well the rows it ADDS to ``anchor`` correlate."""
+    votes = np.empty(len(candidates), np.float64)
+    for index, step in enumerate(candidates):
+        offsets = np.concatenate(
+            [
+                np.arange(anchor + step, surface.shape[0], step),
+                np.arange(anchor - step, -1, -step),
+            ]
+        )
+        if len(offsets) == 0:
+            votes[index] = -2.0
+            continue
+        reads = []
+        for row in offsets:
+            top = max(0, row - _CROSS_SNAP)
+            bottom = min(surface.shape[0], row + _CROSS_SNAP + 1)
+            for column in columns:
+                left = max(0, column - _CROSS_SNAP)
+                right = min(surface.shape[1], column + _CROSS_SNAP + 1)
+                if bottom > top and right > left:
+                    reads.append(surface[top:bottom, left:right].max())
+        votes[index] = float(np.mean(reads)) if reads else -2.0
+    return votes
+
+
+def _fold_on_grid(
+    runs: list[dict], template: np.ndarray, grid: tuple[int, int]
+) -> tuple[np.ndarray, int, int] | None:
+    """The mark's whole cell, median-folded over every copy in the batch.
+
+    The pooled template that found the grid is a fixed 2*_ANCHOR_HALF window cut
+    around one instance, and its shape was chosen to enclose an anchor, not a
+    mark. On the sample it is 68x156 while the mark is a ~80x80 diagonal, so it
+    clips the mark's top and the stamp taken from it left the upper third of every
+    copy standing -- visible, and the point of removing it lost.
+
+    The grid fixes that, because it says where every copy is. Folding a whole
+    cell at each of them recovers the mark's full extent, and pools far more
+    samples than any one image holds: 27 copies across the batch here against the
+    3 a single frame offers. Copies clipped by the frame edge still contribute
+    what they have -- the median is taken per pixel over however many tiles cover
+    it, so a copy half off the edge donates its half rather than being discarded.
+    """
+    cell_y, cell_x = grid
+    high, wide = template.shape
+    offset_y, offset_x = cell_y // 2 - high // 2, cell_x // 2 - wide // 2
+
+    tiles = []
+    for run in runs:
+        hp = run["hp"]
+        # Anchor every image on where the POOLED template matches best, not on
+        # its own run's first site. Each image picked its own anchor candidate,
+        # and an anchor only has to land within a fraction of a cell of a copy --
+        # so two images' sites are offset from the mark, and from each other, by
+        # different amounts. Folding on those put two ghosted copies in one cell
+        # and left the trim below with no mark to find. One shared template
+        # matched in each image lands on the same feature in all of them.
+        if template.shape[0] > hp.shape[0] or template.shape[1] > hp.shape[1]:
+            continue
+        agreement = cv2.matchTemplate(hp, template, cv2.TM_CCOEFF_NORMED)
+        _lo, _hi, _at, best = cv2.minMaxLoc(agreement)
+        base_y, base_x = best[1] % cell_y, best[0] % cell_x
+        for site_y in range(base_y, hp.shape[0], cell_y):
+            for site_x in range(base_x, hp.shape[1], cell_x):
+                top, left = site_y - offset_y, site_x - offset_x
+                read_top, read_left = max(0, top), max(0, left)
+                read_bottom = min(hp.shape[0], top + cell_y)
+                read_right = min(hp.shape[1], left + cell_x)
+                if read_bottom <= read_top or read_right <= read_left:
+                    continue
+                tile = np.full((cell_y, cell_x), np.nan, np.float32)
+                tile[
+                    read_top - top : read_bottom - top,
+                    read_left - left : read_right - left,
+                ] = hp[read_top:read_bottom, read_left:read_right]
+                tiles.append(tile)
+
+    if len(tiles) < MIN_TILES:
+        return None
+    stack = np.stack(tiles)
+    covered = np.count_nonzero(~np.isnan(stack), axis=0)
+    if not (covered >= MIN_TILES).any():
+        return None
+    # nanmedian warns on an all-NaN column, and warnings are errors here. A corner
+    # no tile reached carries no mark, so seeding it with zero says exactly that.
+    stack[0][covered == 0] = 0.0
+    folded = np.nanmedian(stack, axis=0).astype(np.float32)
+    # Where too few copies overlapped, the median is noise rather than a mark.
+    folded[covered < MIN_TILES] = 0.0
+    if folded.std() <= 1e-3:
+        return None
+
+    # Trim the cell down to the mark. A cell is mostly empty -- the mark measures
+    # about a tenth of this one -- and the stamp is cut by a PERCENTILE of tile
+    # energy, so a tile that is nine parts nothing spends nearly all of its
+    # allowance on the fold's own residue. Left untrimmed the stamp covered window
+    # mullions, a deck edge and its decking texture, all of which then survived the
+    # evidence check because structure is exactly what that check keeps.
+    #
+    # What counts as the mark: ink connected to the window the coarse patch matched
+    # in. That window is where a copy demonstrably is, and closing joins the
+    # letters around it into one body, so the mark's own extent comes back --
+    # including the part that overhangs the window, which is what the fold was for.
+    # Ink is judged against the mark's OWN peak rather than against the tile's
+    # noise floor. A floor-relative cut (median + 3 robust deviations) was tried
+    # and fails on a clean fold: what is left over is faint horizontal streaking
+    # where the median did not quite cancel a row of scenery, and being faint is
+    # exactly what puts it just above a floor. It then bridges the mark to both
+    # edges and the trim returns the whole cell, which is what it was there to
+    # avoid -- 300px wide for a 119px mark. A share of the peak is scale-free and
+    # gets both cases right.
+    energy = cv2.GaussianBlur(np.abs(folded), (0, 0), sigmaX=3)
+    ink = (energy >= _INK_SHARE * float(energy.max())).astype(np.uint8)
+    ink = cv2.morphologyEx(ink, cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8))
+    count, labels, stats, _centroids = cv2.connectedComponentsWithStats(ink, 8)
+    window = labels[offset_y : offset_y + high, offset_x : offset_x + wide]
+    touching = {int(v) for v in np.unique(window) if v > 0}
+    if not touching:
+        return None
+    boxes = [stats[label] for label in touching]
+    top = max(0, min(b[cv2.CC_STAT_TOP] for b in boxes) - _INK_MARGIN)
+    left = max(0, min(b[cv2.CC_STAT_LEFT] for b in boxes) - _INK_MARGIN)
+    bottom = min(
+        cell_y,
+        max(b[cv2.CC_STAT_TOP] + b[cv2.CC_STAT_HEIGHT] for b in boxes) + _INK_MARGIN,
+    )
+    right = min(
+        cell_x,
+        max(b[cv2.CC_STAT_LEFT] + b[cv2.CC_STAT_WIDTH] for b in boxes) + _INK_MARGIN,
+    )
+    if bottom - top < 12 or right - left < 12:
+        return None
+
+    # And the mark has to be SMALLER than the cell it repeats on -- the second,
+    # independent test that the grid is real. A watermark cell is mostly empty by
+    # construction; that emptiness is what makes it a watermark rather than a
+    # texture. Fold on a grid that is not there and nothing coheres, so the ink
+    # cut spreads over the whole tile: measured, a clean gradient batch voted a
+    # 311x332 grid and trimmed back to 311x332, exactly the cell, where the real
+    # batch trims to 46% of its cell in one axis and 60% in the other.
+    #
+    # A watermark whose mark genuinely fills its cell is refused here and falls
+    # back to masking only the copies that correlate, which is where this route
+    # was before it could ask for a grid. Losing an improvement is the right
+    # failure; spending a wrong grid over a whole frame is not.
+    if (bottom - top) > _INK_CELL_SHARE * cell_y:
+        return None
+    if (right - left) > _INK_CELL_SHARE * cell_x:
+        return None
+
+    folded = folded[top:bottom, left:right]
+    offset_y, offset_x = offset_y - top, offset_x - left
+
+    # The subject to correlate stays the coarse patch, which is not a compromise
+    # but the right choice: it was cut tight around an instance and matches at
+    # 0.49-0.88, where a crop of the folded cell is mostly the empty surround the
+    # mark floats in and matches far worse -- tried, and it lost the batch its
+    # detection entirely. What the fold is for is the STAMP, and the patch sits at
+    # a known place inside the cell because that is where the fold was centred.
+    return folded, offset_y, offset_x
+
+
 def _pool_group(runs: list[dict]) -> Mark | None:
     """One mark from a group of runs that agree on their pitch, or None."""
     patches = []
@@ -1181,7 +1472,32 @@ def _pool_group(runs: list[dict]) -> Mark | None:
     # it was cut around an instance rather than folded out of a tile, so there is
     # no wider tile for the mark to run out of. The cell is its own size, which is
     # the closest two instances can sit, and is what separates the matches.
-    return Mark(None, template, template, 0, 0, template.shape, pooled=True)
+    #
+    # The grid is a separate question and often unanswerable: a run gives one
+    # lattice vector, and the second is only had when the batch can vote for it.
+    # Without it the mark still masks the copies it can see, which is what this
+    # route did before it could ask.
+    # A grid is kept only if folding on it produces a mark. The two are one
+    # decision, not two: the vote says where the copies would be, and the fold is
+    # what checks that copies are actually there. A grid whose fold came back
+    # empty is a grid that was never corroborated, so it is dropped rather than
+    # carried -- keeping it would spend an unverified lattice over a whole frame,
+    # which is the one mistake this route cannot afford.
+    grid = _cross_pitch(runs, template)
+    folded = None if grid is None else _fold_on_grid(runs, template, grid)
+    if folded is None:
+        return Mark(None, template, template, 0, 0, template.shape, pooled=True)
+    whole, crop_top, crop_left = folded
+    return Mark(
+        None,
+        whole,
+        template,
+        crop_top,
+        crop_left,
+        template.shape,
+        pooled=True,
+        grid=grid,
+    )
 
 
 def propose_pattern_mask_shared(

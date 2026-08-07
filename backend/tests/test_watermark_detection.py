@@ -337,6 +337,98 @@ def test_pooling_needs_several_images_and_is_skipped_when_folding_worked():
     assert len(calls) == 1, "pooled pass ran despite the fold covering the batch"
 
 
+def test_the_batch_votes_for_the_pitch_across_the_run():
+    # A run establishes ONE lattice vector, which describes a line rather than a
+    # grid, and the copies on the other rows are precisely the ones that never
+    # correlate -- on the render samples they read 0.03-0.14 where the found row
+    # reads 0.49-0.88. So no single image can supply the second pitch: asked
+    # alone, the three real photographs answered 288, 292 and 354. Pooled, they
+    # answer the truth. Here the fixture's grid is 300x300 and the vote has to
+    # find the second 300 without ever having seen a whole column.
+    from watermark import pattern
+
+    batch = _sparse_batch()
+    marks = pattern.pooled_marks([m for m, _t in batch])
+    assert marks and marks[0].grid is not None, "the batch failed to vote a grid"
+    across, along = marks[0].grid
+    assert abs(across - 300) / 300 <= 0.05, f"pitch across the run was {across}"
+    assert abs(along - 300) / 300 <= 0.05, f"pitch along the run was {along}"
+
+
+@pytest.mark.parametrize("background", ["render_dither", "sky_grass", "gradient"])
+def test_a_clean_batch_is_never_handed_a_grid(background):
+    # The counterpart of the gate above, and the one that matters more. Pooling
+    # already refuses most clean batches outright, but dithered frames of one size
+    # do reach it -- they agree on a pitch by coincidence and come away with a
+    # small mask. That is survivable while the mark only stamps where it actually
+    # correlates. A grid is not survivable: it would spend that wrong lattice over
+    # the entire frame. Measured, the vote's winner stands 5.65 robust deviations
+    # above its own curve where a second pitch exists, and 0.00-1.75 here.
+    from watermark import pattern
+
+    frames = [
+        tiled_pair(watermarked=False, background=background, size=(1200, 800))[0]
+        for _ in range(3)
+    ]
+    for mark in pattern.pooled_marks(frames):
+        assert mark.grid is None, f"a clean {background} batch was given a grid"
+
+
+def test_the_grid_masks_the_copies_that_never_correlate():
+    # What the second pitch is FOR. Both marks below are the same template with
+    # the same gates in front of them; the only difference is whether the lattice
+    # is spent. A copy over a colour boundary cannot prove itself and is invisible
+    # to correlation, but its address is known once the grid is.
+    from watermark import pattern
+
+    batch = _sparse_batch()
+    marks = pattern.pooled_marks([m for m, _t in batch])
+    mark = marks[0]
+    blind = pattern.Mark(
+        None,
+        mark.template,
+        mark.patch,
+        mark.crop_top,
+        mark.crop_left,
+        mark.cell,
+        pooled=True,
+        grid=None,
+    )
+
+    gained = 0
+    for marked, truth in batch:
+        spent = pattern.apply_mark(marked, mark, 50, own=False)
+        if spent is None:
+            continue
+        withheld = pattern.apply_mark(marked, blind, 50, own=False)
+        before = 0.0 if withheld is None else score(withheld, truth)[0]
+        after = score(spent, truth)[0]
+        assert after >= before - 1e-9, "spending the grid lost recall"
+        gained += after > before
+    assert gained, "spending the grid recovered nothing anywhere in the batch"
+
+
+def test_the_grid_folds_the_mark_out_at_its_own_size():
+    # The template that finds the grid is a fixed anchor window -- 68x156, a shape
+    # chosen to enclose an anchor rather than a mark. On the render samples the
+    # mark is a ~80x80 diagonal, so that window clips its top and the stamp taken
+    # from it left the upper third of every copy standing. Once the grid is known
+    # the mark can be folded at its own extent instead, which must be neither the
+    # anchor window nor the whole cell: a cell is mostly empty, and stamping one
+    # covered window mullions and a deck edge.
+    from watermark import pattern
+
+    batch = _sparse_batch()
+    mark = pattern.pooled_marks([m for m, _t in batch])[0]
+    assert mark.grid is not None
+    assert mark.template.shape != mark.patch.shape, "the fold never ran"
+    for axis in (0, 1):
+        assert mark.template.shape[axis] < mark.grid[axis], (
+            f"the stamp is the whole cell on axis {axis}: "
+            f"{mark.template.shape} against a cell of {mark.grid}"
+        )
+
+
 # =========================================================================
 # Spending the lattice: every copy's position is known once the grid is
 # =========================================================================
