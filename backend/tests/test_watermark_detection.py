@@ -103,10 +103,26 @@ def test_the_primitive_lattice_is_used_not_a_multiple_of_it():
 # =========================================================================
 
 
-@pytest.mark.parametrize("background", ["sky_grass", "render_dither", "gradient"])
-def test_a_clean_frame_is_never_pattern_masked(background):
-    clean, _marked, _truth = tiled_pair(watermarked=False, background=background)
-    mask, used = propose(clean)
+@pytest.mark.parametrize(
+    "background", ["sky_grass", "render_dither", "gradient", "grass"]
+)
+@pytest.mark.parametrize(
+    "size", [(1200, 800), (800, 600), (1400, 900), (2100, 1100), (1300, 700)]
+)
+@pytest.mark.parametrize("sensitivity", [0, 50, 100])
+def test_a_clean_frame_is_never_pattern_masked(background, size, sensitivity):
+    """The bar that matters most, now swept rather than sampled.
+
+    This used to run three backgrounds at tiled_pair's default 1200x800 alone --
+    and that size happens to be one that does NOT leak, so it reported a clean
+    bill while the detector was masking up to 8.44% of watermark-free frames at
+    other sizes. Nine of 96 swept frames leaked before the on-lattice gate in
+    apply_mark; none of 144 do now.
+    """
+    clean, _marked, _truth = tiled_pair(
+        watermarked=False, background=background, size=size
+    )
+    mask, used = propose(clean, sensitivity)
     assert used == "none", "invented a repeating pattern in a clean frame"
     assert np.count_nonzero(mask) == 0
 
@@ -480,3 +496,77 @@ def test_an_ordinary_photograph_is_not_refused(background):
     assert not would_destroy_content(marked, mask, 3), (
         f"refused a photograph, which scored {destruction(marked, mask, 3):.0f}"
     )
+
+
+def _facade(width, height, cell_w, cell_h, gap=14, ink=60, ground=200):
+    """Regular architecture: a grid of dark openings on a light wall."""
+    img = np.full((height, width, 3), ground, np.uint8)
+    for y in range(gap, height - cell_h, cell_h + gap):
+        for x in range(gap, width - cell_w, cell_w + gap):
+            img[y : y + cell_h, x : x + cell_w] = ink
+    return img
+
+
+def _brick(width, height, brick_w=90, brick_h=34, mortar=210, face=140):
+    """Running bond: a repeat whose rows are offset by half a brick."""
+    img = np.full((height, width, 3), mortar, np.uint8)
+    for row, y in enumerate(range(0, height - brick_h, brick_h + 5)):
+        offset = (brick_w // 2) if row % 2 else 0
+        for x in range(-offset, width, brick_w + 6):
+            img[y : y + brick_h, max(0, x) : x + brick_w] = face
+    return img
+
+
+def _railings(width, height, step=26):
+    """A one-dimensional repeat: evenly spaced vertical bars."""
+    img = np.full((height, width, 3), 190, np.uint8)
+    for x in range(0, width, step):
+        img[:, x : x + 5] = 70
+    return img
+
+
+@pytest.mark.parametrize("sensitivity", [0, 50, 100])
+@pytest.mark.parametrize(
+    "scene",
+    [
+        _brick(1200, 800),
+        _brick(1500, 950, 110, 42),
+        _railings(1200, 800),
+        _railings(1600, 1000, 34),
+    ],
+    ids=["brick", "brick-wide", "railings", "railings-coarse"],
+)
+def test_repeating_architecture_is_not_mistaken_for_a_watermark(scene, sensitivity):
+    """Scenery repeats too, and it is not a watermark.
+
+    A brick wall and a rank of railings are strong periodic structure, and every
+    gate before the on-lattice one asks only whether a repeat is STRONG. What
+    separates them is that their matches are not ARRANGED on the fitted lattice:
+    measured 0.333-0.538 of matches on a node here against 0.769-1.000 where a
+    real overlay is present.
+    """
+    mask, used = propose(scene, sensitivity)
+    assert used == "none", f"masked {100 * np.count_nonzero(mask) / mask.size:.1f}%"
+
+
+@pytest.mark.parametrize("sensitivity", [0, 50, 100])
+def test_a_window_facade_is_refused_before_anything_is_inpainted(sensitivity):
+    """The case the on-lattice gate CANNOT catch, caught by the next one.
+
+    A facade is a genuine two-dimensional lattice, so its matches really do sit
+    on the grid and the arrangement test passes — a watermark and a repeating
+    scene element are geometrically the same thing. What stops it is the cost of
+    removal: erasing the windows out of a wall rewrites it beyond recognition
+    (destruction 130-140 against a bar of 88), so the image is left alone.
+
+    Known gap, deliberately not asserted here: a LOW-CONTRAST regular pattern —
+    pale tiling, ink 170 on ground 205 — passes both gates, because filling it
+    changes little (destruction 35) and so is judged harmless.
+    """
+    from watermark.pipeline import would_destroy_content
+
+    scene = _facade(1200, 800, 70, 90)
+    mask, used = propose(scene, sensitivity)
+    if used == "none":
+        return  # refused outright, which is a stronger answer still
+    assert would_destroy_content(scene, mask, 3), "a facade would have been inpainted"

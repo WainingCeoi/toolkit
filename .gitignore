@@ -12,10 +12,4 @@ Thumbs.db
 # Agent scratch
 .claude/
 
-# Legacy Streamlit-era root .env (backend/.env is the live config)
-/.env
-
-# Runtime databases land here when SUB_DB_PATH is unset -- running the app any
-# way other than through main.py (a script, a test) falls back to the repo root
-# instead of backend/data/, and those files are never ours to commit.
-/data/
+.ruff_cache/

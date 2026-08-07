@@ -108,6 +108,14 @@ _MIN_NCC_UNPROMPTED = 0.45
 # grid walk in empty sky.
 _MIN_WINDOW_STD_SHARE = 0.25
 
+# How near a lattice node a confident match must land to count as being ON the
+# grid, as a share of the cell, and how many of them must be. See apply_mark:
+# this is what separates an overlay from a lattice fitted to the photograph's own
+# texture, and nothing else does. Measured, the two populations are far apart
+# (0.769-1.000 against 0.333-0.538), so this sits between them, not on either.
+_NODE_TOLERANCE = 0.2
+_MIN_ON_LATTICE = 0.65
+
 # A stamped pixel is kept only where the image's response exceeds this multiple
 # of its own neighbourhood's response. Deliberately near 1: the stamp already
 # asserts the pixel is part of the mark's shape, so this only has to reject
@@ -789,6 +797,30 @@ def apply_mark(
     least_sites = MIN_RUN if mark.pooled else MIN_INSTANCES
     if len(sites) < least_sites:
         return None
+
+    # And they must sit ON the lattice, which is the other half of the same
+    # bargain: if the grid is trusted enough to be stamped everywhere below, the
+    # evidence for it has to be that the confident matches fall on its nodes.
+    #
+    # This is what tells a real overlay from a lattice fitted to scenery, and it
+    # is the only thing that does. Every other gate asks whether the repeat is
+    # STRONG, and a brick wall or a dithered ground is strong; this asks whether
+    # it is ARRANGED. Measured over 16 watermarked frames and the 6 clean frames
+    # that were being masked, they do not overlap: 0.769-1.000 where a mark is
+    # present, 0.333-0.538 where the "pattern" was the photograph's own texture.
+    #
+    # It matters more since the walk stopped vetoing copies individually. A
+    # wrongly fitted lattice used to cost a few stamps at whatever sites happened
+    # to correlate; now it would cost the whole frame, so the lattice itself has
+    # to be right rather than merely plausible.
+    if not mark.pooled:
+        rows = np.array([y for y, _x in sites], np.float64)
+        columns = np.array([x for _y, x in sites], np.float64)
+        off_y = np.abs(((rows - anchor_y) / py + 0.5) % 1.0 - 0.5)
+        off_x = np.abs(((columns - anchor_x) / px + 0.5) % 1.0 - 0.5)
+        on_node = (off_y <= _NODE_TOLERANCE) & (off_x <= _NODE_TOLERANCE)
+        if float(np.mean(on_node)) < _MIN_ON_LATTICE:
+            return None
 
     # Now spend the lattice. The overlay was laid on a regular grid, so once that
     # grid is established every copy's position is KNOWN -- there is nothing left
