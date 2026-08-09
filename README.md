@@ -221,11 +221,13 @@ the *Save to* field offers that machine's own registered download folders instea
 of a Browse button (which would browse the wrong filesystem), and a `~/…` path is
 refused rather than silently expanded to this Mac's home.
 
-Passwords for remote devices are stored in plaintext in
-`backend/data/bitcomet-devices.json` (mode `0600`) — BitComet's login needs the
-password itself, not a digest. That is the same exposure as `BitComet.xml`, which
-holds the local one in plaintext too. The BitComet on *this* machine is never
-stored here: its credentials are read from BitComet's own config every time.
+Saved devices live in the tool's local database, `backend/data/torrents.db`
+(mode `0600`; a `bitcomet-devices.json` from an earlier revision is imported
+automatically and removed). Passwords for remote devices are stored in
+plaintext — BitComet's login needs the password itself, not a digest. That is
+the same exposure as `BitComet.xml`, which holds the local one in plaintext
+too. The BitComet on *this* machine is never stored here: its credentials are
+read from BitComet's own config every time.
 
 ### 🧽 Watermark Remover
 

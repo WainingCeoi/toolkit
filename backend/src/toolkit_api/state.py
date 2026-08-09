@@ -131,7 +131,12 @@ def use_device(state: AppState, device: Device) -> None:
 
 
 def build_state() -> AppState:
-    devices = DeviceBook(data_dir() / "bitcomet-devices.json")
+    # The torrent tool's own database. The file name predates the device book
+    # (the pre-dispatcher queue lived here), which is exactly why it is reused:
+    # one database per tool, whatever tables the tool currently needs. A JSON
+    # book from the previous revision is imported on first open -- see
+    # DeviceBook._import_legacy.
+    devices = DeviceBook(data_dir() / "torrents.db")
     return AppState(
         store=Store(config.DB_PATH),
         jobs=JobRegistry(),

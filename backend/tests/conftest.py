@@ -42,7 +42,7 @@ def app_state(tmp_path):
         artifacts=ArtifactStore(),
         # On tmp_path, so a test that saves a BitComet device never touches the
         # developer's real book -- and every test starts with only "This Mac".
-        devices=DeviceBook(tmp_path / "bitcomet-devices.json"),
+        devices=DeviceBook(tmp_path / "torrents.db"),
         watermarks=WatermarkBatches(tmp_path / "watermark"),
     )
     yield state

@@ -13,6 +13,10 @@ setting it is exercising the real decision rather than simulating one.
 
 from __future__ import annotations
 
+import json
+import sqlite3
+from contextlib import closing
+
 import pytest
 from fake_bitcomet import FakeBitComet
 
@@ -50,7 +54,7 @@ def remote(fake):
 
 @pytest.fixture
 def book(tmp_path):
-    return DeviceBook(tmp_path / "devices.json")
+    return DeviceBook(tmp_path / "torrents.db")
 
 
 # =======================================================
@@ -191,8 +195,7 @@ def test_save_folders_lists_what_the_peer_will_accept(remote, fake):
 # =======================================================
 # THE DEVICE BOOK
 # =======================================================
-def test_the_local_device_exists_with_no_file_at_all(book):
-    assert not book.path.exists()
+def test_the_local_device_exists_in_an_empty_book(book):
     assert [d.id for d in book.list()] == [LOCAL_ID]
     assert book.active().id == LOCAL_ID
     assert book.active().is_local is True
@@ -202,7 +205,7 @@ def test_adding_a_device_saves_it_and_selects_it(book):
     device = book.add("NAS", "192.168.1.50:19377", "admin", "hunter2")
     assert device.url == "http://192.168.1.50:19377"
     assert book.active().id == device.id
-    # And it survives a fresh reader of the same file -- the whole point.
+    # And it survives a fresh reader of the same database -- the whole point.
     assert [d.id for d in DeviceBook(book.path).list()] == [LOCAL_ID, device.id]
 
 
@@ -274,20 +277,93 @@ def test_selecting_an_unknown_device_raises(book):
         book.select("nope")
 
 
-def test_a_selection_pointing_at_nothing_falls_back(book, tmp_path):
-    # A device deleted by hand out of the file would otherwise leave the tool
-    # pointed at an id that no longer exists, with no way back.
-    book.path.write_text('{"active": "ghost", "devices": []}')
+def test_a_selection_pointing_at_nothing_falls_back(book):
+    # A device deleted by hand out of the database would otherwise leave the
+    # tool pointed at an id that no longer exists, with no way back.
+    with closing(sqlite3.connect(book.path)) as conn, conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO device_settings VALUES ('active', 'ghost')"
+        )
     assert book.active().id == LOCAL_ID
 
 
-def test_an_unreadable_book_still_offers_this_mac(book):
-    book.path.write_text("{ not json")
+def test_a_book_damaged_after_startup_still_offers_this_mac(book):
+    book.path.write_bytes(b"this is not a database")
     assert [d.id for d in book.list()] == [LOCAL_ID]
+    assert book.active().id == LOCAL_ID
+
+
+def test_a_book_damaged_before_startup_is_set_aside_and_rebuilt(tmp_path):
+    path = tmp_path / "torrents.db"
+    path.write_bytes(b"SQLite format 3\x00 except not really" * 40)
+    book = DeviceBook(path)
+    # The bytes survive for a post-mortem; the tool comes up regardless.
+    assert (tmp_path / "torrents.db.corrupt").exists()
+    assert [d.id for d in book.list()] == [LOCAL_ID]
+    book.add("NAS", "192.168.1.50:19377", "admin", "pw")
+    assert len(book.list()) == 2
 
 
 def test_rows_without_an_address_are_skipped_rather_than_taking_the_book_down(book):
-    book.path.write_text('{"active": "local", "devices": [{"id": "x"}]}')
+    with closing(sqlite3.connect(book.path)) as conn, conn:
+        conn.execute("INSERT INTO devices (id, label, url) VALUES ('x', 'ghost', '')")
+    assert [d.id for d in book.list()] == [LOCAL_ID]
+
+
+# =======================================================
+# THE LEGACY JSON BOOK
+# =======================================================
+def legacy_body():
+    return {
+        "active": "abc123",
+        "devices": [
+            {
+                "id": "abc123",
+                "label": "Intel Mac",
+                "url": "http://192.168.110.27:10447",
+                "username": "webui",
+                "password": "s3cret",
+            }
+        ],
+    }
+
+
+def test_a_json_book_is_imported_once_and_removed(tmp_path):
+    """The pre-database revision kept a JSON file; opening the book imports it
+    so nobody re-enters an address and password they already saved."""
+    legacy = tmp_path / "bitcomet-devices.json"
+    legacy.write_text(json.dumps(legacy_body()))
+
+    book = DeviceBook(tmp_path / "torrents.db")
+    assert not legacy.exists()
+    device = book.active()
+    assert device.id == "abc123"
+    assert device.label == "Intel Mac"
+    assert device.url == "http://192.168.110.27:10447"
+    assert device.password == "s3cret"
+
+
+def test_importing_never_overwrites_what_the_database_already_holds(tmp_path):
+    book = DeviceBook(tmp_path / "torrents.db")
+    kept = book.add("NAS", "192.168.110.27:10447", "admin", "new-password")
+
+    # A stale legacy file appearing afterwards (restored from a backup, say)
+    # must not downgrade the row or steal the selection.
+    stale = legacy_body()
+    stale["devices"][0]["id"] = kept.id
+    stale["devices"][0]["password"] = "old-password"
+    (tmp_path / "bitcomet-devices.json").write_text(json.dumps(stale))
+
+    again = DeviceBook(tmp_path / "torrents.db")
+    assert again.get(kept.id).password == "new-password"
+    assert again.active().id == kept.id
+
+
+def test_a_corrupt_legacy_file_is_dropped_without_taking_the_book_down(tmp_path):
+    legacy = tmp_path / "bitcomet-devices.json"
+    legacy.write_text("{ not json")
+    book = DeviceBook(tmp_path / "torrents.db")
+    assert not legacy.exists()
     assert [d.id for d in book.list()] == [LOCAL_ID]
 
 

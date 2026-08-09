@@ -6,6 +6,11 @@ one that stays awake, the one already wired to the NAS -- any of them can take
 the task, and this module is the address book that makes that a choice rather
 than a code change.
 
+The book lives in the torrent tool's own SQLite database (data/torrents.db),
+alongside the app's other stores, rather than in a config file of its own.
+An earlier revision kept a JSON file next to the database; a book found there
+is imported once and the file removed, so nothing has to be re-entered.
+
 THE LOCAL DEVICE IS NOT STORED HERE. It is synthesised on every read, because
 its credentials are not ours to keep: they live in BitComet's own config file
 and the user can change them in Preferences at any moment, so a copy here would
@@ -15,18 +20,21 @@ argument). Only devices this app cannot otherwise discover -- the remote ones
 
 A remote device's password IS stored, in plaintext, because BitComet's login
 needs the password itself rather than any digest of it. That is the same
-exposure as BitComet.xml, which holds the local one in plaintext too; the file
-is written 0600 so it is at least no worse. Nothing here is a secret store, and
-it should not be used as one.
+exposure as BitComet.xml, which holds the local one in plaintext too; the
+database file is kept 0600 so it is at least no worse (SQLite gives its
+journal files a copy of the database file's permissions, so they inherit the
+restriction). Nothing here is a secret store, and it should not be used as one.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import threading
 import uuid
-from dataclasses import dataclass, replace
+from contextlib import closing
+from dataclasses import dataclass
 from pathlib import Path
 
 from toolkit_engine.bitcomet import BitCometError, normalize_base_url
@@ -36,8 +44,26 @@ from toolkit_engine.bitcomet import BitCometError, normalize_base_url
 LOCAL_ID = "local"
 LOCAL_LABEL = "This Mac"
 
-# Only the owner can read a file holding remote-access passwords.
+# Only the owner can read a database holding remote-access passwords.
 FILE_MODE = 0o600
+
+# Where the pre-database revision kept the book, relative to the database:
+# the same data directory, as bitcomet-devices.json.
+LEGACY_FILENAME = "bitcomet-devices.json"
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS devices (
+  id TEXT PRIMARY KEY,
+  label TEXT NOT NULL DEFAULT '',
+  url TEXT NOT NULL,
+  username TEXT NOT NULL DEFAULT '',
+  password TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS device_settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+"""
 
 
 @dataclass(frozen=True)
@@ -90,81 +116,129 @@ def _clean_label(label: str, url: str) -> str:
 class DeviceBook:
     """The saved remote BitComets and which one is currently selected.
 
-    Re-read from disk on every access rather than cached in memory. The file is
-    tiny, and it means an edit made while the app is running (or by a second
-    process) is never overwritten by a stale copy this one was holding.
+    Every read goes to the database rather than to a cached copy in memory, so
+    an edit made while the app is running (or by a second process) is never
+    overwritten by a stale copy this one was holding. Connections are opened
+    per call, the same way the app's other stores work.
     """
 
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
         # Sync endpoints run in FastAPI's threadpool, so two of them really can
-        # read-modify-write this file at once. The lock makes each change
-        # atomic against the others; without it, adding a device while
-        # selecting another loses one of the two.
+        # read-modify-write the book at once. SQLite serializes the writes
+        # themselves, but the check-then-write logic (re-add-as-edit, remove
+        # falling back to local) needs the whole read-modify-write to be one
+        # unit; the lock is what makes it one.
         self._lock = threading.Lock()
+        try:
+            self._prepare()
+        except sqlite3.DatabaseError:
+            # The file exists but is not something sqlite can read -- damaged,
+            # or not a database at all. Set it aside rather than deleting it:
+            # the book must come up (the local BitComet needs no stored row at
+            # all), and the bytes stay for a post-mortem.
+            self.path.rename(self.path.with_name(self.path.name + ".corrupt"))
+            self._prepare()
 
     # --- persistence ------------------------------------------------------
-    def _read(self) -> dict:
-        try:
-            body = json.loads(self.path.read_text())
-        except OSError, ValueError:
-            # Missing is the normal first-run case, and unreadable/corrupt is
-            # not worth taking the whole tool down for: the local BitComet
-            # still works with no file at all, which is the state this returns.
-            return {"active": LOCAL_ID, "devices": []}
-        if not isinstance(body, dict):
-            return {"active": LOCAL_ID, "devices": []}
-        devices = body.get("devices")
-        return {
-            "active": str(body.get("active") or LOCAL_ID),
-            "devices": [d for d in devices if isinstance(d, dict)]
-            if isinstance(devices, list)
-            else [],
-        }
-
-    def _write(self, body: dict) -> None:
+    def _prepare(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        # Written to a temporary neighbour and renamed, so a crash mid-write
-        # cannot leave a half-file that reads as "no devices at all".
-        tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(body, indent=2))
-        os.chmod(tmp, FILE_MODE)
-        tmp.replace(self.path)
+        with closing(self._connect()) as conn, conn:
+            conn.executescript(SCHEMA)
+            self._import_legacy(conn)
+        # After the schema lands, so the chmod always has a file to act on.
+        os.chmod(self.path, FILE_MODE)
+
+    def _connect(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self.path)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def _import_legacy(self, conn: sqlite3.Connection) -> None:
+        """One-time import of the JSON book an earlier revision kept.
+
+        OR IGNORE on every insert: rows already in the database win over the
+        file, so re-running against a half-imported book (a crash between the
+        insert and the unlink) never duplicates or downgrades anything. The
+        file is deleted afterwards either way -- once the database exists it
+        is the only place the truth lives.
+        """
+        legacy = self.path.parent / LEGACY_FILENAME
+        if not legacy.exists():
+            return
+        try:
+            body = json.loads(legacy.read_text())
+        except OSError, ValueError:
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+
+        rows = body.get("devices")
+        for row in rows if isinstance(rows, list) else []:
+            if not isinstance(row, dict) or "id" not in row or "url" not in row:
+                continue
+            conn.execute(
+                "INSERT OR IGNORE INTO devices (id, label, url, username, password)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (
+                    str(row["id"]),
+                    str(row.get("label") or ""),
+                    str(row["url"]),
+                    str(row.get("username") or ""),
+                    str(row.get("password") or ""),
+                ),
+            )
+        active = str(body.get("active") or "")
+        if active:
+            conn.execute(
+                "INSERT OR IGNORE INTO device_settings (key, value)"
+                " VALUES ('active', ?)",
+                (active,),
+            )
+        legacy.unlink(missing_ok=True)
 
     def _saved(self) -> list[Device]:
-        out = []
-        for row in self._read()["devices"]:
-            try:
-                out.append(
-                    Device(
-                        id=str(row["id"]),
-                        label=str(row.get("label") or ""),
-                        url=str(row["url"]),
-                        username=str(row.get("username") or ""),
-                        password=str(row.get("password") or ""),
-                    )
-                )
-            except KeyError:
-                # A row without an id or a url cannot be connected to; skipping
-                # it keeps the rest of the book usable.
-                continue
-        return out
+        try:
+            with closing(self._connect()) as conn:
+                rows = conn.execute(
+                    "SELECT id, label, url, username, password FROM devices"
+                    " ORDER BY rowid"
+                ).fetchall()
+        except sqlite3.Error:
+            # A database damaged after startup. Not worth taking the tool down
+            # for: the local BitComet works with no stored rows at all, which
+            # is the state this returns.
+            return []
+        return [
+            Device(
+                id=row["id"],
+                label=row["label"],
+                url=row["url"],
+                username=row["username"],
+                password=row["password"],
+            )
+            for row in rows
+            # A row without an address cannot be connected to; skipping it
+            # keeps the rest of the book usable.
+            if row["url"]
+        ]
 
-    def _store(self, devices: list[Device], active: str) -> None:
-        self._write(
-            {
-                "active": active,
-                "devices": [
-                    {
-                        "id": d.id,
-                        "label": d.label,
-                        "url": d.url,
-                        "username": d.username,
-                        "password": d.password,
-                    }
-                    for d in devices
-                ],
-            }
+    def _active_id(self) -> str:
+        try:
+            with closing(self._connect()) as conn:
+                row = conn.execute(
+                    "SELECT value FROM device_settings WHERE key = 'active'"
+                ).fetchone()
+        except sqlite3.Error:
+            return LOCAL_ID
+        return row["value"] if row else LOCAL_ID
+
+    @staticmethod
+    def _set_active(conn: sqlite3.Connection, device_id: str) -> None:
+        conn.execute(
+            "INSERT INTO device_settings (key, value) VALUES ('active', ?)"
+            " ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (device_id,),
         )
 
     # --- reads ------------------------------------------------------------
@@ -182,12 +256,11 @@ class DeviceBook:
         """The selected device, falling back to this machine.
 
         The fallback is not defensive padding: a device deleted by hand out of
-        the file, or one removed by another process, would otherwise leave the
-        tool pointing at nothing with no way to get back.
+        the database, or one removed by another process, would otherwise leave
+        the tool pointing at nothing with no way to get back.
         """
-        wanted = self._read()["active"]
         try:
-            return self.get(wanted)
+            return self.get(self._active_id())
         except KeyError:
             return LOCAL
 
@@ -207,33 +280,48 @@ class DeviceBook:
                 "A remote BitComet needs the Web UI username and password it "
                 "is configured with."
             )
-        with self._lock:
-            devices = self._saved()
-            existing = next((d for d in devices if d.url == base), None)
+        with self._lock, closing(self._connect()) as conn, conn:
+            existing = conn.execute(
+                "SELECT id FROM devices WHERE url = ?", (base,)
+            ).fetchone()
             if existing is not None:
                 # Re-adding an address already in the book is an EDIT. Two rows
                 # for one BitComet would differ only by id, and selecting the
                 # stale one would fail with credentials the user thought they
                 # had just corrected.
-                updated = replace(
-                    existing,
+                device = Device(
+                    id=existing["id"],
                     label=_clean_label(label, base),
+                    url=base,
                     username=username,
                     password=password,
                 )
-                devices = [updated if d.id == existing.id else d for d in devices]
-                self._store(devices, updated.id if select else self._read()["active"])
-                return updated
-
-            device = Device(
-                id=uuid.uuid4().hex[:12],
-                label=_clean_label(label, base),
-                url=base,
-                username=username,
-                password=password,
-            )
-            devices.append(device)
-            self._store(devices, device.id if select else self._read()["active"])
+                conn.execute(
+                    "UPDATE devices SET label = ?, username = ?, password = ?"
+                    " WHERE id = ?",
+                    (device.label, device.username, device.password, device.id),
+                )
+            else:
+                device = Device(
+                    id=uuid.uuid4().hex[:12],
+                    label=_clean_label(label, base),
+                    url=base,
+                    username=username,
+                    password=password,
+                )
+                conn.execute(
+                    "INSERT INTO devices (id, label, url, username, password)"
+                    " VALUES (?, ?, ?, ?, ?)",
+                    (
+                        device.id,
+                        device.label,
+                        device.url,
+                        device.username,
+                        device.password,
+                    ),
+                )
+            if select:
+                self._set_active(conn, device.id)
             return device
 
     def update(
@@ -257,22 +345,31 @@ class DeviceBook:
                 "Options -> Remote Access."
             )
         base = normalize_base_url(url) if url else None
-        with self._lock:
-            devices = self._saved()
-            current = next((d for d in devices if d.id == device_id), None)
-            if current is None:
+        with self._lock, closing(self._connect()) as conn, conn:
+            row = conn.execute(
+                "SELECT id, label, url, username, password FROM devices WHERE id = ?",
+                (device_id,),
+            ).fetchone()
+            if row is None:
                 raise KeyError(device_id)
-            address = base or current.url or ""
-            updated = replace(
-                current,
-                label=_clean_label(current.label if label is None else label, address),
+            address = base or row["url"]
+            updated = Device(
+                id=device_id,
+                label=_clean_label(row["label"] if label is None else label, address),
                 url=address,
-                username=current.username if username is None else username,
-                password=password or current.password,
+                username=row["username"] if username is None else username,
+                password=password or row["password"],
             )
-            self._store(
-                [updated if d.id == device_id else d for d in devices],
-                self._read()["active"],
+            conn.execute(
+                "UPDATE devices SET label = ?, url = ?, username = ?, password = ?"
+                " WHERE id = ?",
+                (
+                    updated.label,
+                    updated.url,
+                    updated.username,
+                    updated.password,
+                    device_id,
+                ),
             )
             return updated
 
@@ -280,18 +377,20 @@ class DeviceBook:
         """Forget a saved device, selecting this machine if it was the active one."""
         if device_id == LOCAL_ID:
             raise BitCometError("This Mac's BitComet cannot be removed.")
-        with self._lock:
-            devices = self._saved()
-            if not any(d.id == device_id for d in devices):
+        with self._lock, closing(self._connect()) as conn, conn:
+            gone = conn.execute(
+                "DELETE FROM devices WHERE id = ?", (device_id,)
+            ).rowcount
+            if not gone:
                 raise KeyError(device_id)
-            active = self._read()["active"]
-            self._store(
-                [d for d in devices if d.id != device_id],
-                LOCAL_ID if active == device_id else active,
-            )
+            active = conn.execute(
+                "SELECT value FROM device_settings WHERE key = 'active'"
+            ).fetchone()
+            if active is not None and active["value"] == device_id:
+                self._set_active(conn, LOCAL_ID)
 
     def select(self, device_id: str) -> Device:
         device = self.get(device_id)  # raises KeyError for an unknown id
-        with self._lock:
-            self._store(self._saved(), device.id)
+        with self._lock, closing(self._connect()) as conn, conn:
+            self._set_active(conn, device.id)
         return device
