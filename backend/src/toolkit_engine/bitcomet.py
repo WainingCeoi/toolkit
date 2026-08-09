@@ -435,6 +435,16 @@ class BitCometClient:
         # loopback: 127.0.0.1 is in most no_proxy lists by default and
         # 192.168.x.x is not.
         self._session.trust_env = False
+        # The page sends in windows of ten that can briefly overlap into the
+        # mid-teens of concurrent calls (see the Torrent Downloader's
+        # SEND_WINDOW). requests' default pool keeps 10 connections per host
+        # and quietly discards any opened beyond that, so every call past the
+        # tenth would pay a fresh TCP handshake against the very client the
+        # window exists to go easy on. One host, so one pool sized past the
+        # overlap.
+        adapter = requests.adapters.HTTPAdapter(pool_maxsize=20)
+        self._session.mount("http://", adapter)
+        self._session.mount("https://", adapter)
 
     @classmethod
     def from_config(

@@ -82,6 +82,56 @@ export function magnetLink(infohash: string, name?: string | null): string {
   return `magnet:?xt=urn:btih:${infohash}${dn}`
 }
 
+// Run `run` over `items` with WINDOWED concurrency: fire `window` of them
+// together, then top up with the next `window` only once fewer than `lowWater`
+// are still in flight.
+//
+// This is the middle ground between the two obvious shapes, both of which were
+// measured failing against a real BitComet. Strictly sequential sending spends
+// the whole batch waiting on round-trip latency even when the client is
+// healthy; firing everything at once buries a client that does real work per
+// task (allocate, hash-check, reach the swarm) and turns the tail of the batch
+// into timeouts. The window self-regulates: a busy client answers slowly, so
+// in-flight stays above the low-water mark and no new work is added until most
+// of the current batch has been answered.
+//
+// In-flight can briefly exceed `window` (a top-up fires while up to
+// `lowWater - 1` stragglers are still out), which is deliberate — the
+// stragglers are exactly the sends a grinding client is sitting on, and
+// holding the whole next batch hostage to them is the sequential mistake in
+// miniature.
+//
+// `run` owns its failures: a rejection is swallowed here (it only marks the
+// slot free), so report-or-retry decisions stay with the caller's callback.
+export async function windowedRun<T>(
+  items: readonly T[],
+  run: (item: T) => Promise<void>,
+  window: number,
+  lowWater: number,
+): Promise<void> {
+  const pending = [...items]
+  const total = pending.length
+  if (total === 0) return
+  let inFlight = 0
+  let settled = 0
+  await new Promise<void>((resolve) => {
+    const launch = () => {
+      for (const item of pending.splice(0, window)) {
+        inFlight += 1
+        void run(item)
+          .catch(() => undefined)
+          .finally(() => {
+            inFlight -= 1
+            settled += 1
+            if (pending.length > 0 && inFlight < lowWater) launch()
+            if (settled === total) resolve()
+          })
+      }
+    }
+    launch()
+  })
+}
+
 // Whether a failed send is worth trying again without changing anything.
 //
 // A 503 is "BitComet did not answer" — unreachable, or timing out while it

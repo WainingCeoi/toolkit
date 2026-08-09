@@ -23,6 +23,7 @@ import {
   selectionFor,
   truncateMiddle,
   updateTorrent,
+  windowedRun,
 } from '../torrent'
 import type {
   TorrentDevice,
@@ -47,6 +48,14 @@ const SEND_PASSES = 3
 // finish allocating and hash-checking them, which is what the timeouts
 // actually are (see REMOTE_TIMEOUT in the backend).
 const RETRY_WAITS_MS = [5_000, 15_000]
+// Within a pass, sends go out in WINDOWS rather than one at a time: fire this
+// many together, and fire the next window only once fewer than the low-water
+// mark are still awaiting an answer. Sequential sending spent the whole batch
+// on round-trip latency even when BitComet was healthy; the window keeps ten
+// in the air while it answers, and stops feeding it the moment it slows down
+// — see windowedRun for the mechanics.
+const SEND_WINDOW = 10
+const SEND_LOW_WATER = 5
 
 // A torrent that failed, with the link needed to try it again somewhere else.
 // The magnet is the whole point of keeping the entry — a dead tracker or a
@@ -424,6 +433,30 @@ export default function TorrentDownloader() {
     }
   }
 
+  // One pass over the queue, windowed: SEND_WINDOW fired together, topped up
+  // when in-flight falls below SEND_LOW_WATER. Returns what is worth retrying.
+  async function sendPass(queue: TorrentResolve[], final: boolean): Promise<TorrentResolve[]> {
+    const again: TorrentResolve[] = []
+    let answered = 0
+    // Narrated only when the window actually matters — for one or two sends
+    // the counter would be noise.
+    const narrate = queue.length > SEND_WINDOW
+    if (narrate) setRetryNote(`sending ${SEND_WINDOW} at a time — 0 of ${queue.length} answered`)
+    await windowedRun(
+      queue,
+      async (t) => {
+        if ((await sendOne(t, final)) === 'retry') again.push(t)
+        answered += 1
+        if (narrate) {
+          setRetryNote(`sending ${SEND_WINDOW} at a time — ${answered} of ${queue.length} answered`)
+        }
+      },
+      SEND_WINDOW,
+      SEND_LOW_WATER,
+    )
+    return again
+  }
+
   // Send everything, then HARVEST what timed out and send it again — up to
   // SEND_PASSES passes. This exists because of a measured batch of 34 sends
   // where most "failures" were read timeouts against a BitComet that was
@@ -437,11 +470,7 @@ export default function TorrentDownloader() {
       let queue = targets.filter((t) => t.ready && selectedFor(t).size > 0)
       for (let pass = 0; pass < SEND_PASSES && queue.length > 0; pass++) {
         const final = pass === SEND_PASSES - 1
-        const again: TorrentResolve[] = []
-        for (const t of queue) {
-          if ((await sendOne(t, final)) === 'retry') again.push(t)
-        }
-        queue = again
+        queue = await sendPass(queue, final)
         if (queue.length > 0 && !final) {
           const wait = RETRY_WAITS_MS[pass] ?? 15_000
           setRetryNote(

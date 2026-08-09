@@ -192,9 +192,12 @@ row to tick individual files. Long release names are truncated in the middle, so
 the extension and the quality tag stay visible instead of ten rows all reading
 `The.Same.Long.Prefix…`; the full name is in the tooltip.
 
-Sends that time out are **retried automatically** — the whole batch goes once,
-whatever timed out is harvested and sent again, up to three passes with a pause
-between them. Starting a task is real work for BitComet (allocate, hash-check,
+Batches are sent in **windows of ten**: ten sends go out together, and the next
+ten only once fewer than five are still awaiting an answer — so the pace adapts
+to how fast BitComet is actually answering, and a client that starts grinding
+stops being fed until it catches up. Sends that time out anyway are **retried
+automatically** — whatever timed out in a pass is harvested and sent again, up
+to three passes with a pause between them. Starting a task is real work for BitComet (allocate, hash-check,
 reach the swarm), and during a batch its API can answer so slowly that a send
 reads as failed when the task actually landed; retrying is safe because a send
 is idempotent, so a retry that finds the work done simply succeeds. Only what

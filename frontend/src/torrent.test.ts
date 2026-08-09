@@ -13,6 +13,7 @@ import {
   selectionFor,
   truncateMiddle,
   updateTorrent,
+  windowedRun,
 } from './torrent'
 import { ApiError } from './api'
 import type { TorrentFileRow, TorrentResolve } from './types/api'
@@ -247,5 +248,94 @@ describe('retryableSend', () => {
     // matter how many times it is resent.
     expect(retryableSend(new ApiError('this torrent has no file 7', 400))).toBe(false)
     expect(retryableSend(new ApiError('BitComet no longer has this torrent.', 404))).toBe(false)
+  })
+})
+
+describe('windowedRun', () => {
+  const tick = () => new Promise<void>((r) => setTimeout(r, 0))
+
+  // A task per item that starts visibly and finishes only when told to.
+  function harness(count: number) {
+    const started: number[] = []
+    const finish = new Map<number, () => void>()
+    const items = Array.from({ length: count }, (_, i) => i)
+    const run = (i: number) =>
+      new Promise<void>((resolve) => {
+        started.push(i)
+        finish.set(i, resolve)
+      })
+    return { items, run, started, finish }
+  }
+
+  // Resolve everything currently launched, repeatedly, until the run settles —
+  // top-ups mint new resolvers mid-flight, so one sweep is never enough.
+  async function drain(done: Promise<void>, finish: Map<number, () => void>) {
+    let settled = false
+    void done.then(() => {
+      settled = true
+    })
+    for (let i = 0; i < 20 && !settled; i++) {
+      for (const f of finish.values()) f()
+      await tick()
+    }
+    await done
+  }
+
+  it('fires the first window together, not one at a time', async () => {
+    const { items, run, started, finish } = harness(25)
+    const done = windowedRun(items, run, 10, 5)
+    expect(started).toHaveLength(10)
+    await drain(done, finish)
+  })
+
+  it('holds the next window until in-flight drops below the low-water mark', async () => {
+    const { items, run, started, finish } = harness(25)
+    const done = windowedRun(items, run, 10, 5)
+
+    // 5 answered -> 5 still in flight. Not below the mark; no top-up yet.
+    for (let i = 0; i < 5; i++) finish.get(i)!()
+    await tick()
+    expect(started).toHaveLength(10)
+
+    // One more answers -> 4 in flight -> the next 10 fire.
+    finish.get(5)!()
+    await tick()
+    expect(started).toHaveLength(20)
+
+    await drain(done, finish)
+    expect(started).toHaveLength(25)
+  })
+
+  it('resolves only when every item has settled', async () => {
+    const { items, run, finish } = harness(3)
+    let settled = false
+    const done = windowedRun(items, run, 10, 5).then(() => {
+      settled = true
+    })
+    finish.get(0)!()
+    finish.get(1)!()
+    await tick()
+    expect(settled).toBe(false)
+    finish.get(2)!()
+    await done
+    expect(settled).toBe(true)
+  })
+
+  it('keeps pumping when a task rejects — failures are the callback business', async () => {
+    const seen: number[] = []
+    await windowedRun(
+      [1, 2, 3],
+      (i) => {
+        seen.push(i)
+        return i === 2 ? Promise.reject(new Error('boom')) : Promise.resolve()
+      },
+      2,
+      1,
+    )
+    expect(seen).toEqual([1, 2, 3])
+  })
+
+  it('resolves immediately for an empty list', async () => {
+    await windowedRun([], () => Promise.resolve(), 10, 5)
   })
 })
