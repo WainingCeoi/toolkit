@@ -8,11 +8,13 @@ import {
   magnetLink,
   MB,
   parseMagnetLines,
+  retryableSend,
   ruleKey,
   selectionFor,
   truncateMiddle,
   updateTorrent,
 } from './torrent'
+import { ApiError } from './api'
 import type { TorrentFileRow, TorrentResolve } from './types/api'
 
 const FILES: TorrentFileRow[] = [
@@ -227,5 +229,23 @@ describe('magnetLink', () => {
   it('omits dn entirely rather than emitting an empty one', () => {
     expect(magnetLink('abc', null)).toBe('magnet:?xt=urn:btih:abc')
     expect(magnetLink('abc', '')).toBe('magnet:?xt=urn:btih:abc')
+  })
+})
+
+describe('retryableSend', () => {
+  it('retries a 503 — BitComet busy or unreachable clears up on its own', () => {
+    expect(retryableSend(new ApiError('BitComet is not reachable: read timeout', 503))).toBe(true)
+  })
+
+  it('retries a network-level failure that never got an answer', () => {
+    // fetch rejects with TypeError before any Response exists.
+    expect(retryableSend(new TypeError('Failed to fetch'))).toBe(true)
+  })
+
+  it('does not retry a request BitComet answered and rejected', () => {
+    // A 400 (bad selection) or 404 (torrent gone) repeats identically no
+    // matter how many times it is resent.
+    expect(retryableSend(new ApiError('this torrent has no file 7', 400))).toBe(false)
+    expect(retryableSend(new ApiError('BitComet no longer has this torrent.', 404))).toBe(false)
   })
 })

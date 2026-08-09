@@ -192,9 +192,19 @@ row to tick individual files. Long release names are truncated in the middle, so
 the extension and the quality tag stay visible instead of ten rows all reading
 `The.Same.Long.Prefix…`; the full name is in the tooltip.
 
-Anything that fails — a dead magnet, an unreachable BitComet, a rejected send —
-lands in a **Failed** panel with its magnet link and a *Copy magnet* button, so a
-torrent worth retrying later is never lost back to wherever you copied it from.
+Sends that time out are **retried automatically** — the whole batch goes once,
+whatever timed out is harvested and sent again, up to three passes with a pause
+between them. Starting a task is real work for BitComet (allocate, hash-check,
+reach the swarm), and during a batch its API can answer so slowly that a send
+reads as failed when the task actually landed; retrying is safe because a send
+is idempotent, so a retry that finds the work done simply succeeds. Only what
+still fails on the last pass is reported.
+
+Anything that fails for real — a dead magnet, a BitComet that stayed
+unreachable, a rejected send — lands in a **Failed** panel with its magnet link
+and a *Copy magnet* button, so a torrent worth retrying later is never lost
+back to wherever you copied it from. Its row also stays in the review list with
+the selection intact, so a later manual *Send* needs no re-pasting.
 
 #### Sending to another machine's BitComet
 

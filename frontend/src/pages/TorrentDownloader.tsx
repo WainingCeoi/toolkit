@@ -18,6 +18,7 @@ import {
   formatBytes,
   magnetLink,
   parseMagnetLines,
+  retryableSend,
   ruleKey,
   selectionFor,
   truncateMiddle,
@@ -35,6 +36,17 @@ import type {
 const NO_OVERRIDES: ReadonlyMap<number, boolean> = new Map()
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 const errMsg = (e: unknown, fallback: string) => (e as Error).message || fallback
+
+// A send that timed out gets this many passes before it lands in Failed.
+// Passes, not per-torrent retries: the whole queue is sent once, whatever
+// timed out is harvested, and the survivors go again together — so torrent #1
+// retrying never holds torrent #2's first attempt hostage.
+const SEND_PASSES = 3
+// The wait before pass 2 and pass 3. Short first — a hiccup clears fast —
+// then long enough for a BitComet that has just started a batch of tasks to
+// finish allocating and hash-checking them, which is what the timeouts
+// actually are (see REMOTE_TIMEOUT in the backend).
+const RETRY_WAITS_MS = [5_000, 15_000]
 
 // A torrent that failed, with the link needed to try it again somewhere else.
 // The magnet is the whole point of keeping the row: a dead tracker or a
@@ -166,6 +178,13 @@ export default function TorrentDownloader() {
   // because the moment a task is sent BitComet is the only thing that knows
   // what it is doing.
   const [sentCount, setSentCount] = useState(0)
+  // A batch (including its retry passes) runs one at a time; these keep the
+  // buttons honest while it does. `sending` is the row in flight right now,
+  // `retryNote` narrates the harvest so a 15s wait reads as patience, not a
+  // hang.
+  const [batching, setBatching] = useState(false)
+  const [sending, setSending] = useState<Set<string>>(new Set())
+  const [retryNote, setRetryNote] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -404,9 +423,13 @@ export default function TorrentDownloader() {
     })
   }
 
-  async function sendOne(t: TorrentResolve) {
+  // One attempt at one torrent. 'retry' means it failed in the way that
+  // clears up on its own (timeout, unreachable) and a later pass may try
+  // again; anything else is final — success, or a failure worth reporting.
+  async function sendOne(t: TorrentResolve, final: boolean): Promise<'ok' | 'retry' | 'failed'> {
     const selected = selectedFor(t)
-    if (selected.size === 0) return
+    if (selected.size === 0) return 'ok'
+    setSending((prev) => new Set(prev).add(t.infohash))
     try {
       await api.torrentSend({
         infohash: t.infohash,
@@ -414,18 +437,60 @@ export default function TorrentDownloader() {
       })
       setSentCount((n) => n + 1)
       closeCard(t.infohash)
+      return 'ok'
     } catch (e) {
+      if (!final && retryableSend(e)) return 'retry'
+      const reason = errMsg(e, 'Could not send that torrent.')
       pushFailure(
         t.name ?? t.infohash.slice(0, 12),
-        errMsg(e, 'Could not send that torrent.'),
+        final && retryableSend(e)
+          ? `still failing after ${SEND_PASSES} tries: ${reason}`
+          : reason,
         magnetFor(t.infohash, t.name),
       )
+      // The row stays in the review list on purpose: the selection is intact,
+      // so once BitComet is back a manual Send needs no re-pasting.
+      return 'failed'
+    } finally {
+      setSending((prev) => {
+        const next = new Set(prev)
+        next.delete(t.infohash)
+        return next
+      })
     }
   }
 
-  async function sendAll() {
-    for (const t of resolved) {
-      if (t.ready && selectedFor(t).size > 0) await sendOne(t)
+  // Send everything, then HARVEST what timed out and send it again — up to
+  // SEND_PASSES passes. This exists because of a measured batch of 34 sends
+  // where most "failures" were read timeouts against a BitComet that was
+  // merely grinding through the tasks it had just been handed: the work
+  // itself had usually landed, and a retry that finds it landed simply
+  // succeeds (send is idempotent — see retryableSend). Only what still fails
+  // on the last pass reaches the Failed panel.
+  async function sendBatch(targets: TorrentResolve[]) {
+    setBatching(true)
+    try {
+      let queue = targets.filter((t) => t.ready && selectedFor(t).size > 0)
+      for (let pass = 0; pass < SEND_PASSES && queue.length > 0; pass++) {
+        const final = pass === SEND_PASSES - 1
+        const again: TorrentResolve[] = []
+        for (const t of queue) {
+          if ((await sendOne(t, final)) === 'retry') again.push(t)
+        }
+        queue = again
+        if (queue.length > 0 && !final) {
+          const wait = RETRY_WAITS_MS[pass] ?? 15_000
+          setRetryNote(
+            `${queue.length} timed out — BitComet is busy, retrying in ${wait / 1000}s ` +
+              `(pass ${pass + 2} of ${SEND_PASSES})`,
+          )
+          await sleep(wait)
+          setRetryNote(`retrying ${queue.length}…`)
+        }
+      }
+    } finally {
+      setBatching(false)
+      setRetryNote(null)
     }
   }
 
@@ -813,7 +878,18 @@ export default function TorrentDownloader() {
             <div className="step grow" style={{ margin: 0 }}>
               3 · Review ({resolved.length})
             </div>
-            <Button variant="primary" size="sm" disabled={readyCount === 0} onClick={sendAll}>
+            {retryNote && (
+              <span style={{ font: '11px var(--mono)', color: 'var(--amber-text)' }}>
+                {retryNote}
+              </span>
+            )}
+            <Button
+              variant="primary"
+              size="sm"
+              disabled={readyCount === 0 || batching}
+              loading={batching}
+              onClick={() => void sendBatch(resolved)}
+            >
               Send all to BitComet
             </Button>
           </div>
@@ -859,8 +935,9 @@ export default function TorrentDownloader() {
                         <Button
                           variant="primary"
                           size="sm"
-                          disabled={selected.size === 0}
-                          onClick={() => void sendOne(t)}
+                          disabled={selected.size === 0 || batching}
+                          loading={sending.has(t.infohash)}
+                          onClick={() => void sendBatch([t])}
                         >
                           Send
                         </Button>

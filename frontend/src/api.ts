@@ -39,6 +39,21 @@ import type {
 
 const BASE = '/api'
 
+// A non-2xx answer, with the status kept so callers can tell a failure that
+// clears up on its own (503: the engine behind the API did not answer) from
+// one that would repeat identically (400/404). A network-level failure never
+// constructs this — fetch rejects with its own TypeError before a Response
+// exists — so `instanceof ApiError` also separates "the server said no" from
+// "the server never spoke".
+export class ApiError extends Error {
+  readonly status: number
+
+  constructor(message: string, status: number) {
+    super(message)
+    this.status = status
+  }
+}
+
 interface RequestOptions {
   method?: string
   body?: unknown
@@ -70,7 +85,7 @@ async function request<T>(path: string, { method = 'GET', body }: RequestOptions
     } catch {
       detail = `${res.status} ${res.statusText}`
     }
-    throw new Error(detail)
+    throw new ApiError(detail, res.status)
   }
   if (res.status === 204) return null as T
   const type = res.headers.get('content-type') || ''

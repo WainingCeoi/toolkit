@@ -2,6 +2,7 @@
 // exports components only — react-refresh cannot hot-reload a file that mixes
 // the two. Same split as jobs.ts / JobsProvider.tsx.
 
+import { ApiError } from './api'
 import type { TorrentFileRow, TorrentResolve } from './types/api'
 
 // Mirrors toolkit_engine/filetypes.py SIZED_CATEGORIES. Duplicated on purpose:
@@ -79,6 +80,24 @@ export function truncateMiddle(text: string, max = 44): string {
 export function magnetLink(infohash: string, name?: string | null): string {
   const dn = name ? `&dn=${encodeURIComponent(name)}` : ''
   return `magnet:?xt=urn:btih:${infohash}${dn}`
+}
+
+// Whether a failed send is worth trying again without changing anything.
+//
+// A 503 is "BitComet did not answer" — unreachable, or timing out while it
+// grinds through the batch of tasks it was just handed — which is exactly the
+// failure that clears up on its own; measured live, it is what most of a batch
+// send's failures are. Anything that is not an ApiError never got an answer at
+// all (the network failed mid-request), same treatment. A 400 or 404 is a fact
+// about the request — bad selection, torrent gone — and repeats identically no
+// matter how many times it is retried.
+//
+// Retrying a send is SAFE because the operation is idempotent end to end:
+// set_priority twice is a no-op, and `start` on an already-running task
+// answers "skipped", which the backend counts as success. So a send that
+// timed out client-side but actually landed simply succeeds on the retry.
+export function retryableSend(error: unknown): boolean {
+  return !(error instanceof ApiError) || error.status === 503
 }
 
 // One magnet per line: trimmed, blanks dropped, de-duplicated within the paste.
