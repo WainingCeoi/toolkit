@@ -429,6 +429,116 @@ def test_the_grid_folds_the_mark_out_at_its_own_size():
         )
 
 
+def test_a_frame_too_short_for_the_anchor_window_cannot_sink_the_batch():
+    # A panoramic strip reduces below the 68-row anchor window at work size,
+    # and cv2.matchTemplate RAISES on a subject smaller than its template
+    # rather than returning nothing. The template build already skipped such a
+    # frame; the cross-pitch vote had to learn to. Left unguarded, one odd
+    # frame in an otherwise healthy batch took the whole batch down.
+    from PIL import Image, ImageDraw
+
+    from watermark import pattern
+
+    height, width, pitch = 56, 1300, 300
+    strip = Image.new("RGB", (width, height), (225, 225, 228))
+    draw = ImageDraw.Draw(strip)
+    for x in range(60, width, pitch):
+        draw.ellipse([x, height // 2 - 9, x + 26, height // 2 + 9], fill=(60, 60, 60))
+        draw.rectangle(
+            [x + 30, height // 2 - 5, x + 52, height // 2 + 5], fill=(90, 90, 90)
+        )
+    noise = np.random.default_rng(3).integers(-4, 5, (height, width, 3))
+    odd = np.clip(np.asarray(strip) + noise, 0, 255).astype(np.uint8)
+    assert pattern._anchored_run(odd) is not None, "fixture no longer forms a run"
+
+    batch = [marked for marked, _truth in _sparse_batch()] + [odd]
+    marks = collect_marks(lambda: iter(batch))
+    assert marks, "one short frame cost the whole batch its mark"
+
+
+def test_a_cell_narrower_than_the_anchor_window_never_hurts():
+    # The anchor window is a fixed 68x156 and a real overlay can repeat on a
+    # narrower cell -- the sample of eight carries one on a pitch of 114. The
+    # fold centres that window in the cell, so its offset goes NEGATIVE, and a
+    # raw numpy slice then reads from the far edge of the cell instead of
+    # clipping: the trim kept a 21px sliver of the wrong corner, and the
+    # mispositioned stamp made the grid route WORSE than no grid at all
+    # (recall 0.230 against 0.651). The invariant: whatever the vote and the
+    # fold decide, the pooled mark must never do worse than the plain unfolded
+    # template this route used before grids existed.
+    from watermark import pattern
+
+    batch = [
+        tiled_pair(
+            basis=((300, 0), (0, 114)),
+            size=(1300, 800),
+            background=background,
+            glyph_size=18,
+            alpha=70,
+        )
+        for background in ("gradient", "sky_grass", "render_dither")
+    ]
+    marks = pattern.pooled_marks([marked for _clean, marked, _truth in batch])
+    if not marks:
+        return  # nothing pooled at all -- nothing to get wrong
+    mark = marks[0]
+    plain = pattern.Mark(
+        None, mark.patch, mark.patch, 0, 0, mark.patch.shape, pooled=True
+    )
+    for _clean, marked, truth in batch:
+        folded = pattern.apply_mark(marked, mark, 50, own=False)
+        unfolded = pattern.apply_mark(marked, plain, 50, own=False)
+        before = 0.0 if unfolded is None else score(unfolded, truth)[0]
+        after = 0.0 if folded is None else score(folded, truth)[0]
+        assert after >= before - 0.05, (
+            f"the folded mark lost recall against the plain template: "
+            f"{after:.3f} < {before:.3f}"
+        )
+
+
+def test_a_lattice_coarser_than_the_search_is_not_halved():
+    # The vote's candidates stop at _CROSS_MAX, and a lattice coarser than that
+    # has no candidate to be found at. What won instead was HALF of it -- a step
+    # of half the truth lands on every second copy, plenty to take the argmax
+    # and clear the prominence bar (measured: a true 560 voted 281 at
+    # prominence 14.1), and every intermediate row it stamps holds nothing.
+    # The winner is now tested against its own doubles before it is believed.
+    from watermark import pattern
+
+    frames = [
+        tiled_pair(
+            basis=((600, 0), (0, 240)),
+            size=(1400, 1300),
+            background=background,
+            glyph_size=30,
+            alpha=70,
+        )[1]
+        for background in ("gradient", "sky_grass", "render_dither")
+    ]
+    marks = pattern.pooled_marks(frames)
+    assert marks and marks[0].grid is not None, "the batch stopped voting a grid"
+    assert abs(marks[0].grid[0] - 600) <= 30, (
+        f"a 600px lattice was voted as {marks[0].grid[0]}"
+    )
+
+
+def test_a_short_clean_frame_batch_is_still_refused_a_grid():
+    # On a short frame most candidate steps do not fit. Scoring the untested
+    # ones with a sentinel collapsed the vote curve's median onto the sentinel
+    # and its deviation to exactly zero, whereupon a clean batch cleared the
+    # 4.5-deviation bar by nine orders of magnitude with a winning candidate
+    # whose mean correlation was NEGATIVE. Steps that were never tested now
+    # stay out of the statistic entirely.
+    from watermark import pattern
+
+    frames = [
+        tiled_pair(watermarked=False, background="render_dither", size=(1300, 220))[0]
+        for _ in range(3)
+    ]
+    for mark in pattern.pooled_marks(frames):
+        assert mark.grid is None, f"a clean strip batch was handed {mark.grid}"
+
+
 # =========================================================================
 # Spending the lattice: every copy's position is known once the grid is
 # =========================================================================

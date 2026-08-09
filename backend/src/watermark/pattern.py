@@ -160,6 +160,11 @@ _PITCH_TOL = 0.04
 # false one, and _fold_on_grid then has to agree before the grid is used at all.
 _CROSS_MAX = 500
 _CROSS_SNAP = 6
+# Candidates that fit in the frame at all, below which the vote has too little to
+# be judged against; and the margin by which a doubled pitch must beat the voted
+# one before it is believed to be the true one (see _true_pitch).
+_CROSS_MIN_CANDIDATES = 60
+_SUBHARMONIC_EDGE = 1.25
 _CROSS_PROMINENCE = 4.5
 # What counts as the mark's ink when a folded cell is trimmed down to it: a share
 # of the mark's own peak, plus this much slack around the result. The trimmed mark
@@ -168,6 +173,9 @@ _CROSS_PROMINENCE = 4.5
 _INK_SHARE = 0.25
 _INK_MARGIN = 6
 _INK_CELL_SHARE = 0.75
+# Cells stacked when folding on the grid. A median settles long before this many,
+# and stacking every cell of every image made peak memory grow with the batch.
+_FOLD_MAX_TILES = 48
 
 
 TRACE = {}
@@ -1239,7 +1247,18 @@ def _cross_pitch(runs: list[dict], template: np.ndarray) -> tuple[int, int] | No
 
     candidates = np.arange(MIN_PERIOD, _CROSS_MAX)
     curves = []
+    surfaces = []
     for run in runs:
+        # A run can come from a frame shorter than the anchor template -- a
+        # panorama reduces to 63 rows against a template of 68 -- and
+        # matchTemplate raises rather than returning nothing. Such a frame is
+        # already skipped when the template is built, so skip it here too; left
+        # unguarded it took the whole batch down with a cv2.error.
+        if (
+            template.shape[0] > run["hp"].shape[0]
+            or template.shape[1] > run["hp"].shape[1]
+        ):
+            continue
         score = cv2.matchTemplate(run["hp"], template, cv2.TM_CCOEFF_NORMED)
         # Read the surface with the run along its rows either way, so the vote
         # below is written once. Transposing a correlation surface just swaps the
@@ -1255,17 +1274,70 @@ def _cross_pitch(runs: list[dict], template: np.ndarray) -> tuple[int, int] | No
         if len(columns) == 0:
             return None
         curves.append(_cross_votes(surface, candidates, anchor, columns))
+        surfaces.append((surface, anchor, columns))
 
-    vote = np.mean(curves, axis=0)
-    middle = float(np.median(vote))
-    spread = float(np.median(np.abs(vote - middle))) * 1.4826
-    winner = int(np.argmax(vote))
-    if (vote[winner] - middle) < _CROSS_PROMINENCE * max(spread, 1e-9):
+    # Agreement between images is the whole basis of this route, so the vote has
+    # to keep as many images as the pitch itself needed.
+    if len(curves) < _MIN_POOL_IMAGES:
         return None
 
-    cross = int(candidates[winner])
+    vote = np.mean(curves, axis=0)
+    # Candidates that add no row at all score nothing rather than something bad,
+    # and must be left out of the statistic entirely. Scored as a sentinel they
+    # were not merely noise: on a short frame most candidates are sentinels, so
+    # the curve's own median BECAME the sentinel and its deviation collapsed to
+    # exactly zero, which made the bar below vacuous -- a clean batch cleared it
+    # by nine orders of magnitude with a winner whose mean correlation was
+    # NEGATIVE. Anything judged against a spread has to be judged against the
+    # spread of real readings.
+    real = np.isfinite(vote)
+    if int(np.count_nonzero(real)) < _CROSS_MIN_CANDIDATES:
+        return None
+    middle = float(np.median(vote[real]))
+    spread = float(np.median(np.abs(vote[real] - middle))) * 1.4826
+    if spread <= 1e-9:
+        return None
+    winner = int(np.nanargmax(np.where(real, vote, -np.inf)))
+    if (vote[winner] - middle) < _CROSS_PROMINENCE * spread:
+        return None
+
+    cross = _true_pitch(surfaces, int(candidates[winner]))
     along = int(round(float(np.mean([run["pitch"] for run in runs]))))
     return (cross, along) if horizontal else (along, cross)
+
+
+def _true_pitch(surfaces: list, cross: int) -> int:
+    """``cross``, or the multiple of it the copies really sit on.
+
+    The search stops at _CROSS_MAX, and a lattice coarser than that has no
+    candidate to be found at. What wins instead is half of it, or a third: a step
+    of half the truth lands on every second real copy, which is plenty of evidence
+    to take the argmax and clear the prominence bar outright -- measured, a true
+    pitch of 560 was voted as 281 with a prominence of 14.1, and every
+    intermediate row it then stamped held nothing.
+
+    Doubling is only accepted on a clear margin. For a pitch that is already
+    right, sampling every second copy scores about the same as sampling every
+    one, so a tie must keep the finer step or half the mark goes unmasked; a
+    subharmonic instead averages real copies with empty rows and is beaten
+    decisively.
+    """
+
+    def scored(step: int) -> float:
+        one = np.array([step])
+        return float(np.mean([_cross_votes(s, one, a, c)[0] for s, a, c in surfaces]))
+
+    best = cross
+    for multiple in (2, 3):
+        step = cross * multiple
+        if all(step >= surface.shape[0] for surface, _a, _c in surfaces):
+            break
+        here, there = scored(best), scored(step)
+        if not (np.isfinite(here) and np.isfinite(there)):
+            break
+        if there > here * _SUBHARMONIC_EDGE:
+            best = step
+    return best
 
 
 def _cross_votes(
@@ -1281,7 +1353,7 @@ def _cross_votes(
             ]
         )
         if len(offsets) == 0:
-            votes[index] = -2.0
+            votes[index] = np.nan
             continue
         reads = []
         for row in offsets:
@@ -1292,7 +1364,10 @@ def _cross_votes(
                 right = min(surface.shape[1], column + _CROSS_SNAP + 1)
                 if bottom > top and right > left:
                     reads.append(surface[top:bottom, left:right].max())
-        votes[index] = float(np.mean(reads)) if reads else -2.0
+        # Not-a-number, not a bad score: a step too large for the frame was never
+        # tested, and saying so keeps it out of the statistic the winner is
+        # judged against (see _cross_pitch).
+        votes[index] = float(np.mean(reads)) if reads else np.nan
     return votes
 
 
@@ -1318,8 +1393,18 @@ def _fold_on_grid(
     high, wide = template.shape
     offset_y, offset_x = cell_y // 2 - high // 2, cell_x // 2 - wide // 2
 
-    tiles = []
+    # Every image contributes, and each contributes a bounded number of cells. A
+    # median is settled long before a few dozen samples, while stacking every cell
+    # of every image is unbounded: measured at 70 MB per full-work-size image, so
+    # a twenty-image batch peaked 1.34 GB above the parent. This module holds one
+    # image at a time everywhere else and the fold has no business being the
+    # exception. The share is per run rather than a single running total, which
+    # would fill up on the first image and lose the cross-image variety that is
+    # the only reason the median cancels scenery at all.
+    share = max(2, _FOLD_MAX_TILES // max(1, len(runs)))
+    tiles: list[np.ndarray] = []
     for run in runs:
+        mine: list[np.ndarray] = []
         hp = run["hp"]
         # Anchor every image on where the POOLED template matches best, not on
         # its own run's first site. Each image picked its own anchor candidate,
@@ -1346,7 +1431,12 @@ def _fold_on_grid(
                     read_top - top : read_bottom - top,
                     read_left - left : read_right - left,
                 ] = hp[read_top:read_bottom, read_left:read_right]
-                tiles.append(tile)
+                mine.append(tile)
+                if len(mine) >= share:
+                    break
+            if len(mine) >= share:
+                break
+        tiles.extend(mine)
 
     if len(tiles) < MIN_TILES:
         return None
@@ -1386,7 +1476,17 @@ def _fold_on_grid(
     ink = (energy >= _INK_SHARE * float(energy.max())).astype(np.uint8)
     ink = cv2.morphologyEx(ink, cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8))
     count, labels, stats, _centroids = cv2.connectedComponentsWithStats(ink, 8)
-    window = labels[offset_y : offset_y + high, offset_x : offset_x + wide]
+    # Clipped to the cell, NOT indexed raw. The anchor template is a fixed 68x156
+    # and a cell can be narrower than that -- an along-pitch of 114 makes
+    # offset_x negative -- whereupon a raw slice reads from the far edge under
+    # numpy's negative-index rule instead of the centred window. It then trimmed
+    # to a 21px sliver of the wrong side of the cell, and the mispositioned stamp
+    # made this route WORSE than having no grid at all: recall 0.230 against the
+    # 0.651 the same batch got before the grid existed.
+    window = labels[
+        max(0, offset_y) : max(0, offset_y + high),
+        max(0, offset_x) : max(0, offset_x + wide),
+    ]
     touching = {int(v) for v in np.unique(window) if v > 0}
     if not touching:
         return None
