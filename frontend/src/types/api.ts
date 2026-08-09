@@ -135,6 +135,11 @@ export interface MagnetScrapeResult {
   successful_count: number
   failed_count: number
   /**
+   * Duplicate magnets the backend's auto-applied unique filter dropped from
+   * `successful` (first-seen order kept). Absent on the empty-URL-list result.
+   */
+  duplicate_count?: number
+  /**
    * Present only on the automatic path, where pagination looks for a cutoff,
    * and only ever `true` — the false case is MagnetCutoffMiss below. Typed as
    * the literal so `cutoff_found === false` discriminates the union.

@@ -48,9 +48,15 @@ function ScrapeResult({ result }: { result: MagnetResult | null }) {
 
   const successful = result.successful || []
   const failed = result.failed || []
+  const duplicates = result.duplicate_count || 0
   return (
     <>
       <div className="note ok">🧲 {successful.length} magnet(s) found.</div>
+      {duplicates > 0 && (
+        <div className="note info">
+          🧹 {duplicates} duplicate(s) removed — the grabbed list is unique.
+        </div>
+      )}
       <div className="metrics">
         <div className="metric">
           <div className="v">{result.urls.length}</div>

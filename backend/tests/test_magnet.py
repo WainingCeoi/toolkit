@@ -254,6 +254,42 @@ def test_manual_scrape_splits_successful_and_failed(tool_client, monkeypatch):
     assert result["failed_count"] == 1
 
 
+def test_manual_scrape_auto_dedupes_successful_magnets(tool_client, monkeypatch):
+    # Two distinct URLs serving the same magnet: the unique filter is applied
+    # before the result is returned, first-seen order kept, failures untouched.
+    magnets = {
+        "https://site.test/a": "magnet:?xt=shared",
+        "https://site.test/mirror-of-a": "magnet:?xt=shared",
+        "https://site.test/b": "magnet:?xt=b",
+    }
+
+    def fake_get_magnet_link(url):
+        if url.endswith("/bad"):
+            return {"success": False, "url": url, "reason": "no magnet link on page"}
+        return {"success": True, "result": magnets[url]}
+
+    monkeypatch.setattr(magnet_engine, "get_magnet_link", fake_get_magnet_link)
+
+    urls = [
+        "https://site.test/a",
+        "https://site.test/mirror-of-a",
+        "https://site.test/bad",
+        "https://site.test/b",
+    ]
+    resp = tool_client.post("/api/magnet/manual", json={"urls": urls})
+    snap = wait_for_job(tool_client, resp.json()["job_id"])
+    assert snap["state"] == "done"
+    result = snap["result"]
+    assert result["total"] == 4
+    assert [r["result"] for r in result["successful"]] == [
+        "magnet:?xt=shared",
+        "magnet:?xt=b",
+    ]
+    assert result["successful_count"] == 2
+    assert result["duplicate_count"] == 1
+    assert result["failed_count"] == 1
+
+
 def test_manual_empty_is_400_with_page_warning(tool_client):
     resp = tool_client.post("/api/magnet/manual", json={"urls": []})
     assert resp.status_code == 400

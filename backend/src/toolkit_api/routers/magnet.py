@@ -79,6 +79,13 @@ def _scrape(
         urls, on_result=on_result, should_stop=should_stop
     )
     job.set_message(f"Fetched {total}/{total} link(s).")
+    # Auto-apply the unique filter before the result is shown: different (or
+    # repeated) URLs can serve the same magnet, and every grabbed list used to
+    # need a round-trip through Remove duplicated. Same semantics as /dedupe —
+    # first-seen order kept, keyed on the magnet href.
+    unique_by_href = {r["result"]: r for r in successful}
+    duplicate_count = len(successful) - len(unique_by_href)
+    successful = list(unique_by_href.values())
     return {
         "urls": urls,
         "successful": successful,
@@ -86,6 +93,7 @@ def _scrape(
         "total": total,
         "successful_count": len(successful),
         "failed_count": len(failed),
+        "duplicate_count": duplicate_count,
     }
 
 
