@@ -73,8 +73,11 @@ function ScrapeResult({ result }: { result: MagnetResult | null }) {
       )}
       {failed.length > 0 && (
         <div className="field">
-          <span className="label">⚠️ Failed URLs — with reasons</span>
-          <CodeBox text={failed.map((f) => `${f.url} — ${f.reason}`).join('\n')} />
+          <span className="label">⚠️ Failed URLs</span>
+          {/* The bare URLs, one per line — the reasons used to ride along and
+              made the box useless for its one job: copying the failures back
+              into Manual mode for another try. */}
+          <CodeBox text={failed.map((f) => f.url).join('\n')} />
         </div>
       )}
     </>
