@@ -192,15 +192,16 @@ row to tick individual files. Long release names are truncated in the middle, so
 the extension and the quality tag stay visible instead of ten rows all reading
 `The.Same.Long.Prefix…`; the full name is in the tooltip.
 
-BitComet is never shown a whole paste at once. **Resolving is windowed**: ten
-magnets are staged together, and the next ten only once fewer than five are
-still fetching metadata — the rest of the paste is held on this side, with a
+BitComet is never shown a whole paste at once. **Resolving is windowed**: it is
+kept at exactly ten magnets fetching metadata, and each one that answers (or
+dies) releases its slot to the next in the queue — nine fetching means one more
+goes, eight means two. The rest of the paste is held on this side, with a
 counter showing how many wait. This matters because a magnet must be staged
 *running* to learn its file list, so an unwindowed paste of thirty would put
-thirty simultaneous swarm fetches on BitComet in one click. **Sending is
-windowed the same way** — ten together, topped up below five in flight — so the
-pace of both steps adapts to how fast BitComet is actually answering, and a
-client that starts grinding stops being fed until it catches up. Sends that time out anyway are **retried
+thirty simultaneous swarm fetches on BitComet in one click. **Sending keeps a
+full window the same way** — ten in the air, each answer admitting the next —
+so the pace of both steps adapts to how fast BitComet is actually answering,
+and a client that starts grinding stops being fed until it catches up. Sends that time out anyway are **retried
 automatically** — whatever timed out in a pass is harvested and sent again, up
 to three passes with a pause between them. Starting a task is real work for BitComet (allocate, hash-check,
 reach the swarm), and during a batch its API can answer so slowly that a send

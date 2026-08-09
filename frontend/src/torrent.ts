@@ -82,24 +82,19 @@ export function magnetLink(infohash: string, name?: string | null): string {
   return `magnet:?xt=urn:btih:${infohash}${dn}`
 }
 
-// Run `run` over `items` with WINDOWED concurrency: fire `window` of them
-// together, then top up with the next `window` only once fewer than `lowWater`
-// are still in flight.
+// Run `run` over `items` keeping the WINDOW FULL: `window` of them go out
+// together, and every one that settles immediately admits the next from the
+// queue — 9 in flight means 1 more goes, 8 means 2 — so the count in flight
+// is pinned at `window` for as long as the queue lasts.
 //
-// This is the middle ground between the two obvious shapes, both of which were
-// measured failing against a real BitComet. Strictly sequential sending spends
-// the whole batch waiting on round-trip latency even when the client is
-// healthy; firing everything at once buries a client that does real work per
-// task (allocate, hash-check, reach the swarm) and turns the tail of the batch
-// into timeouts. The window self-regulates: a busy client answers slowly, so
-// in-flight stays above the low-water mark and no new work is added until most
-// of the current batch has been answered.
-//
-// In-flight can briefly exceed `window` (a top-up fires while up to
-// `lowWater - 1` stragglers are still out), which is deliberate — the
-// stragglers are exactly the sends a grinding client is sitting on, and
-// holding the whole next batch hostage to them is the sequential mistake in
-// miniature.
+// This sits between the two shapes that were measured failing against a real
+// BitComet. Strictly sequential spends the whole batch waiting on round-trip
+// latency even when the client is healthy; firing everything at once buries a
+// client that does real work per task (allocate, hash-check, reach the swarm)
+// and turns the tail of the batch into timeouts. The full window still
+// self-regulates in the direction that matters: nothing enters until
+// something settles, so a grinding client that stops answering stops being
+// fed, automatically, at exactly the rate it slowed down.
 //
 // `run` owns its failures: a rejection is swallowed here (it only marks the
 // slot free), so report-or-retry decisions stay with the caller's callback.
@@ -107,7 +102,6 @@ export async function windowedRun<T>(
   items: readonly T[],
   run: (item: T) => Promise<void>,
   window: number,
-  lowWater: number,
 ): Promise<void> {
   const pending = [...items]
   const total = pending.length
@@ -116,14 +110,15 @@ export async function windowedRun<T>(
   let settled = 0
   await new Promise<void>((resolve) => {
     const launch = () => {
-      for (const item of pending.splice(0, window)) {
+      while (inFlight < window && pending.length > 0) {
+        const item = pending.shift()!
         inFlight += 1
         void run(item)
           .catch(() => undefined)
           .finally(() => {
             inFlight -= 1
             settled += 1
-            if (pending.length > 0 && inFlight < lowWater) launch()
+            if (pending.length > 0) launch()
             if (settled === total) resolve()
           })
       }

@@ -283,33 +283,58 @@ describe('windowedRun', () => {
 
   it('fires the first window together, not one at a time', async () => {
     const { items, run, started, finish } = harness(25)
-    const done = windowedRun(items, run, 10, 5)
+    const done = windowedRun(items, run, 10)
     expect(started).toHaveLength(10)
     await drain(done, finish)
   })
 
-  it('holds the next window until in-flight drops below the low-water mark', async () => {
+  it('tops up one-for-one, keeping the window pinned full', async () => {
     const { items, run, started, finish } = harness(25)
-    const done = windowedRun(items, run, 10, 5)
-
-    // 5 answered -> 5 still in flight. Not below the mark; no top-up yet.
-    for (let i = 0; i < 5; i++) finish.get(i)!()
-    await tick()
+    const done = windowedRun(items, run, 10)
     expect(started).toHaveLength(10)
 
-    // One more answers -> 4 in flight -> the next 10 fire.
-    finish.get(5)!()
+    // 9 in flight -> 1 more goes.
+    finish.get(0)!()
     await tick()
-    expect(started).toHaveLength(20)
+    expect(started).toHaveLength(11)
+
+    // 8 in flight -> 2 more go.
+    finish.get(1)!()
+    finish.get(2)!()
+    await tick()
+    expect(started).toHaveLength(13)
 
     await drain(done, finish)
+    expect(started).toHaveLength(25)
+  })
+
+  it('never exceeds the window', async () => {
+    const { items, run, started, finish } = harness(25)
+    const done = windowedRun(items, run, 10)
+    // Release one at a time; launched-minus-released is the live in-flight
+    // count, and it must stay pinned at the window, never past it.
+    let released = 0
+    let settledFlag = false
+    void done.then(() => {
+      settledFlag = true
+    })
+    while (!settledFlag) {
+      expect(started.length - released).toBeLessThanOrEqual(10)
+      const next = finish.get(released)
+      if (next) {
+        next()
+        released += 1
+      }
+      await tick()
+    }
+    await done
     expect(started).toHaveLength(25)
   })
 
   it('resolves only when every item has settled', async () => {
     const { items, run, finish } = harness(3)
     let settled = false
-    const done = windowedRun(items, run, 10, 5).then(() => {
+    const done = windowedRun(items, run, 10).then(() => {
       settled = true
     })
     finish.get(0)!()
@@ -330,12 +355,11 @@ describe('windowedRun', () => {
         return i === 2 ? Promise.reject(new Error('boom')) : Promise.resolve()
       },
       2,
-      1,
     )
     expect(seen).toEqual([1, 2, 3])
   })
 
   it('resolves immediately for an empty list', async () => {
-    await windowedRun([], () => Promise.resolve(), 10, 5)
+    await windowedRun([], () => Promise.resolve(), 10)
   })
 })

@@ -48,27 +48,24 @@ const SEND_PASSES = 3
 // finish allocating and hash-checking them, which is what the timeouts
 // actually are (see REMOTE_TIMEOUT in the backend).
 const RETRY_WAITS_MS = [5_000, 15_000]
-// Within a pass, sends go out in WINDOWS rather than one at a time: fire this
-// many together, and fire the next window only once fewer than the low-water
-// mark are still awaiting an answer. Sequential sending spent the whole batch
-// on round-trip latency even when BitComet was healthy; the window keeps ten
-// in the air while it answers, and stops feeding it the moment it slows down
-// — see windowedRun for the mechanics.
+// Within a pass, sends keep a FULL WINDOW in the air rather than going one at
+// a time: this many fly at once, and every answer immediately admits the next
+// (9 in flight means 1 more goes, 8 means 2). Sequential sending spent the
+// whole batch on round-trip latency even when BitComet was healthy; the full
+// window keeps ten in the air while it answers, and stops feeding it the
+// moment it slows down — see windowedRun for the mechanics.
 const SEND_WINDOW = 10
-const SEND_LOW_WATER = 5
-// RESOLVING is windowed too, and it is the window that matters more: a magnet
-// has to be staged RUNNING to learn its file list (see resolve_magnet in the
-// backend), so every magnet that leaves this page is immediately in BitComet
-// fetching from the swarm. Resolving a thirty-magnet paste all at once
-// therefore hands BitComet thirty simultaneous metadata fetches plus thirty
-// pollers from this page — the batch-send overload, one step earlier. The
-// paste is held ON THIS SIDE instead: RESOLVE_WINDOW magnets enter BitComet
-// together, and the next window goes only when fewer than RESOLVE_LOW_WATER
-// are still fetching. A magnet occupies its slot until its metadata lands or
-// the backend's deadline kills it, which is exactly what makes the fetch
-// count the thing that gates.
+// RESOLVING runs through the same pump, and it is the window that matters
+// more: a magnet has to be staged RUNNING to learn its file list (see
+// resolve_magnet in the backend), so every magnet that leaves this page is
+// immediately in BitComet fetching from the swarm. Resolving a thirty-magnet
+// paste all at once therefore hands BitComet thirty simultaneous metadata
+// fetches plus thirty pollers from this page — the batch-send overload, one
+// step earlier. The paste is held ON THIS SIDE instead, with BitComet kept at
+// exactly RESOLVE_WINDOW magnets fetching: each one whose metadata lands (or
+// whose deadline kills it) releases its slot to the next in the queue. That
+// slot lifetime is what makes the fetch count the thing that gates.
 const RESOLVE_WINDOW = 10
-const RESOLVE_LOW_WATER = 5
 
 // A torrent that failed, with the link needed to try it again somewhere else.
 // The magnet is the whole point of keeping the entry — a dead tracker or a
@@ -420,7 +417,6 @@ export default function TorrentDownloader() {
           return job()
         },
         RESOLVE_WINDOW,
-        RESOLVE_LOW_WATER,
       )
     } finally {
       setStaging(false)
@@ -473,8 +469,8 @@ export default function TorrentDownloader() {
     }
   }
 
-  // One pass over the queue, windowed: SEND_WINDOW fired together, topped up
-  // when in-flight falls below SEND_LOW_WATER. Returns what is worth retrying.
+  // One pass over the queue with the window kept full: SEND_WINDOW in the air,
+  // each answer admitting the next. Returns what is worth retrying.
   async function sendPass(queue: TorrentResolve[], final: boolean): Promise<TorrentResolve[]> {
     const again: TorrentResolve[] = []
     let answered = 0
@@ -492,7 +488,6 @@ export default function TorrentDownloader() {
         }
       },
       SEND_WINDOW,
-      SEND_LOW_WATER,
     )
     return again
   }
@@ -824,8 +819,8 @@ export default function TorrentDownloader() {
             )}
             {heldCount > 0 && (
               <span className="label" style={{ margin: 0 }}>
-                {heldCount} held on this side — the next {RESOLVE_WINDOW} stage when fewer than{' '}
-                {RESOLVE_LOW_WATER} are fetching
+                {heldCount} held on this side — {RESOLVE_WINDOW} fetch at a time, each answer
+                admits the next
               </span>
             )}
           </div>
