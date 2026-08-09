@@ -168,7 +168,20 @@ class TorrentManager:
         list and refuses anything else, with nothing in the add request
         hinting at why -- so every folder is registered before it is used.
         """
-        return self.client.ensure_save_folder(save_dir or self.download_dir)
+        wanted = (save_dir or "").strip()
+        if not wanted and not self.client.is_local:
+            # download_dir is `~/Downloads`, which names a folder on THIS Mac
+            # and means nothing on a peer across the LAN. Fall back to a folder
+            # that BitComet itself has registered instead -- the same list the
+            # page offers, so the silent default matches the visible options.
+            folders = self.client.save_folders()
+            if not folders:
+                raise BitCometError(
+                    "That BitComet has no download folder configured. Add one "
+                    "in its own settings, then choose it here."
+                )
+            wanted = folders[0]
+        return self.client.ensure_save_folder(wanted or self.download_dir)
 
     # =======================================================
     # RESOLVE

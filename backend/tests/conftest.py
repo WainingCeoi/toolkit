@@ -16,6 +16,7 @@ import pytest
 
 from subgen.db import Store
 from toolkit_api.artifacts import ArtifactStore
+from toolkit_api.devices import DeviceBook
 from toolkit_api.jobs import JobRegistry
 from toolkit_api.main import create_app
 from toolkit_api.state import AppState
@@ -39,6 +40,9 @@ def app_state(tmp_path):
         store=Store(tmp_path / "sub.db"),
         jobs=JobRegistry(),
         artifacts=ArtifactStore(),
+        # On tmp_path, so a test that saves a BitComet device never touches the
+        # developer's real book -- and every test starts with only "This Mac".
+        devices=DeviceBook(tmp_path / "bitcomet-devices.json"),
         watermarks=WatermarkBatches(tmp_path / "watermark"),
     )
     yield state

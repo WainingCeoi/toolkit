@@ -1,0 +1,365 @@
+"""The /torrent/devices routes: choosing WHICH BitComet takes the task.
+
+The interesting assertions here are not "the endpoint returns 200" but the two
+things that would leak or break silently: a stored remote-access password must
+never come back over the wire, and switching devices must actually re-point the
+tool rather than leaving the old client in place answering for the new name.
+"""
+
+from __future__ import annotations
+
+import pytest
+from fake_bitcomet import SERVER_NAME, FakeBitComet
+from fastapi.testclient import TestClient
+
+from toolkit_api.devices import LOCAL_ID
+from toolkit_api.main import create_app
+from toolkit_api.torrents import TorrentManager
+from toolkit_engine.bitcomet import BitCometClient
+
+SECRET = "correct-horse-battery-staple"
+
+
+@pytest.fixture
+def fake():
+    server = FakeBitComet(save_folders=["/volume1/downloads"])
+    try:
+        yield server
+    finally:
+        server.stop()
+
+
+@pytest.fixture
+def local_is_the_fake(fake, tmp_path, monkeypatch):
+    """Make "this Mac's BitComet" the fake, and the data dir a temporary one.
+
+    Switching devices REBUILDS the client, and for the local device that means
+    reading BitComet's own config -- so without this the test would depend on
+    whether the developer happens to have BitComet installed, and would write a
+    device id into their real data directory. Patching the two seams leaves the
+    build path itself running for real, which is the part worth testing.
+    """
+    from toolkit_api import state as state_module
+    from toolkit_engine import bitcomet
+
+    monkeypatch.setattr(state_module, "data_dir", lambda: tmp_path)
+    monkeypatch.setattr(
+        bitcomet.BitCometClient,
+        "from_config",
+        classmethod(
+            lambda cls, path=None, timeout=10.0, device_id_file=None: cls(
+                base_url=fake.url,
+                username=fake.username,
+                password=fake.password,
+                timeout=timeout,
+                device_id_file=device_id_file,
+            )
+        ),
+    )
+
+
+@pytest.fixture
+def client(app_state, local_is_the_fake, tmp_path):
+    """An app whose local BitComet is the fake, so switching AWAY is visible."""
+    from toolkit_api.state import build_torrent_manager
+
+    app_state.torrents = build_torrent_manager(app_state.devices.active())
+    with TestClient(create_app(state=app_state)) as test_client:
+        yield test_client
+
+
+def add(client, url, label="NAS", username="admin", password=SECRET):
+    return client.post(
+        "/api/torrent/devices",
+        json={"label": label, "url": url, "username": username, "password": password},
+    )
+
+
+# =======================================================
+# LISTING
+# =======================================================
+def test_only_this_mac_is_listed_before_anything_is_added(client):
+    body = client.get("/api/torrent/devices").json()
+    assert body["active"] == LOCAL_ID
+    assert [d["id"] for d in body["devices"]] == [LOCAL_ID]
+    assert body["devices"][0]["is_local"] is True
+
+
+def test_this_mac_is_always_first(client):
+    add(client, "192.168.1.50:19377")
+    ids = [d["id"] for d in client.get("/api/torrent/devices").json()["devices"]]
+    assert ids[0] == LOCAL_ID
+
+
+def test_a_saved_password_never_comes_back_over_the_wire(client):
+    add(client, "192.168.1.50:19377")
+    resp = client.get("/api/torrent/devices")
+    assert SECRET not in resp.text
+    remote = [d for d in resp.json()["devices"] if not d["is_local"]][0]
+    assert remote["has_password"] is True
+    assert "password" not in remote
+
+
+# =======================================================
+# ADD / EDIT / REMOVE
+# =======================================================
+def test_adding_a_device_selects_it(client):
+    body = add(client, "192.168.1.50:19377").json()
+    active = [d for d in body["devices"] if d["id"] == body["active"]][0]
+    assert active["url"] == "http://192.168.1.50:19377"
+    assert active["is_local"] is False
+
+
+def test_adding_a_device_re_points_the_tool_at_it(client, fake):
+    # The tool was on the fake; after the switch /status must be reporting the
+    # NEW address, not the one that happens to still be answering.
+    add(client, "192.168.1.50:19377")
+    status = client.get("/api/torrent/status").json()
+    assert status["url"] == "http://192.168.1.50:19377"
+    assert status["is_local"] is False
+    assert status["running"] is False  # nothing is listening there
+
+
+def test_a_bad_address_is_refused_with_a_sentence(client):
+    resp = add(client, "ftp://nas.local")
+    assert resp.status_code == 400
+    assert "http://" in resp.json()["detail"]
+
+
+def test_a_device_without_credentials_is_refused(client):
+    assert add(client, "192.168.1.50:19377", password="").status_code == 400
+
+
+def test_renaming_keeps_the_stored_password(client):
+    body = add(client, "192.168.1.50:19377").json()
+    device_id = body["active"]
+    resp = client.patch(
+        f"/api/torrent/devices/{device_id}", json={"label": "Basement NAS"}
+    )
+    renamed = [d for d in resp.json()["devices"] if d["id"] == device_id][0]
+    assert renamed["label"] == "Basement NAS"
+    # Blank password means "keep it" -- otherwise editing the label silently
+    # wipes credentials the UI was never sent in the first place.
+    assert renamed["has_password"] is True
+
+
+def test_editing_an_unknown_device_is_a_404(client):
+    assert (
+        client.patch("/api/torrent/devices/nope", json={"label": "x"}).status_code
+        == 404
+    )
+
+
+def test_this_mac_cannot_be_edited_or_removed(client):
+    assert (
+        client.patch(
+            f"/api/torrent/devices/{LOCAL_ID}", json={"label": "x"}
+        ).status_code
+        == 400
+    )
+    assert client.delete(f"/api/torrent/devices/{LOCAL_ID}").status_code == 400
+
+
+def test_removing_the_active_device_returns_the_tool_to_this_mac(client, fake):
+    device_id = add(client, "192.168.1.50:19377").json()["active"]
+    body = client.delete(f"/api/torrent/devices/{device_id}").json()
+    assert body["active"] == LOCAL_ID
+    # ...and the manager followed it back, rather than staying pointed at an
+    # address the book no longer holds.
+    assert client.get("/api/torrent/status").json()["url"] == fake.url
+
+
+def test_removing_an_unknown_device_is_a_404(client):
+    assert client.delete("/api/torrent/devices/nope").status_code == 404
+
+
+# =======================================================
+# SELECT
+# =======================================================
+def test_selecting_switches_the_tool_and_back_again(client, fake):
+    device_id = add(client, "192.168.1.50:19377").json()["active"]
+
+    back = client.post(f"/api/torrent/devices/{LOCAL_ID}/select").json()
+    assert back["active"] == LOCAL_ID
+    assert client.get("/api/torrent/status").json()["url"] == fake.url
+
+    again = client.post(f"/api/torrent/devices/{device_id}/select").json()
+    assert again["active"] == device_id
+    assert (
+        client.get("/api/torrent/status").json()["url"] == "http://192.168.1.50:19377"
+    )
+
+
+def test_selecting_an_unknown_device_is_a_404(client):
+    assert client.post("/api/torrent/devices/nope/select").status_code == 404
+
+
+# =======================================================
+# TEST BEFORE SAVING
+# =======================================================
+def test_testing_a_reachable_device_reports_its_folders(client, fake):
+    body = client.post(
+        "/api/torrent/devices/test",
+        json={"url": fake.url, "username": fake.username, "password": fake.password},
+    ).json()
+    assert body["ok"] is True
+    assert body["server"] == SERVER_NAME
+    # The whole point of testing first: these paths are on the peer's disk and
+    # this is the first moment the user can see them.
+    assert body["save_folders"] == ["/volume1/downloads"]
+
+
+def test_testing_a_wrong_password_says_so_rather_than_just_failing(client, fake):
+    body = client.post(
+        "/api/torrent/devices/test",
+        json={"url": fake.url, "username": fake.username, "password": "wrong"},
+    ).json()
+    assert body["ok"] is False
+    # On the LAN, "wrong password" and "wrong address" are indistinguishable
+    # from the outside unless the message says which.
+    assert "password" in body["detail"].lower()
+
+
+def test_testing_an_unreachable_address_fails_without_raising(client):
+    body = client.post(
+        "/api/torrent/devices/test",
+        json={"url": "127.0.0.1:1", "username": "u", "password": "p"},
+    ).json()
+    assert body["ok"] is False
+    assert body["detail"]
+
+
+def test_testing_a_malformed_address_fails_without_raising(client):
+    body = client.post(
+        "/api/torrent/devices/test",
+        json={"url": "ftp://nas.local", "username": "u", "password": "p"},
+    ).json()
+    assert body["ok"] is False
+    assert "http://" in body["detail"]
+
+
+def test_testing_a_saved_device_can_reuse_its_stored_password(client, fake):
+    device_id = add(
+        client, fake.url, username=fake.username, password=fake.password
+    ).json()["active"]
+    # The UI never holds the password, so re-testing a saved device has to be
+    # able to say "the one you already have".
+    body = client.post(
+        "/api/torrent/devices/test",
+        json={
+            "url": fake.url,
+            "username": fake.username,
+            "password": "",
+            "id": device_id,
+        },
+    ).json()
+    assert body["ok"] is True
+
+
+# =======================================================
+# STATUS
+# =======================================================
+def test_status_names_the_device_it_is_reporting_on(client):
+    body = client.get("/api/torrent/status").json()
+    assert body["device"]["id"] == LOCAL_ID
+    assert body["is_local"] is True
+
+
+def test_status_offers_the_active_devices_own_folders(client):
+    assert client.get("/api/torrent/status").json()["save_folders"] == [
+        "/volume1/downloads"
+    ]
+
+
+def test_status_explains_an_unreachable_peer_in_lan_terms(client):
+    add(client, "192.168.1.50:19377", label="Basement NAS")
+    detail = client.get("/api/torrent/status").json()["detail"]
+    # "Start BitComet" is useless advice about a machine in another room.
+    assert "Basement NAS" in detail
+    assert "awake" in detail
+
+
+def test_status_still_answers_with_no_device_book(app_state):
+    app_state.devices = None
+    app_state.torrents = None
+    with TestClient(create_app(state=app_state)) as test_client:
+        body = test_client.get("/api/torrent/status").json()
+    assert body["running"] is False
+    assert body["device"] is None
+
+
+def test_device_routes_report_a_missing_book_rather_than_crashing(app_state):
+    app_state.devices = None
+    with TestClient(create_app(state=app_state)) as test_client:
+        assert test_client.get("/api/torrent/devices").status_code == 503
+
+
+# =======================================================
+# THE HANDOVER, TO A DEVICE THAT IS NOT THIS ONE
+# =======================================================
+def test_a_torrent_can_be_resolved_and_sent_to_a_remote_bitcomet(
+    app_state, fake, tmp_path
+):
+    """End to end against a peer: resolve, choose, send -- nothing local touched."""
+    from test_torrent_api import sample_torrent
+
+    remote_client = BitCometClient(
+        base_url=fake.url, username=fake.username, password=fake.password
+    )
+    # The fake can only bind loopback; this is the flag every remote branch
+    # keys off, so setting it exercises the real path.
+    remote_client.is_local = False
+    app_state.torrents = TorrentManager(remote_client, download_dir=tmp_path)
+
+    with TestClient(create_app(state=app_state)) as test_client:
+        resolved = test_client.post(
+            "/api/torrent/resolve",
+            files={
+                "file": (
+                    "Example.torrent",
+                    sample_torrent(),
+                    "application/x-bittorrent",
+                )
+            },
+            data={"save_dir": "/volume1/downloads"},
+        ).json()
+        assert resolved["ready"] is True
+
+        sent = test_client.post(
+            "/api/torrent",
+            json={"infohash": resolved["infohash"], "selected": [1]},
+        )
+        assert sent.status_code == 200
+
+    task = next(iter(fake.tasks.values()))
+    assert task["status"] == "running"
+    assert [f["priority"] for f in task["files"]] == ["normal", "disabled", "disabled"]
+    # And the peer's folder was never created on this Mac.
+    assert not (tmp_path / "volume1").exists()
+
+
+def test_a_remote_add_with_no_folder_falls_back_to_the_peers_own(
+    app_state, fake, tmp_path
+):
+    from test_torrent_api import sample_torrent
+
+    remote_client = BitCometClient(
+        base_url=fake.url, username=fake.username, password=fake.password
+    )
+    remote_client.is_local = False
+    app_state.torrents = TorrentManager(remote_client, download_dir=tmp_path)
+
+    with TestClient(create_app(state=app_state)) as test_client:
+        resp = test_client.post(
+            "/api/torrent/resolve",
+            files={
+                "file": (
+                    "Example.torrent",
+                    sample_torrent(),
+                    "application/x-bittorrent",
+                )
+            },
+        )
+    assert resp.status_code == 200
+    # ~/Downloads would have been sent to a machine where it means nothing.
+    assert fake.save_folders == ["/volume1/downloads"]

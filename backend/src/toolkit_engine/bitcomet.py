@@ -21,6 +21,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import ipaddress
 import json
 import os
 import uuid
@@ -29,6 +30,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import requests
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
@@ -77,6 +79,13 @@ DEFAULT_TORRENT_MAX_SIZE = 20 * 1024 * 1024
 # would sit there for ten seconds before admitting anything is wrong.
 PROBE_TIMEOUT = 1.5
 
+# ...and the same impatience over the LAN would be a bug. A loopback round trip
+# is sub-millisecond, but a peer across the Wi-Fi has to be found (ARP, or an
+# mDNS lookup for a `.local` name) before the first byte moves, and a sleeping
+# machine answers only after it wakes. At 1.5s a perfectly healthy NAS reads as
+# "not running", so remote probes get a budget sized for a network instead.
+REMOTE_PROBE_TIMEOUT = 4.0
+
 # --- login envelope byte layout ------------------------------------------
 HEADER_LEN = 34
 MAC_LEN = 32
@@ -85,6 +94,82 @@ ITERATIONS = 10_000
 
 class BitCometError(RuntimeError):
     """A BitComet API call failed, or the client could not be reached."""
+
+
+# =======================================================
+# ADDRESSES
+# =======================================================
+# BitComet's remote access answers on the LAN, not only on loopback, so this
+# app can hand a task to the BitComet running on another machine on the same
+# Wi-Fi -- a NAS, a desktop, the machine that actually has the disk space. What
+# arrives from the UI is whatever the user typed, so it is normalised here,
+# once, into the `scheme://host:port` form every call is built from.
+_LOCAL_NAMES = frozenset({"localhost", "localhost.localdomain"})
+
+
+def _bracketed(host: str) -> str:
+    """An IPv6 literal needs its brackets back before it can go in a URL."""
+    return f"[{host}]" if ":" in host else host
+
+
+def is_local_host(host: str) -> bool:
+    """True when `host` names THIS machine's loopback interface.
+
+    The distinction is not cosmetic. A save folder on loopback is a directory
+    this process can create; the same string aimed at a machine across the room
+    names a path on ITS disk, which this process must not touch -- see
+    ensure_save_folder. Anything not provably loopback is treated as remote,
+    because the cost of guessing wrong that way is a longer timeout, while
+    guessing wrong the other way is a stray directory on the wrong filesystem.
+    """
+    name = host.strip().strip("[]").lower()
+    if name in _LOCAL_NAMES:
+        return True
+    try:
+        return ipaddress.ip_address(name).is_loopback
+    except ValueError:
+        return False
+
+
+def normalize_base_url(raw: str) -> str:
+    """Whatever the user typed -> `http://host:port`, or a sentence saying why not.
+
+    Accepts the forms people actually paste: a bare host, host:port, a full URL,
+    a URL with the Web UI's own path still on the end. Everything after the
+    authority is dropped -- every API path this module calls is absolute from
+    the root, so a leftover `/webui/index.html` would corrupt all of them.
+
+    Two traps are handled explicitly because both fail in a way that names the
+    wrong problem:
+
+    * `nas:19377` parses as the SCHEME `nas` with path `19377`, not as a host
+      and a port, so it is only ever read as a URL once a scheme is in front.
+    * a missing port is not an error but a silent connection refused, because
+      nothing is listening on 80 -- so the default port is filled in instead.
+    """
+    text = (raw or "").strip()
+    if not text:
+        raise BitCometError("Enter the address of the BitComet to connect to.")
+    if "://" not in text:
+        text = f"http://{text.lstrip('/')}"
+
+    parsed = urlsplit(text)
+    if parsed.scheme not in ("http", "https"):
+        raise BitCometError(
+            f"{parsed.scheme}:// is not a Web UI address -- use http:// or https://"
+        )
+    if parsed.username or parsed.password:
+        raise BitCometError(
+            "Leave the username and password out of the address; there are "
+            "fields for them."
+        )
+    try:
+        host, port = parsed.hostname, parsed.port
+    except ValueError as exc:  # a port that is not a number, or out of range
+        raise BitCometError(f"{raw.strip()!r} has no usable port: {exc}") from exc
+    if not host:
+        raise BitCometError(f"{raw.strip()!r} does not name a host.")
+    return f"{parsed.scheme}://{_bracketed(host)}:{port or DEFAULT_PORT}"
 
 
 # =======================================================
@@ -98,8 +183,10 @@ class Credentials:
 
     @property
     def base_url(self) -> str:
-        # Remote access is bound to this machine; the API is never reached
-        # over the LAN by this app.
+        # This machine's own BitComet only. Reaching another one goes through
+        # an explicitly configured address and its own credentials, because
+        # BitComet's config file is the only place the password lives and that
+        # file is on the other machine (see read_credentials).
         return f"http://127.0.0.1:{self.port}"
 
 
@@ -282,8 +369,13 @@ def _with_string_ids(body: dict) -> dict:
 
 
 def _folder_key(path: str | Path) -> str:
-    """Comparable form of a save folder, so "/x" and "/x/" are one folder."""
-    return str(path).rstrip("/") or "/"
+    """Comparable form of a save folder, so "/x" and "/x/" are one folder.
+
+    The backslash is here for a REMOTE BitComet: the peer on the LAN may be a
+    Windows box or a NAS, whose folders come back as `D:\\Downloads\\`, and a
+    separator this misses means the folder is re-registered on every add.
+    """
+    return str(path).rstrip("/\\") or "/"
 
 
 # =======================================================
@@ -298,10 +390,15 @@ class BitCometClient:
         timeout: float = 10.0,
         device_id_file: Path | None = None,
     ) -> None:
-        self.base_url = base_url.rstrip("/")
+        self.base_url = normalize_base_url(base_url)
         self.username = username
         self.password = password
         self.timeout = timeout
+        # Whether this BitComet is the one on this machine. Read once here
+        # rather than re-derived at each use, so "is the save folder ours to
+        # create?" and "how long is a healthy answer allowed to take?" can
+        # never disagree about the same client.
+        self.is_local = is_local_host(urlsplit(self.base_url).hostname or "")
         self._device_token: str | None = None
         self._server_name: str | None = None
         # BitComet's .torrent size cap, filled on first use. It is a constant
@@ -315,12 +412,15 @@ class BitCometClient:
         self._device_id = read_or_create_device_id(device_id_file)
 
         self._session = requests.Session()
-        # BitComet is always on loopback. A configured HTTP proxy (env vars or
-        # the macOS system proxy -- likely on a machine that also runs a proxy
-        # subscription tool) would otherwise intercept 127.0.0.1 and answer
-        # with its own non-JSON error page, which is neither BitComet nor a
-        # connection error. This bug has bitten this app before;
-        # trust_env=False is what keeps these calls off any proxy.
+        # BitComet is on loopback or on the LAN, and NEITHER belongs to a
+        # proxy. A configured HTTP proxy (env vars or the macOS system proxy --
+        # likely on a machine that also runs a proxy subscription tool) would
+        # otherwise intercept the address and answer with its own non-JSON
+        # error page, which is neither BitComet nor a connection error. This
+        # bug has bitten this app before; trust_env=False is what keeps these
+        # calls off any proxy. It matters MORE for a LAN peer than for
+        # loopback: 127.0.0.1 is in most no_proxy lists by default and
+        # 192.168.x.x is not.
         self._session.trust_env = False
 
     @classmethod
@@ -338,6 +438,11 @@ class BitCometClient:
             timeout=timeout,
             device_id_file=device_id_file,
         )
+
+    @property
+    def server_name(self) -> str | None:
+        """The name this BitComet gave itself, known only after a login."""
+        return self._server_name
 
     def close(self) -> None:
         self._session.close()
@@ -464,11 +569,16 @@ class BitCometClient:
         not be running. A real authenticated round trip, not a look at the
         cached token -- the question is whether the API answers now.
 
-        Answers within PROBE_TIMEOUT rather than the steady-state one, because
-        this is the call the UI blocks on before it can render anything.
+        Answers within the probe timeout rather than the steady-state one,
+        because this is the call the UI blocks on before it can render
+        anything -- and a LAN peer gets the longer of the two budgets, since a
+        machine across the Wi-Fi is slower to reach than one on loopback
+        without being any less healthy.
         """
         try:
-            with self.deadline(PROBE_TIMEOUT):
+            with self.deadline(
+                PROBE_TIMEOUT if self.is_local else REMOTE_PROBE_TIMEOUT
+            ):
                 self.new_task_config()
         except BitCometError:
             return None
@@ -499,6 +609,23 @@ class BitCometClient:
         if self._torrent_max_size is None:
             self.new_task_config()
         return self._torrent_max_size or DEFAULT_TORRENT_MAX_SIZE
+
+    def save_folders(self) -> list[str]:
+        """The folders this BitComet will accept as a save_folder, in its order.
+
+        The UI needs these for a REMOTE BitComet and cannot work them out: the
+        paths are on the peer's disk, so there is nothing on this machine to
+        browse and no `~` this side can expand. Offering the list the peer
+        already has is the only way to fill that field without the user
+        guessing at a path they cannot see.
+        """
+        body = self.new_task_config()
+        folders = [
+            str(entry.get("path", "")).strip()
+            for entry in body.get("save_folders", [])
+            if isinstance(entry, dict)
+        ]
+        return [folder for folder in folders if folder]
 
     def task_list(self) -> list[dict]:
         """Every task BitComet knows about, in one round trip."""
@@ -632,21 +759,44 @@ class BitCometClient:
         list; anything else fails the add with "save_folder invalid". Nothing
         in the add request hints at that, so every add would fail on a folder
         the user picked but BitComet has never seen -- this is the fix.
-        """
-        folder = Path(path).expanduser()
-        try:
-            # BitComet will not register a directory that does not exist, and
-            # the folder the user picked may be brand new.
-            folder.mkdir(parents=True, exist_ok=True)
-        except OSError as exc:
-            raise BitCometError(
-                f"cannot create the save folder {folder}: {exc}"
-            ) from exc
 
-        body = self.new_task_config()
+        WHOSE filesystem the path names is the whole reason this is split. For
+        the BitComet on this machine the path is ours: `~` is our home, the
+        directory is ours to create, and creating it is required because
+        BitComet will not register one that does not exist. For a BitComet
+        across the LAN every one of those is false -- the path is on the peer's
+        disk, `~` is the peer's home, and expanding or creating it here would
+        quietly make a directory on the WRONG machine and then hand BitComet a
+        path it has never heard of. So the remote path is passed through
+        untouched and the peer is left to judge it; if it refuses, its own
+        message is what the user sees.
+        """
+        if self.is_local:
+            folder = Path(path).expanduser()
+            try:
+                folder.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                raise BitCometError(
+                    f"cannot create the save folder {folder}: {exc}"
+                ) from exc
+            wanted = str(folder)
+        else:
+            wanted = str(path).strip()
+            if not wanted:
+                raise BitCometError("Choose a folder on that device to download into.")
+            if wanted.startswith("~"):
+                # It would expand to THIS machine's home, which is meaningless
+                # on the peer -- and the resulting path very often exists here,
+                # so the mistake would look like it worked.
+                raise BitCometError(
+                    f"{wanted!r} is a path on this Mac. Pick one of that "
+                    f"device's own folders, or type its full path."
+                )
+
         known = {
-            _folder_key(entry.get("path", "")) for entry in body.get("save_folders", [])
+            _folder_key(entry.get("path", ""))
+            for entry in self.new_task_config().get("save_folders", [])
         }
-        if _folder_key(folder) not in known:
-            self._call("POST", "/api/config/directories/add", {"dir_path": str(folder)})
-        return str(folder)
+        if _folder_key(wanted) not in known:
+            self._call("POST", "/api/config/directories/add", {"dir_path": wanted})
+        return wanted

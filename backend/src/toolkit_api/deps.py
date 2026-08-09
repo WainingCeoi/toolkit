@@ -7,6 +7,7 @@ from typing import Annotated
 from fastapi import Depends, HTTPException, Request
 
 from .artifacts import ArtifactStore
+from .devices import DeviceBook
 from .jobs import JobRegistry
 from .state import AppState
 from .watermarks import WatermarkBatches
@@ -35,6 +36,15 @@ def get_torrents(request: Request):
     return manager
 
 
+def get_devices(request: Request) -> DeviceBook:
+    book = request.app.state.state.devices
+    if book is None:
+        raise HTTPException(
+            status_code=503, detail="The BitComet device list is not ready."
+        )
+    return book
+
+
 def get_watermarks(request: Request) -> WatermarkBatches:
     batches = request.app.state.state.watermarks
     if batches is None:
@@ -49,4 +59,5 @@ JobsDep = Annotated[JobRegistry, Depends(get_jobs)]
 ArtifactsDep = Annotated[ArtifactStore, Depends(get_artifacts)]
 StoreDep = Annotated[object, Depends(get_store)]
 TorrentsDep = Annotated[object, Depends(get_torrents)]
+DevicesDep = Annotated[DeviceBook, Depends(get_devices)]
 WatermarksDep = Annotated[WatermarkBatches, Depends(get_watermarks)]
