@@ -86,6 +86,19 @@ PROBE_TIMEOUT = 1.5
 # "not running", so remote probes get a budget sized for a network instead.
 REMOTE_PROBE_TIMEOUT = 4.0
 
+# The STEADY-STATE budget splits the same way, and for a different reason than
+# distance. Starting a task is not free for BitComet: it allocates the files,
+# hash-checks whatever is on disk and reaches for the swarm, and while a batch
+# of fresh starts grinds through that its web server can take tens of seconds
+# over a single call. Measured live, batch-sending 34 tasks to a LAN peer:
+# most sends "failed", and every failure was this client's 10s read timeout
+# against a BitComet that was merely busy -- the tasks themselves were fine.
+# A timeout should mean absent, not working hard, so remote clients get a
+# budget sized for the grind. Loopback keeps 10s: the same grind exists there,
+# but no user-visible path waits on a local call this long without wanting to
+# know sooner.
+REMOTE_TIMEOUT = 30.0
+
 # --- login envelope byte layout ------------------------------------------
 HEADER_LEN = 34
 MAC_LEN = 32

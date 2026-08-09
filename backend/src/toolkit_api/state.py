@@ -78,7 +78,11 @@ def build_torrent_manager(device: Device | None = None):
     to fail on until the first call.
     """
     from toolkit_api.torrents import DEFAULT_SAVE_DIR, TorrentManager
-    from toolkit_engine.bitcomet import BitCometClient, BitCometError
+    from toolkit_engine.bitcomet import (
+        REMOTE_TIMEOUT,
+        BitCometClient,
+        BitCometError,
+    )
 
     # The device id lives here so BitComet sees the same paired device across
     # restarts instead of collecting one entry per boot.
@@ -95,6 +99,11 @@ def build_torrent_manager(device: Device | None = None):
                 base_url=device.url or "",
                 username=device.username,
                 password=device.password,
+                # The patient budget: a LAN BitComet mid-way through starting a
+                # batch of tasks answers slowly without being unhealthy, and at
+                # the default 10s a batch send fails task after task against a
+                # client that is merely busy. See REMOTE_TIMEOUT.
+                timeout=REMOTE_TIMEOUT,
                 device_id_file=device_id_file,
             )
         except BitCometError:

@@ -363,3 +363,25 @@ def test_a_remote_add_with_no_folder_falls_back_to_the_peers_own(
     assert resp.status_code == 200
     # ~/Downloads would have been sent to a machine where it means nothing.
     assert fake.save_folders == ["/volume1/downloads"]
+
+
+# =======================================================
+# TIMEOUTS
+# =======================================================
+def test_a_remote_device_gets_the_patient_timeout(client, app_state):
+    """A LAN BitComet mid-way through starting a batch answers slowly without
+    being unhealthy; at the local 10s budget a batch send fails task after
+    task with read timeouts. Measured live before REMOTE_TIMEOUT existed."""
+    from toolkit_engine.bitcomet import REMOTE_TIMEOUT
+
+    add(client, "192.168.1.50:19377")
+    assert app_state.torrents.client.timeout == REMOTE_TIMEOUT
+
+
+def test_this_mac_keeps_the_snappy_timeout(client, app_state):
+    add(client, "192.168.1.50:19377")
+    client.post(f"/api/torrent/devices/{LOCAL_ID}/select")
+    # 10.0 is BitCometClient's default steady-state budget, unchanged for
+    # loopback -- the grind exists there too, but nothing user-visible should
+    # wait half a minute on a local call without wanting to know sooner.
+    assert app_state.torrents.client.timeout == 10.0

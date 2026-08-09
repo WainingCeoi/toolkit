@@ -18,7 +18,7 @@ from typing import Annotated
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
-from toolkit_engine.bitcomet import BitCometClient, BitCometError
+from toolkit_engine.bitcomet import REMOTE_TIMEOUT, BitCometClient, BitCometError
 
 from .. import state as app_state
 from ..deps import DevicesDep, StateDep, TorrentsDep
@@ -268,6 +268,10 @@ def test_device(payload: DeviceTestIn, book: DevicesDep) -> DeviceTestOut:
             base_url=payload.url,
             username=payload.username,
             password=password,
+            # The remote steady-state budget, for the same reason the saved
+            # devices get it: a Test pressed while that BitComet is grinding
+            # through fresh tasks must report "reached", not time out.
+            timeout=REMOTE_TIMEOUT,
             # The SAME persisted id every other connection uses. A throwaway id
             # here would add one paired-device entry to that BitComet's
             # settings for every press of Test.
