@@ -56,6 +56,19 @@ const RETRY_WAITS_MS = [5_000, 15_000]
 // — see windowedRun for the mechanics.
 const SEND_WINDOW = 10
 const SEND_LOW_WATER = 5
+// RESOLVING is windowed too, and it is the window that matters more: a magnet
+// has to be staged RUNNING to learn its file list (see resolve_magnet in the
+// backend), so every magnet that leaves this page is immediately in BitComet
+// fetching from the swarm. Resolving a thirty-magnet paste all at once
+// therefore hands BitComet thirty simultaneous metadata fetches plus thirty
+// pollers from this page — the batch-send overload, one step earlier. The
+// paste is held ON THIS SIDE instead: RESOLVE_WINDOW magnets enter BitComet
+// together, and the next window goes only when fewer than RESOLVE_LOW_WATER
+// are still fetching. A magnet occupies its slot until its metadata lands or
+// the backend's deadline kills it, which is exactly what makes the fetch
+// count the thing that gates.
+const RESOLVE_WINDOW = 10
+const RESOLVE_LOW_WATER = 5
 
 // A torrent that failed, with the link needed to try it again somewhere else.
 // The magnet is the whole point of keeping the entry — a dead tracker or a
@@ -128,6 +141,9 @@ export default function TorrentDownloader() {
   const [magnets, setMagnets] = useState('')
   const [pendingFiles, setPendingFiles] = useState<File[]>([])
   const [staging, setStaging] = useState(false)
+  // How much of the paste is still held on THIS side, waiting for a resolve
+  // window slot — the part of the queue BitComet has not been shown yet.
+  const [heldCount, setHeldCount] = useState(0)
 
   // --- shared filter + destination (step 2) ---
   const [categories, setCategories] = useState<Set<string>>(new Set(['video']))
@@ -356,7 +372,12 @@ export default function TorrentDownloader() {
       setResolved((prev) => addTorrent(prev, out))
       if (!out.ready) {
         setResolvingHashes((prev) => new Set(prev).add(out.infohash))
-        void pollUntilReady(out.infohash) // background; don't block the others
+        // AWAITED, deliberately: this call runs inside the resolve window, and
+        // a magnet is not done with its slot when the add returns — it is done
+        // when its metadata lands or it dies. Fire-and-forget here would let
+        // the whole paste into BitComet in one burst, which is the exact thing
+        // the window exists to prevent.
+        await pollUntilReady(out.infohash)
       }
     } catch (e) {
       pushFailure(magnetLabel(uri), uri)
@@ -382,10 +403,29 @@ export default function TorrentDownloader() {
     setStaging(true)
     setMagnets('')
     setPendingFiles([])
-    // Every line and file resolves on its own; one bad magnet does not sink the
-    // rest (allSettled, never all).
-    await Promise.allSettled([...lines.map(stageMagnet), ...files.map(stageFile)])
-    setStaging(false)
+    // Files first: their metadata is in the file, so each clears its window
+    // slot in one round trip and the magnets take over the window. Each job
+    // catches its own failures, so one bad magnet never sinks the rest.
+    const work = [
+      ...files.map((file) => () => stageFile(file)),
+      ...lines.map((uri) => () => stageMagnet(uri)),
+    ]
+    let started = 0
+    try {
+      await windowedRun(
+        work,
+        (job) => {
+          started += 1
+          setHeldCount(work.length - started)
+          return job()
+        },
+        RESOLVE_WINDOW,
+        RESOLVE_LOW_WATER,
+      )
+    } finally {
+      setStaging(false)
+      setHeldCount(0)
+    }
   }
 
   // Drop a resolved torrent from the review list and forget its ticks.
@@ -771,7 +811,7 @@ export default function TorrentDownloader() {
             <Button
               variant="primary"
               loading={staging}
-              disabled={nothingToResolve || noDestination || bitcometDown}
+              disabled={nothingToResolve || noDestination || bitcometDown || staging}
               onClick={resolveAll}
             >
               Resolve
@@ -780,6 +820,12 @@ export default function TorrentDownloader() {
               <span className="label" style={{ margin: 0 }}>
                 fetching metadata for {resolvingHashes.size} magnet
                 {resolvingHashes.size === 1 ? '' : 's'}…
+              </span>
+            )}
+            {heldCount > 0 && (
+              <span className="label" style={{ margin: 0 }}>
+                {heldCount} held on this side — the next {RESOLVE_WINDOW} stage when fewer than{' '}
+                {RESOLVE_LOW_WATER} are fetching
               </span>
             )}
           </div>
