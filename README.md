@@ -126,8 +126,10 @@ make clean                     # remove build artifacts
 - [FFmpeg](https://ffmpeg.org/) on your `PATH` — required by **Remux Processor** (`brew install ffmpeg`)
 - [BitComet](https://www.bitcomet.com/) — required by **Torrent Downloader**. Turn on
   *Options → Remote Access* and enable **both** switches ("via BitComet Mobile App" and
-  "via Web UI"), then set a username and password; the app reads them from BitComet's own
-  config, so there is nothing to configure twice
+  "via Web UI"), then set a username and password; for the BitComet on *this* machine the
+  app reads them from BitComet's own config, so there is nothing to configure twice. A
+  BitComet on another machine on the same Wi-Fi can be used instead — see
+  [Sending to another machine's BitComet](#sending-to-another-machines-bitcomet)
 - [torch](https://pytorch.org/) — required by **Watermark Remover**'s LaMa inpainter; installed with the backend via the `watermark` extra, and the big-lama checkpoint (~200 MB) downloads automatically on first use (cached under `~/.cache/torch`). Without it the tool still runs on its cv2 inpainter
 - [Google Chrome](https://www.google.com/chrome/) — required by **Web Images to PDF** (the matching driver is downloaded automatically)
 - [LibreOffice](https://www.libreoffice.org/) — required by **Doc to PDF** (`brew install --cask libreoffice`)
@@ -183,6 +185,37 @@ would leave it downloading with every file enabled.
 
 Pick the destination folder *before* you resolve: BitComet fixes a torrent's save
 folder as the task is created and cannot move it afterwards.
+
+Torrents under review are listed **folded**, one row each, showing only what you
+need to decide — name, how many files are selected, and how big that is. Open a
+row to tick individual files. Long release names are truncated in the middle, so
+the extension and the quality tag stay visible instead of ten rows all reading
+`The.Same.Long.Prefix…`; the full name is in the tooltip.
+
+Anything that fails — a dead magnet, an unreachable BitComet, a rejected send —
+lands in a **Failed** panel with its magnet link and a *Copy magnet* button, so a
+torrent worth retrying later is never lost back to wherever you copied it from.
+
+#### Sending to another machine's BitComet
+
+BitComet's Remote Access answers on the LAN, not just on loopback, so the tool
+can hand a torrent to the BitComet on **another machine on the same Wi-Fi** — the
+one with the disk space, or the one that stays awake. Use *Change device* on the
+page, give it that machine's address (`192.168.1.50:19377`, or just the host —
+port 19377 is assumed) plus the Web UI username and password **it** is configured
+with, and press *Test connection* before saving. Devices are remembered and the
+choice survives a restart.
+
+Two things differ for a remote device, both because its disk is not this one:
+the *Save to* field offers that machine's own registered download folders instead
+of a Browse button (which would browse the wrong filesystem), and a `~/…` path is
+refused rather than silently expanded to this Mac's home.
+
+Passwords for remote devices are stored in plaintext in
+`backend/data/bitcomet-devices.json` (mode `0600`) — BitComet's login needs the
+password itself, not a digest. That is the same exposure as `BitComet.xml`, which
+holds the local one in plaintext too. The BitComet on *this* machine is never
+stored here: its credentials are read from BitComet's own config every time.
 
 ### 🧽 Watermark Remover
 

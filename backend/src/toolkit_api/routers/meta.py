@@ -41,7 +41,7 @@ CATEGORIES = [
                 title="🌊 Torrent Downloader",
                 description=(
                     "Add a magnet or .torrent, keep only the files worth "
-                    "keeping, and manage the queue across restarts."
+                    "keeping, and send it to BitComet — here or on the LAN."
                 ),
             ),
         ],
