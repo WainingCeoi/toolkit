@@ -627,3 +627,18 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; gap: 6
 .wm-hint { font: 12px var(--mono); color: var(--faint); flex: 1; }
 .wm-dims { font: 12px var(--mono); color: var(--faint); }
 
+
+/* The failed-magnet row. The link is the point of the row — it is what the
+   user came back for — so it gets a copy button of its own rather than being
+   folded into a sentence they would have to select by hand. */
+.tor-fail-link {
+  font: 11px var(--mono);
+  color: var(--faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
+}

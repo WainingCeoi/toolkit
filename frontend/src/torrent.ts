@@ -54,6 +54,18 @@ export function formatBytes(n: number): string {
   return `${value.toFixed(value >= 100 ? 0 : 1)} ${units[unit]}`
 }
 
+// A magnet link for a torrent this app already knows the infohash of.
+//
+// Used when handing a FAILED torrent back to the user. The original pasted
+// magnet is preferred where it survives (it carries trackers, which a bare
+// infohash does not), but a torrent that came from a .torrent file never had
+// one — and after a failure the infohash is the only durable handle on it, so
+// reconstructing the minimal form beats offering nothing to copy.
+export function magnetLink(infohash: string, name?: string | null): string {
+  const dn = name ? `&dn=${encodeURIComponent(name)}` : ''
+  return `magnet:?xt=urn:btih:${infohash}${dn}`
+}
+
 // One magnet per line: trimmed, blanks dropped, de-duplicated within the paste.
 // Kept pure so the "paste ten magnets" parsing is unit-tested, not eyeballed.
 export function parseMagnetLines(raw: string): string[] {

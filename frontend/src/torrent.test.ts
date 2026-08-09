@@ -5,6 +5,7 @@ import {
   addTorrent,
   applyFilter,
   formatBytes,
+  magnetLink,
   MB,
   parseMagnetLines,
   ruleKey,
@@ -164,5 +165,28 @@ describe('selectionFor + ruleKey (per-torrent)', () => {
   it('changes the key when the shared filter changes', () => {
     expect(ruleKey('a', cats, 100)).not.toBe(ruleKey('a', cats, 200))
     expect(ruleKey('a', cats, 100)).not.toBe(ruleKey('a', new Set(['audio']), 100))
+  })
+})
+
+describe('magnetLink', () => {
+  it('builds a link a client can actually take', () => {
+    expect(magnetLink('c9e15763f722f23e98a29decdfae341b98d53056')).toBe(
+      'magnet:?xt=urn:btih:c9e15763f722f23e98a29decdfae341b98d53056',
+    )
+  })
+
+  it('adds the display name when there is one', () => {
+    expect(magnetLink('abc', 'Example Release')).toBe(
+      'magnet:?xt=urn:btih:abc&dn=Example%20Release',
+    )
+  })
+
+  it('escapes a name that would otherwise break the query', () => {
+    expect(magnetLink('abc', 'A&B=C')).toBe('magnet:?xt=urn:btih:abc&dn=A%26B%3DC')
+  })
+
+  it('omits dn entirely rather than emitting an empty one', () => {
+    expect(magnetLink('abc', null)).toBe('magnet:?xt=urn:btih:abc')
+    expect(magnetLink('abc', '')).toBe('magnet:?xt=urn:btih:abc')
   })
 })

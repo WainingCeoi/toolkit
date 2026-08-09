@@ -4,8 +4,9 @@
 // paused, resumed, watched and removed.
 // Mirrors backend/src/toolkit_api/routers/torrent.py.
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api } from '../api'
+import { copyText } from '../clipboard'
 import Button from '../components/Button'
 import FileDrop from '../components/FileDrop'
 import FolderField from '../components/FolderField'
@@ -15,6 +16,7 @@ import {
   MB,
   addTorrent,
   formatBytes,
+  magnetLink,
   parseMagnetLines,
   ruleKey,
   selectionFor,
@@ -26,9 +28,40 @@ const NO_OVERRIDES: ReadonlyMap<number, boolean> = new Map()
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 const errMsg = (e: unknown, fallback: string) => (e as Error).message || fallback
 
+// A torrent that failed, with the link needed to try it again somewhere else.
+// The magnet is the whole point of keeping the row: a dead tracker or a
+// sleeping BitComet is a reason to retry later, not to lose what was pasted.
+interface Failure {
+  id: string
+  msg: string
+  magnet: string | null
+}
+
 // A magnet is too long to show whole in an error line; its btih is enough.
 function magnetLabel(uri: string): string {
   return uri.match(/btih:([a-z0-9]+)/i)?.[1]?.slice(0, 12) ?? uri.slice(0, 24)
+}
+
+function CopyButton({ text, label = 'Copy magnet' }: { text: string; label?: string }) {
+  const [state, setState] = useState<'idle' | 'ok' | 'fail'>('idle')
+
+  async function run() {
+    try {
+      await copyText(text)
+      setState('ok')
+    } catch {
+      // Never silent: off a secure origin the copy can genuinely fail, and a
+      // button that lies about it costs the user the link entirely.
+      setState('fail')
+    }
+    setTimeout(() => setState('idle'), 1500)
+  }
+
+  return (
+    <Button size="sm" onClick={() => void run()}>
+      {state === 'ok' ? '✓ Copied' : state === 'fail' ? 'Select it instead' : label}
+    </Button>
+  )
 }
 
 function FileTable({
@@ -88,13 +121,19 @@ export default function TorrentDownloader() {
   // --- resolved torrents under review (step 3) ---
   const [resolved, setResolved] = useState<TorrentResolve[]>([])
   const [resolvingHashes, setResolvingHashes] = useState<Set<string>>(new Set())
-  const [errors, setErrors] = useState<{ id: string; msg: string }[]>([])
+  const [failures, setFailures] = useState<Failure[]>([])
   // Per-torrent file ticks, keyed by infohash so two torrents' index-1 files
   // never collide, then by the rule they were made against so a filter change
   // discards them.
   const [overrides, setOverrides] = useState<
     Map<string, { key: string; map: Map<number, boolean> }>
   >(new Map())
+
+  // The magnet each infohash arrived as, so a failure can hand back the LINK
+  // the user actually pasted — trackers and all — rather than a reconstructed
+  // one. A ref, not state: nothing renders from it directly, and re-rendering
+  // the page every time a magnet is staged would be pure churn.
+  const sources = useRef<Map<string, string>>(new Map())
 
   // --- handed over (step 4) ---
   // A receipt of what this page sent, for this visit only. Deliberately not a
@@ -115,8 +154,16 @@ export default function TorrentDownloader() {
     }
   }, [])
 
-  function pushError(id: string, msg: string) {
-    setErrors((prev) => [...prev, { id, msg }])
+  function pushFailure(id: string, msg: string, magnet: string | null = null) {
+    setFailures((prev) => [...prev, { id, msg, magnet }])
+  }
+
+  // The best magnet available for a torrent: the one pasted if this page still
+  // has it, otherwise the minimal form its infohash allows. A .torrent upload
+  // never had a magnet, and after a failure the infohash is the only handle
+  // left on it — so reconstructing beats offering nothing to copy.
+  function magnetFor(infohash: string, name?: string | null): string {
+    return sources.current.get(infohash) ?? magnetLink(infohash, name)
   }
 
   function clearResolving(infohash: string) {
@@ -143,12 +190,20 @@ export default function TorrentDownloader() {
         next = await api.torrentPollResolve(infohash)
       } catch (e) {
         clearResolving(infohash)
-        pushError(infohash.slice(0, 12), errMsg(e, 'Could not reach BitComet.'))
+        pushFailure(
+          infohash.slice(0, 12),
+          errMsg(e, 'Could not reach BitComet.'),
+          magnetFor(infohash),
+        )
         return
       }
       if (next.state === 'error') {
         clearResolving(infohash)
-        pushError(next.name ?? infohash.slice(0, 12), 'Metadata fetch failed — dead magnet or no seeders.')
+        pushFailure(
+          next.name ?? infohash.slice(0, 12),
+          'Metadata fetch failed — dead magnet or no seeders.',
+          magnetFor(infohash, next.name),
+        )
         return
       }
       if (next.ready) {
@@ -162,13 +217,14 @@ export default function TorrentDownloader() {
   async function stageMagnet(uri: string) {
     try {
       const out = await api.torrentResolveMagnet(uri, saveDir.trim())
+      sources.current.set(out.infohash, uri)
       setResolved((prev) => addTorrent(prev, out))
       if (!out.ready) {
         setResolvingHashes((prev) => new Set(prev).add(out.infohash))
         void pollUntilReady(out.infohash) // background; don't block the others
       }
     } catch (e) {
-      pushError(magnetLabel(uri), errMsg(e, 'Could not read that magnet link.'))
+      pushFailure(magnetLabel(uri), errMsg(e, 'Could not read that magnet link.'), uri)
     }
   }
 
@@ -177,7 +233,9 @@ export default function TorrentDownloader() {
       const out = await api.torrentResolveFile(file, saveDir.trim())
       setResolved((prev) => addTorrent(prev, out))
     } catch (e) {
-      pushError(file.name, errMsg(e, 'Could not read that .torrent file.'))
+      // No magnet to hand back: this one only ever existed as a file, and a
+      // failed parse never produced an infohash to build one from.
+      pushFailure(file.name, errMsg(e, 'Could not read that .torrent file.'))
     }
   }
 
@@ -185,7 +243,7 @@ export default function TorrentDownloader() {
     const lines = parseMagnetLines(magnets)
     const files = pendingFiles
     if ((!lines.length && !files.length) || !saveDir.trim()) return
-    setErrors([])
+    setFailures([])
     setStaging(true)
     setMagnets('')
     setPendingFiles([])
@@ -216,7 +274,11 @@ export default function TorrentDownloader() {
       setSent((prev) => [...prev, { ...receipt, name: receipt.name ?? t.name }])
       closeCard(t.infohash)
     } catch (e) {
-      pushError(t.name ?? t.infohash.slice(0, 12), errMsg(e, 'Could not send that torrent.'))
+      pushFailure(
+        t.name ?? t.infohash.slice(0, 12),
+        errMsg(e, 'Could not send that torrent.'),
+        magnetFor(t.infohash, t.name),
+      )
     }
   }
 
@@ -234,7 +296,11 @@ export default function TorrentDownloader() {
     try {
       await api.torrentDiscard(t.infohash)
     } catch (e) {
-      pushError(t.name ?? t.infohash.slice(0, 12), errMsg(e, 'Could not discard that torrent.'))
+      pushFailure(
+        t.name ?? t.infohash.slice(0, 12),
+        errMsg(e, 'Could not discard that torrent.'),
+        magnetFor(t.infohash, t.name),
+      )
     }
   }
 
@@ -266,6 +332,7 @@ export default function TorrentDownloader() {
   // save folder when the task is created and cannot move it afterwards.
   const noDestination = !saveDir.trim()
   const readyCount = resolved.filter((t) => t.ready && selectedFor(t).size > 0).length
+  const copyableFailures = failures.filter((f) => f.magnet !== null)
 
   return (
     <>
@@ -326,16 +393,6 @@ export default function TorrentDownloader() {
               </span>
             )}
           </div>
-
-          {errors.length > 0 && (
-            <div style={{ marginTop: 10 }}>
-              {errors.map((e, i) => (
-                <div key={`${e.id}-${i}`} className="note error">
-                  {e.id}: {e.msg}
-                </div>
-              ))}
-            </div>
-          )}
         </div>
 
         <div className="panel">
@@ -472,6 +529,46 @@ export default function TorrentDownloader() {
               )
             })}
           </div>
+        </div>
+      )}
+
+      {failures.length > 0 && (
+        <div className="panel">
+          <div className="row" style={{ marginBottom: 8 }}>
+            <div className="step grow" style={{ margin: 0 }}>
+              ⚠ Failed ({failures.length})
+            </div>
+            {copyableFailures.length > 1 && (
+              <CopyButton
+                text={copyableFailures.map((f) => f.magnet).join('\n')}
+                label={`Copy all ${copyableFailures.length} magnets`}
+              />
+            )}
+            <Button size="sm" variant="ghost" onClick={() => setFailures([])}>
+              Clear
+            </Button>
+          </div>
+
+          {/* The link, not just the reason. A magnet that failed is almost
+              always worth another try — later, or on a different device — and
+              re-finding it means going back to wherever it was copied from. */}
+          {failures.map((f, i) => (
+            <div key={`${f.id}-${i}`} className="note error" style={{ margin: '0 0 6px' }}>
+              <div className="row" style={{ gap: 8 }}>
+                <span className="grow" style={{ minWidth: 0 }}>
+                  <strong>{f.id}</strong> — {f.msg}
+                </span>
+              </div>
+              {f.magnet && (
+                <div className="row" style={{ gap: 8, marginTop: 6 }}>
+                  <code className="tor-fail-link" title={f.magnet}>
+                    {f.magnet}
+                  </code>
+                  <CopyButton text={f.magnet} />
+                </div>
+              )}
+            </div>
+          ))}
         </div>
       )}
 
