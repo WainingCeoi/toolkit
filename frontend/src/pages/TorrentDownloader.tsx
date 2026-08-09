@@ -29,7 +29,6 @@ import type {
   TorrentDeviceTest,
   TorrentFileRow,
   TorrentResolve,
-  TorrentSent,
   TorrentStatus,
 } from '../types/api'
 
@@ -161,11 +160,12 @@ export default function TorrentDownloader() {
   // the page every time a magnet is staged would be pure churn.
   const sources = useRef<Map<string, string>>(new Map())
 
-  // --- handed over (step 4) ---
-  // A receipt of what this page sent, for this visit only. Deliberately not a
-  // queue: it carries no progress and is never polled, because the moment a
-  // task is sent BitComet is the only thing that knows what it is doing.
-  const [sent, setSent] = useState<TorrentSent[]>([])
+  // --- handed over ---
+  // How many torrents this visit sent, and nothing else. Deliberately not a
+  // list and not a queue: a receipt carries no progress and is never polled,
+  // because the moment a task is sent BitComet is the only thing that knows
+  // what it is doing.
+  const [sentCount, setSentCount] = useState(0)
 
   useEffect(() => {
     let cancelled = false
@@ -408,15 +408,11 @@ export default function TorrentDownloader() {
     const selected = selectedFor(t)
     if (selected.size === 0) return
     try {
-      const receipt = await api.torrentSend({
+      await api.torrentSend({
         infohash: t.infohash,
         selected: [...selected].sort((a, b) => a - b),
       })
-      // The name the review row was showing wins over BitComet's task_name:
-      // for a magnet, BitComet's is often the raw link until the metadata
-      // settles, and a torrent that changes its label between "Review" and
-      // "Sent" reads as a different download.
-      setSent((prev) => [...prev, { ...receipt, name: t.name ?? receipt.name }])
+      setSentCount((n) => n + 1)
       closeCard(t.infohash)
     } catch (e) {
       pushFailure(
@@ -952,39 +948,23 @@ export default function TorrentDownloader() {
         </div>
       )}
 
-      {sent.length > 0 && (
-        <div className="panel">
-          <div className="row" style={{ marginBottom: 4 }}>
-            <div className="step grow" style={{ margin: 0 }}>
-              4 · Sent to {active?.label ?? 'BitComet'} ({sent.length})
-            </div>
-            {status?.url && (
-              <Button
-                variant="primary"
-                size="sm"
-                onClick={() => window.open(status.url!, '_blank', 'noopener')}
-              >
-                Open BitComet
-              </Button>
-            )}
-          </div>
-
-          {/* No progress bars here on purpose. This is a receipt for what left
-              this page, not a queue -- polling BitComet to mirror its own
-              window would only ever be a slower, staler copy of it. */}
-          {sent.map((t) => {
-            const name = t.name ?? t.infohash.slice(0, 16)
-            return (
-              <div key={t.infohash} className="row" style={{ padding: '6px 0' }}>
-                <span className="grow tor-name" title={name} style={{ fontWeight: 400 }}>
-                  {truncateMiddle(name, 60)}
-                </span>
-                <span style={{ font: '12px var(--mono)', color: 'var(--faint)' }}>
-                  downloading in BitComet
-                </span>
-              </div>
-            )
-          })}
+      {/* One LINE, not a list. The per-task receipt rows grew to a screenful
+          on a 34-torrent batch while saying the same thing 34 times, and this
+          page deliberately has nothing further to show about a sent task --
+          progress belongs to BitComet's own window. The count is the receipt;
+          the button is the handover. */}
+      {sentCount > 0 && (
+        <div className="note ok" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span className="grow">
+            ✓ {sentCount} torrent{sentCount === 1 ? '' : 's'} handed to{' '}
+            {active?.label ?? 'BitComet'} — watch, pause and finish them in BitComet's own
+            window.
+          </span>
+          {status?.url && (
+            <Button size="sm" onClick={() => window.open(status.url!, '_blank', 'noopener')}>
+              Open BitComet
+            </Button>
+          )}
         </div>
       )}
     </>
