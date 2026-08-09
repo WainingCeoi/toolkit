@@ -54,6 +54,21 @@ export function formatBytes(n: number): string {
   return `${value.toFixed(value >= 100 ? 0 : 1)} ${units[unit]}`
 }
 
+// Release names are long, uniform and front-loaded with the same words, so a
+// column of them wraps to three lines each and still reads as identical. This
+// keeps the head — which is what the user recognises — and the TAIL, because
+// the extension and the episode/quality tag live there and are exactly what
+// distinguishes one row from the next. Plain end-truncation would throw both
+// away. Callers pair it with a `title` holding the untruncated string.
+export function truncateMiddle(text: string, max = 44): string {
+  // Ellipsis + at least one character each side; below that there is nothing
+  // meaningful left to show and the full string is shorter anyway.
+  if (max < 5 || text.length <= max) return text
+  const head = Math.ceil((max - 1) / 2)
+  const tail = max - 1 - head
+  return `${text.slice(0, head)}…${text.slice(text.length - tail)}`
+}
+
 // A magnet link for a torrent this app already knows the infohash of.
 //
 // Used when handing a FAILED torrent back to the user. The original pasted

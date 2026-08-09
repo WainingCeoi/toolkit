@@ -20,9 +20,15 @@ import {
   parseMagnetLines,
   ruleKey,
   selectionFor,
+  truncateMiddle,
   updateTorrent,
 } from '../torrent'
-import type { TorrentFileRow, TorrentResolve, TorrentSent, TorrentStatus } from '../types/api'
+import type {
+  TorrentFileRow,
+  TorrentResolve,
+  TorrentSent,
+  TorrentStatus,
+} from '../types/api'
 
 const NO_OVERRIDES: ReadonlyMap<number, boolean> = new Map()
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
@@ -30,7 +36,7 @@ const errMsg = (e: unknown, fallback: string) => (e as Error).message || fallbac
 
 // A torrent that failed, with the link needed to try it again somewhere else.
 // The magnet is the whole point of keeping the row: a dead tracker or a
-// sleeping BitComet is a reason to retry later, not to lose what was pasted.
+// sleeping NAS is a reason to retry later, not to lose what was pasted.
 interface Failure {
   id: string
   msg: string
@@ -64,7 +70,7 @@ function CopyButton({ text, label = 'Copy magnet' }: { text: string; label?: str
   )
 }
 
-function FileTable({
+function FileList({
   files,
   selected,
   onToggle,
@@ -74,28 +80,20 @@ function FileTable({
   onToggle: (index: number) => void
 }) {
   return (
-    <div className="table" style={{ maxHeight: 280, overflowY: 'auto' }}>
+    <div className="tor-files">
       {files.map((file) => (
-        <label
-          key={file.index}
-          className="row"
-          style={{ padding: '4px 0', cursor: 'pointer', flexWrap: 'nowrap' }}
-        >
+        <label key={file.index} className="tor-file" title={file.path}>
           <input
             type="checkbox"
             checked={selected.has(file.index)}
             onChange={() => onToggle(file.index)}
-            style={{ accentColor: 'var(--amber)' }}
           />
-          <span className="grow" style={{ overflowWrap: 'anywhere', fontSize: 13 }}>
-            {file.path}
-          </span>
-          <span style={{ font: '12px var(--mono)', color: 'var(--faint)' }}>{file.category}</span>
-          <span
-            style={{ font: '12px var(--mono)', color: 'var(--muted)', minWidth: 72, textAlign: 'right' }}
-          >
-            {formatBytes(file.size)}
-          </span>
+          {/* Middle-truncated, not end-truncated: the tail carries the
+              extension and the quality/episode tag, which is exactly what
+              tells two otherwise identical rows apart. Full path on hover. */}
+          <span className="tor-path">{truncateMiddle(file.path, 56)}</span>
+          <span className="tor-cat">{file.category}</span>
+          <span className="tor-size">{formatBytes(file.size)}</span>
         </label>
       ))}
     </div>
@@ -115,12 +113,18 @@ export default function TorrentDownloader() {
   const [minMb, setMinMb] = useState(100)
   // Mirrors DEFAULT_SAVE_DIR in backend/src/toolkit_api/torrents.py. Prefilled
   // so downloads land in ~/Downloads with no extra click; the backend expands
-  // the tilde. Browsing swaps in an absolute path.
+  // the tilde. Browsing swaps in an absolute path. For a BitComet on the LAN
+  // this is replaced by one of THAT machine's own folders — see the effect
+  // below, and ensure_save_folder for why a local path cannot be used there.
   const [saveDir, setSaveDir] = useState(DEFAULT_SAVE_DIR)
 
   // --- resolved torrents under review (step 3) ---
   const [resolved, setResolved] = useState<TorrentResolve[]>([])
   const [resolvingHashes, setResolvingHashes] = useState<Set<string>>(new Set())
+  // Collapsed by default. A review list is scanned far more often than it is
+  // corrected — the filter usually got it right — so the summary is what the
+  // row shows, and the file table opens only for the one being questioned.
+  const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [failures, setFailures] = useState<Failure[]>([])
   // Per-torrent file ticks, keyed by infohash so two torrents' index-1 files
   // never collide, then by the rule they were made against so a filter change
@@ -174,6 +178,9 @@ export default function TorrentDownloader() {
     })
   }
 
+  // =======================================================
+  // RESOLVE
+  // =======================================================
   // Selection for one torrent: shared rule + that torrent's own live ticks.
   function selectedFor(t: TorrentResolve): Set<number> {
     const entry = overrides.get(t.infohash)
@@ -253,11 +260,16 @@ export default function TorrentDownloader() {
     setStaging(false)
   }
 
-  // Drop a resolved torrent from the review rail and forget its ticks.
+  // Drop a resolved torrent from the review list and forget its ticks.
   function closeCard(infohash: string) {
     setResolved((prev) => prev.filter((x) => x.infohash !== infohash))
     setOverrides((prev) => {
       const next = new Map(prev)
+      next.delete(infohash)
+      return next
+    })
+    setExpanded((prev) => {
+      const next = new Set(prev)
       next.delete(infohash)
       return next
     })
@@ -271,7 +283,11 @@ export default function TorrentDownloader() {
         infohash: t.infohash,
         selected: [...selected].sort((a, b) => a - b),
       })
-      setSent((prev) => [...prev, { ...receipt, name: receipt.name ?? t.name }])
+      // The name the review row was showing wins over BitComet's task_name:
+      // for a magnet, BitComet's is often the raw link until the metadata
+      // settles, and a torrent that changes its label between "Review" and
+      // "Sent" reads as a different download.
+      setSent((prev) => [...prev, { ...receipt, name: t.name ?? receipt.name }])
       closeCard(t.infohash)
     } catch (e) {
       pushFailure(
@@ -322,6 +338,25 @@ export default function TorrentDownloader() {
       map.set(index, !current.has(index))
       const next = new Map(prev)
       next.set(t.infohash, { key, map })
+      return next
+    })
+  }
+
+  // Tick or untick every file at once, as an override over the shared rule.
+  function setAllFiles(t: TorrentResolve, on: boolean) {
+    const key = ruleKey(t.infohash, categories, minMb)
+    setOverrides((prev) => {
+      const next = new Map(prev)
+      next.set(t.infohash, { key, map: new Map(t.files.map((f) => [f.index, on])) })
+      return next
+    })
+  }
+
+  function toggleExpanded(infohash: string) {
+    setExpanded((prev) => {
+      const next = new Set(prev)
+      if (next.has(infohash)) next.delete(infohash)
+      else next.add(infohash)
       return next
     })
   }
@@ -445,54 +480,53 @@ export default function TorrentDownloader() {
 
       {resolved.length > 0 && (
         <div className="panel">
-          <div className="row" style={{ marginBottom: 4 }}>
+          <div className="row" style={{ marginBottom: 8 }}>
             <div className="step grow" style={{ margin: 0 }}>
               3 · Review ({resolved.length})
             </div>
-            <Button
-              variant="primary"
-              size="sm"
-              disabled={readyCount === 0}
-              onClick={sendAll}
-            >
+            <Button variant="primary" size="sm" disabled={readyCount === 0} onClick={sendAll}>
               Send all to BitComet
             </Button>
           </div>
 
-          {/* Horizontal rail: one card per torrent, scrolling sideways so many
-              torrents under review never push the queue off the screen. */}
-          <div style={{ display: 'flex', gap: 12, overflowX: 'auto', paddingBottom: 6 }}>
+          <div className="tor-list">
             {resolved.map((t) => {
               const selected = selectedFor(t)
               const bytes = t.files
                 .filter((f) => selected.has(f.index))
                 .reduce((sum, f) => sum + f.size, 0)
               const fetching = resolvingHashes.has(t.infohash)
+              const open = expanded.has(t.infohash)
+              const name = t.name ?? t.infohash.slice(0, 16)
               return (
-                <div
-                  key={t.infohash}
-                  style={{
-                    flex: '0 0 340px',
-                    maxWidth: 340,
-                    padding: 12,
-                    border: '1px solid var(--edge)',
-                    borderRadius: 'var(--radius-s)',
-                    background: 'var(--panel-2)',
-                  }}
-                >
-                  <div className="row" style={{ flexWrap: 'wrap' }}>
-                    <strong className="grow" style={{ overflowWrap: 'anywhere', fontSize: 13.5 }}>
-                      {t.name ?? t.infohash.slice(0, 16)}
-                    </strong>
-                    {fetching ? (
-                      <span className="label" style={{ margin: 0 }}>
-                        fetching metadata…
+                <div key={t.infohash} className={`tor-item${open ? ' open' : ''}`}>
+                  <div className="tor-head">
+                    <button
+                      type="button"
+                      className="tor-toggle"
+                      disabled={!t.ready}
+                      aria-expanded={open}
+                      aria-controls={`tor-body-${t.infohash}`}
+                      onClick={() => toggleExpanded(t.infohash)}
+                    >
+                      <span className="tor-chev" aria-hidden="true">
+                        {t.ready ? '▶' : '·'}
                       </span>
+                      <span className="tor-name" title={name}>
+                        {truncateMiddle(name, 60)}
+                      </span>
+                    </button>
+
+                    {fetching ? (
+                      <span className="tor-meta">fetching metadata…</span>
                     ) : (
-                      <>
-                        <span style={{ font: '12px var(--mono)', color: 'var(--muted)' }}>
-                          {selected.size} of {t.files.length} · {formatBytes(bytes)}
-                        </span>
+                      <span className={`tor-meta${selected.size === 0 ? ' none' : ''}`}>
+                        {selected.size} of {t.files.length} · {formatBytes(bytes)}
+                      </span>
+                    )}
+
+                    <span className="tor-actions">
+                      {!fetching && (
                         <Button
                           variant="primary"
                           size="sm"
@@ -501,28 +535,41 @@ export default function TorrentDownloader() {
                         >
                           Send
                         </Button>
-                      </>
-                    )}
-                    {/* Always available, fetching or not: a magnet is already
-                        running in BitComet while it looks for its metadata, so
-                        this is the only way to call one off. */}
-                    <Button size="sm" variant="ghost" onClick={() => void discardOne(t)}>
-                      Discard
-                    </Button>
+                      )}
+                      {/* Always available, fetching or not: a magnet is already
+                          running in BitComet while it looks for its metadata,
+                          so this is the only way to call one off. */}
+                      <Button size="sm" variant="ghost" onClick={() => void discardOne(t)}>
+                        Discard
+                      </Button>
+                    </span>
                   </div>
-                  {t.ready && (
-                    <div style={{ marginTop: 8 }}>
-                      <FileTable
+
+                  {open && t.ready && (
+                    <div className="tor-body" id={`tor-body-${t.infohash}`}>
+                      <div className="tor-bulk">
+                        <Button size="sm" variant="ghost" onClick={() => setAllFiles(t, true)}>
+                          All
+                        </Button>
+                        <Button size="sm" variant="ghost" onClick={() => setAllFiles(t, false)}>
+                          None
+                        </Button>
+                        <span style={{ font: '11px var(--mono)', color: 'var(--faint)' }}>
+                          ticks override the filter above
+                        </span>
+                      </div>
+                      <FileList
                         files={t.files}
                         selected={selected}
                         onToggle={(index) => toggleFile(t, index)}
                       />
-                      {selected.size === 0 && (
-                        <div className="note warn">
-                          Select at least one file — a torrent with everything deselected finishes
-                          instantly having downloaded nothing.
-                        </div>
-                      )}
+                    </div>
+                  )}
+
+                  {selected.size === 0 && t.ready && (
+                    <div className="note warn" style={{ margin: '0 10px 10px' }}>
+                      Nothing selected — a torrent with everything deselected finishes instantly
+                      having downloaded nothing.
                     </div>
                   )}
                 </div>
@@ -556,7 +603,7 @@ export default function TorrentDownloader() {
             <div key={`${f.id}-${i}`} className="note error" style={{ margin: '0 0 6px' }}>
               <div className="row" style={{ gap: 8 }}>
                 <span className="grow" style={{ minWidth: 0 }}>
-                  <strong>{f.id}</strong> — {f.msg}
+                  <strong>{truncateMiddle(f.id, 48)}</strong> — {f.msg}
                 </span>
               </div>
               {f.magnet && (
@@ -592,16 +639,19 @@ export default function TorrentDownloader() {
           {/* No progress bars here on purpose. This is a receipt for what left
               this page, not a queue -- polling BitComet to mirror its own
               window would only ever be a slower, staler copy of it. */}
-          {sent.map((t) => (
-            <div key={t.infohash} className="row" style={{ padding: '6px 0' }}>
-              <span className="grow" style={{ overflowWrap: 'anywhere', fontSize: 13.5 }}>
-                {t.name ?? t.infohash.slice(0, 16)}
-              </span>
-              <span style={{ font: '12px var(--mono)', color: 'var(--faint)' }}>
-                downloading in BitComet
-              </span>
-            </div>
-          ))}
+          {sent.map((t) => {
+            const name = t.name ?? t.infohash.slice(0, 16)
+            return (
+              <div key={t.infohash} className="row" style={{ padding: '6px 0' }}>
+                <span className="grow tor-name" title={name} style={{ fontWeight: 400 }}>
+                  {truncateMiddle(name, 60)}
+                </span>
+                <span style={{ font: '12px var(--mono)', color: 'var(--faint)' }}>
+                  downloading in BitComet
+                </span>
+              </div>
+            )
+          })}
         </div>
       )}
     </>

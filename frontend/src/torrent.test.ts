@@ -10,6 +10,7 @@ import {
   parseMagnetLines,
   ruleKey,
   selectionFor,
+  truncateMiddle,
   updateTorrent,
 } from './torrent'
 import type { TorrentFileRow, TorrentResolve } from './types/api'
@@ -165,6 +166,44 @@ describe('selectionFor + ruleKey (per-torrent)', () => {
   it('changes the key when the shared filter changes', () => {
     expect(ruleKey('a', cats, 100)).not.toBe(ruleKey('a', cats, 200))
     expect(ruleKey('a', cats, 100)).not.toBe(ruleKey('a', new Set(['audio']), 100))
+  })
+})
+
+describe('truncateMiddle', () => {
+  it('leaves anything that already fits alone', () => {
+    expect(truncateMiddle('Movie.mkv', 44)).toBe('Movie.mkv')
+    expect(truncateMiddle('exactly-ten', 11)).toBe('exactly-ten')
+  })
+
+  it('keeps the head AND the tail, so the extension survives', () => {
+    const long = 'Some.Very.Long.Release.Name.2024.2160p.WEB-DL.DDP5.1.HDR.x265.mkv'
+    const cut = truncateMiddle(long, 30)
+    expect(cut).toHaveLength(30)
+    expect(cut).toContain('…')
+    // The two things that identify a file: what it starts as, and what it is.
+    expect(cut.startsWith('Some.Very.Long')).toBe(true)
+    expect(cut.endsWith('.mkv')).toBe(true)
+  })
+
+  it('never returns more than the budget', () => {
+    for (const max of [5, 6, 7, 12, 41, 44]) {
+      expect(truncateMiddle('x'.repeat(200), max).length).toBe(max)
+    }
+  })
+
+  it('gives up rather than emitting an ellipsis with nothing around it', () => {
+    // Below a head + ellipsis + tail there is nothing meaningful to show, and
+    // the untruncated string is shorter than the mangled one anyway.
+    expect(truncateMiddle('abcdefgh', 4)).toBe('abcdefgh')
+  })
+
+  it('distinguishes two names that differ only in their tail', () => {
+    const a = 'The.Show.S01E01.1080p.WEB.h264-ALPHA.mkv'
+    const b = 'The.Show.S01E01.1080p.WEB.h264-BRAVO.mp4'
+    // End-truncation renders these identically — 24 characters of shared
+    // prefix — which is exactly what keeping the tail is for.
+    expect(a.slice(0, 24)).toBe(b.slice(0, 24))
+    expect(truncateMiddle(a, 24)).not.toBe(truncateMiddle(b, 24))
   })
 })
 

@@ -628,6 +628,121 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; gap: 6
 .wm-dims { font: 12px var(--mono); color: var(--faint); }
 
 
+/* --- Torrent Downloader --------------------------------------------------
+   Torrents under review are a VERTICAL list of collapsed rows, not a
+   horizontal rail of open cards. Three reasons, in order of how often they
+   bite: a sideways rail hides everything past the third torrent behind a
+   scrollbar nobody looks for; an always-open file table makes the height of
+   the page proportional to how many files the torrents happen to contain, so
+   ten magnets bury the rest of the tool; and release names are long enough
+   that a 340px card wraps every one of them to three lines. Collapsed rows
+   keep the summary — the only thing needed to decide "send it" — one glance
+   apart, and open exactly the one being inspected. */
+/* minmax(0, 1fr), not the implicit `1fr`: a grid track sizes to its content's
+   min-content width by default, and this content is full of deliberately
+   nowrap text (the file paths, the "3 of 12 · 4.2 GB" summary). Left implicit
+   the track grows to whatever the longest release name needs and the tool
+   scrolls sideways on a phone — where this app is genuinely read, since
+   `make host` serves it to the whole Wi-Fi. */
+.tor-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; }
+
+.tor-item {
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-s);
+  background: var(--panel-2);
+  min-width: 0; /* same reason, for the item's own flex/grid descendants */
+}
+.tor-item.open { border-color: var(--amber-dim); }
+
+.tor-head { display: flex; align-items: center; gap: 8px; padding: 7px 10px; }
+
+/* The disclosure control is the name itself: the biggest, most obvious target
+   in the row, so opening a torrent never means hunting for a chevron. */
+.tor-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  background: none;
+  border: 0;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.tor-toggle:disabled { cursor: default; }
+.tor-chev {
+  color: var(--faint);
+  font-size: 10px;
+  width: 10px;
+  flex: none;
+  transition: transform 0.12s ease;
+}
+.tor-item.open .tor-chev { transform: rotate(90deg); }
+.tor-name {
+  font-size: 13.5px;
+  font-weight: 600;
+  /* One line, always: the row is a summary, and a wrapping title turns a list
+     of ten into a wall. The name is middle-truncated in JS as well, which is
+     what keeps the extension visible; this is the belt to that's braces at
+     narrow widths. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  /* min-width:0 is what makes the ellipsis possible at all. Without it a
+     nowrap span refuses to shrink below its full text width, so the flex row
+     grows to fit and the whole page scrolls sideways on a phone — which is
+     exactly where this app is read over `make host`. */
+  flex: 1;
+  min-width: 0;
+}
+.tor-meta {
+  font: 11px var(--mono);
+  color: var(--muted);
+  white-space: nowrap;
+  flex: none;
+}
+.tor-meta.none { color: var(--red-text); }
+.tor-actions { display: flex; gap: 6px; flex: none; }
+
+.tor-body { border-top: 1px solid var(--edge); padding: 8px 10px 10px; }
+.tor-files { max-height: 300px; overflow-y: auto; }
+.tor-file {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 2px;
+  cursor: pointer;
+  border-radius: 4px;
+}
+.tor-file:hover { background: var(--panel); }
+.tor-file input { accent-color: var(--amber); flex: none; }
+.tor-path {
+  font: 12px var(--mono);
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tor-cat {
+  font: 10px var(--mono);
+  color: var(--faint);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  flex: none;
+}
+.tor-size {
+  font: 12px var(--mono);
+  color: var(--muted);
+  min-width: 68px;
+  text-align: right;
+  flex: none;
+}
+.tor-bulk { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; }
+
 /* The failed-magnet row. The link is the point of the row — it is what the
    user came back for — so it gets a copy button of its own rather than being
    folded into a sentence they would have to select by hand. */
@@ -641,4 +756,9 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; gap: 6
   min-width: 0;
 }
 
+@media (max-width: 620px) {
+  /* Actions drop below the name rather than squeezing it to nothing. */
+  .tor-head { flex-wrap: wrap; }
+  .tor-toggle { flex: 1 1 100%; }
+  .tor-cat { display: none; }
 }
