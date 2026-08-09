@@ -1,36 +1,93 @@
 // App frame: left rail (tool nav grouped by category, "/" quick filter),
-// main outlet, and the job dock pinned along the bottom of every route.
+// keep-alive hosts for every open tool, and the tab dock along the bottom.
+//
+// Open tools stay MOUNTED — an inactive one is display:none, not unmounted —
+// so a half-configured form survives jumping to another tool and back. The
+// dock shows one browser-style tab per open tool with its latest job state
+// inline; a tab with a running job refuses to close, so running work can
+// never silently disappear.
 
-import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { NavLink, Link, Outlet } from 'react-router'
+import React, { Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { NavLink, Link, useLocation, useNavigate } from 'react-router'
 import { api } from './api'
 import { useJobs } from './jobs'
 import { LedBar } from './components/JobPanel'
 import Button from './components/Button'
 import ThemeToggle from './components/ThemeToggle'
+import Home from './Home'
+import { PAGES, isToolSlug, type ToolSlug } from './pages'
 import { TOOL_EMOJI } from './tools'
+import { nextTabAfterClose, parseToolSlug, restoreTabs, tabOrder } from './tabs'
 import type { Category } from './types/api'
 
-function Dock() {
+// sessionStorage (not local): each browser tab is its own workbench, and a
+// fresh session starts clean. Reload restores the tabs, not their form state.
+const TABS_KEY = 'toolkit.openTabs'
+
+const toolPath = (slug: string) => `/tools/${slug}`
+
+interface DockProps {
+  openTabs: ToolSlug[]
+  activeSlug: ToolSlug | null
+  titles: Record<string, string>
+  onCloseTab: (slug: ToolSlug) => void
+}
+
+function Dock({ openTabs, activeSlug, titles, onCloseTab }: DockProps) {
   const { jobs, dismiss } = useJobs()
-  const entries = Object.entries(jobs)
+  const navigate = useNavigate()
+
+  // The dock scrolls horizontally when tabs overflow (narrow screens); keep
+  // the tab just activated visible, the way a browser keeps its active tab.
+  const dockRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    dockRef.current
+      ?.querySelector('.dock-tab.active')
+      ?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+  }, [activeSlug])
+
+  // One tab per open tool. Tools that still have tracked jobs are appended
+  // even if their tab is gone (defensive: jobs must never become invisible).
+  const jobSlugs = Object.values(jobs)
+    .map((j) => parseToolSlug(j.toolPath))
+    .filter((s): s is ToolSlug => s !== null && isToolSlug(s))
+  const tabs = tabOrder(openTabs, jobSlugs)
+
+  const close = (slug: ToolSlug) => {
+    // Closing a tab is also how its finished jobs get dismissed; running ones
+    // can't reach here (the × is disabled) and would keep the tab derived.
+    for (const [id, j] of Object.entries(jobs)) {
+      if (j.toolPath === toolPath(slug) && j.snapshot.state !== 'running') dismiss(id)
+    }
+    if (slug === activeSlug) {
+      const next = nextTabAfterClose(tabs, slug)
+      navigate(next ? toolPath(next) : '/')
+    }
+    onCloseTab(slug)
+  }
+
   return (
-    <div className="dock">
-      {entries.length === 0 && <span className="dock-empty">NO ACTIVE JOBS</span>}
-      {entries.map(([id, { snapshot, toolPath }]) => {
-        const items = snapshot.items ?? []
-        const total = items.length
-        const done = items.filter((i) => i.state === 'done').length
-        const pct =
-          snapshot.state === 'done'
-            ? 100
-            : total > 0
-              ? Math.round(items.reduce((s, i) => s + i.pct, 0) / total)
-              : null
-        return (
-          <Link key={id} className="dock-job" to={toolPath}>
-            <span>{TOOL_EMOJI[toolPath] || '⚙️'}</span>
-            {snapshot.state === 'running' ? (
+    <div className="dock" ref={dockRef}>
+      {tabs.length === 0 && <span className="dock-empty">NO OPEN TOOLS</span>}
+      {tabs.map((slug) => {
+        const path = toolPath(slug)
+        const title = titles[slug]
+        const emoji = title?.split(' ')[0] || TOOL_EMOJI[path] || '⚙️'
+        const label = title ? title.split(' ').slice(1).join(' ') : slug.replace(/-/g, ' ')
+
+        // Badge: the tool's running job if any, else its most recent one.
+        const toolJobs = Object.values(jobs).filter((j) => j.toolPath === path)
+        const runningJob = toolJobs.findLast((j) => j.snapshot.state === 'running')
+        const shown = runningJob ?? toolJobs[toolJobs.length - 1]
+        let badge: React.ReactNode = null
+        if (shown) {
+          const { snapshot } = shown
+          const items = snapshot.items ?? []
+          const total = items.length
+          const done = items.filter((i) => i.state === 'done').length
+          const pct = total > 0 ? Math.round(items.reduce((s, i) => s + i.pct, 0) / total) : null
+          badge =
+            snapshot.state === 'running' ? (
               pct === null ? (
                 <span>{snapshot.message || 'working…'}</span>
               ) : (
@@ -41,23 +98,34 @@ function Dock() {
               )
             ) : (
               <span className={`state-${snapshot.state}`}>
-                {snapshot.state === 'done' ? '✓ done' : `✕ ${snapshot.state}`}
+                {snapshot.state === 'done' ? '✓' : '✕'}
               </span>
-            )}
-            {snapshot.state !== 'running' && (
-              <Button
-                variant="ghost"
-                size="sm"
-                className="dock-dismiss"
-                onClick={(e) => {
-                  e.preventDefault()
-                  dismiss(id)
-                }}
-                aria-label="Dismiss job"
-              >
-                ×
-              </Button>
-            )}
+            )
+        }
+
+        return (
+          <Link
+            key={slug}
+            className={`dock-tab ${slug === activeSlug ? 'active' : ''}`}
+            to={path}
+          >
+            <span>{emoji}</span>
+            <span className="dock-tab-label">{label}</span>
+            {badge}
+            <Button
+              variant="ghost"
+              size="sm"
+              className="dock-close"
+              disabled={runningJob !== undefined}
+              title={runningJob ? 'a job is still running' : 'close tool'}
+              onClick={(e) => {
+                e.preventDefault()
+                close(slug)
+              }}
+              aria-label={`Close ${label}`}
+            >
+              ×
+            </Button>
           </Link>
         )
       })}
@@ -66,11 +134,52 @@ function Dock() {
 }
 
 export default function Layout() {
+  const location = useLocation()
   const [categories, setCategories] = useState<Category[]>([])
   const [toolsError, setToolsError] = useState<string | null>(null)
   const [filter, setFilter] = useState('')
   const [open, setOpen] = useState(false)
   const searchRef = useRef<HTMLInputElement>(null)
+
+  const rawSlug = parseToolSlug(location.pathname)
+  const activeSlug = rawSlug !== null && isToolSlug(rawSlug) ? rawSlug : null
+
+  const [openTabs, setOpenTabs] = useState<ToolSlug[]>(() =>
+    restoreTabs(sessionStorage.getItem(TABS_KEY), isToolSlug),
+  )
+
+  // Visiting a tool opens its tab. Adjusted during render (the documented
+  // you-might-not-need-an-effect pattern), and keyed to a path TRANSITION,
+  // not to the current location alone: closing the active tab removes the
+  // slug and navigates away, and a render can land in between with the old
+  // location still showing — matching on the transition keeps that
+  // intermediate render from re-opening the tab that was just closed.
+  const [prevPath, setPrevPath] = useState<string | null>(null)
+  if (prevPath !== location.pathname) {
+    setPrevPath(location.pathname)
+    if (activeSlug && !openTabs.includes(activeSlug)) {
+      setOpenTabs([...openTabs, activeSlug])
+    }
+  }
+
+  useEffect(() => {
+    sessionStorage.setItem(TABS_KEY, JSON.stringify(openTabs))
+  }, [openTabs])
+
+  // Per-route scroll memory: pages share one scroll container, so switching
+  // tabs would otherwise carry one tool's scroll position into the next.
+  const mainRef = useRef<HTMLElement>(null)
+  const scrollsRef = useRef(new Map<string, number>())
+  const prevPathRef = useRef(location.pathname)
+  useLayoutEffect(() => {
+    const el = mainRef.current
+    if (!el) return
+    if (prevPathRef.current !== location.pathname) {
+      scrollsRef.current.set(prevPathRef.current, el.scrollTop)
+      prevPathRef.current = location.pathname
+    }
+    el.scrollTop = scrollsRef.current.get(location.pathname) ?? 0
+  }, [location.pathname])
 
   // Load the tool catalog; on failure keep an error note and retry when the
   // window regains focus, instead of dead-ending on a permanently empty rail.
@@ -116,6 +225,12 @@ export default function Layout() {
       .map((c) => ({ ...c, tools: c.tools.filter((t) => t.title.toLowerCase().includes(q)) }))
       .filter((c) => c.tools.length > 0)
   }, [categories, filter])
+
+  const titles = useMemo(() => {
+    const map: Record<string, string> = {}
+    for (const cat of categories) for (const tool of cat.tools) map[tool.slug] = tool.title
+    return map
+  }, [categories])
 
   const rail = (
     <nav className={`rail ${open ? 'open' : ''}`}>
@@ -190,10 +305,31 @@ export default function Layout() {
           aria-label="Close navigation"
         />
       )}
-      <main className="main">
-        <Outlet />
+      <main className="main" ref={mainRef}>
+        {/* Home stays mount-on-visit so its health lamps re-check each time. */}
+        {location.pathname === '/' && <Home />}
+        {location.pathname !== '/' && activeSlug === null && (
+          <div className="note info">
+            Nothing at <code>{location.pathname}</code> — <Link to="/">back to the bench</Link>.
+          </div>
+        )}
+        {openTabs.map((slug) => {
+          const Page = PAGES[slug]
+          return (
+            <div key={slug} className="tool-host" hidden={slug !== activeSlug}>
+              <Suspense fallback={<div className="note info">Loading…</div>}>
+                <Page />
+              </Suspense>
+            </div>
+          )
+        })}
       </main>
-      <Dock />
+      <Dock
+        openTabs={openTabs}
+        activeSlug={activeSlug}
+        titles={titles}
+        onCloseTab={(slug) => setOpenTabs((prev) => prev.filter((s) => s !== slug))}
+      />
     </div>
   )
 }

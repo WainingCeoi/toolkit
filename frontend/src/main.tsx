@@ -1,45 +1,17 @@
-import React, { Suspense, lazy } from 'react'
+import React from 'react'
 import { createRoot } from 'react-dom/client'
 import { createHashRouter, RouterProvider } from 'react-router'
 import './styles.css'
 import Layout from './Layout'
-import Home from './Home'
 import { JobsProvider } from './JobsProvider'
 import ErrorBoundary from './components/ErrorBoundary'
 
 // Hash routing keeps deep links working under the single-origin static mount
-// without any server-side fallback config.
-const pages = {
-  'magnet-scraper': lazy(() => import('./pages/MagnetScraper')),
-  remux: lazy(() => import('./pages/Remux')),
-  'torrent-downloader': lazy(() => import('./pages/TorrentDownloader')),
-  'web-images-to-pdf': lazy(() => import('./pages/WebImagesToPdf')),
-  'file-gatherer': lazy(() => import('./pages/FileGatherer')),
-  'image-to-pdf': lazy(() => import('./pages/ImageToPdf')),
-  'watermark-remover': lazy(() => import('./pages/WatermarkRemover')),
-  'doc-to-pdf': lazy(() => import('./pages/DocToPdf')),
-  'doc-to-markdown': lazy(() => import('./pages/DocToMarkdown')),
-  'cache-purge': lazy(() => import('./pages/CachePurge')),
-  subscription: lazy(() => import('./pages/Subscription')),
-  'dep-upgrade': lazy(() => import('./pages/DepUpgrade')),
-}
-
-const router = createHashRouter([
-  {
-    element: <Layout />,
-    children: [
-      { path: '/', element: <Home /> },
-      ...Object.entries(pages).map(([slug, Page]) => ({
-        path: `/tools/${slug}`,
-        element: (
-          <Suspense fallback={<div className="note info">Loading…</div>}>
-            <Page />
-          </Suspense>
-        ),
-      })),
-    ],
-  },
-])
+// without any server-side fallback config. One catch-all route: Layout maps
+// the location to a page itself, because a route table would unmount a page
+// on every navigation — and open tools must stay mounted (hidden) so their
+// half-configured state survives switching. The registry lives in pages.ts.
+const router = createHashRouter([{ path: '*', element: <Layout /> }])
 
 // index.html always contains #root; a missing one is a build-time mistake, and
 // the JS version would have thrown the same way one line later.

@@ -467,7 +467,9 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; gap: 6
 
 .job-message { font: 12px var(--mono); color: var(--amber-text); margin: 8px 0; min-height: 18px; }
 
-/* ---------- job dock (signature) ---------- */
+/* ---------- tab dock (signature) ---------- */
+/* One tab per open tool, browser-style; the active one carries an amber lamp
+   along its top edge, and a tool's latest job state rides inside its tab. */
 .dock {
   grid-column: 2;
   border-top: 1px solid var(--edge);
@@ -475,25 +477,46 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; gap: 6
   min-height: var(--dock-h);
   display: flex;
   align-items: center;
-  gap: 18px;
-  padding: 0 16px;
+  gap: 6px;
+  padding: 0 10px;
   overflow-x: auto;
 }
 @media (max-width: 760px) { .dock { grid-column: 1; } }
 .dock-empty { font: 11px var(--mono); color: var(--faint); letter-spacing: 0.06em; }
-.dock-job {
+.dock-tab {
+  flex: none;
   display: flex;
   align-items: center;
   gap: 8px;
+  height: 30px;
+  padding: 0 4px 0 10px;
   font: 12px var(--mono);
   color: var(--muted);
   text-decoration: none;
   white-space: nowrap;
+  background: var(--bench);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-s);
 }
-.dock-job .led-track { width: 72px; }
-.dock-dismiss { min-height: 24px; padding: 0 7px; }
-.dock-job .state-done { color: var(--teal-text); }
-.dock-job .state-failed, .dock-job .state-cancelled { color: var(--red-text); }
+.dock-tab:hover { background: var(--panel-2); color: var(--text); }
+.dock-tab.active {
+  background: var(--panel-2);
+  color: var(--text);
+  box-shadow: inset 0 2px 0 0 var(--amber);
+}
+.dock-tab-label {
+  max-width: 18ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dock-tab .led-track { width: 60px; }
+.dock-close { min-height: 24px; padding: 0 7px; }
+.dock-tab .state-done { color: var(--teal-text); }
+.dock-tab .state-failed, .dock-tab .state-cancelled { color: var(--red-text); }
+
+/* Keep-alive host: an inactive tool is hidden, never unmounted. The guard
+   beats any display rule a page might set on its wrapper. */
+.tool-host[hidden] { display: none !important; }
 
 /* ---------- home ---------- */
 .bench-head { margin: 6px 0 26px; }
