@@ -426,11 +426,51 @@ export interface TorrentResolve {
   state: string
 }
 
+// One BitComet this app can hand a task to: the one on this Mac, or one
+// reachable over the LAN. Mirrors DeviceOut in routers/torrent.py.
+export interface TorrentDevice {
+  id: string
+  label: string
+  /** null for the local BitComet, whose address comes from its own config. */
+  url: string | null
+  username: string
+  /** The password itself is never sent to the browser — only whether one is set. */
+  has_password: boolean
+  is_local: boolean
+}
+
+export interface TorrentDeviceList {
+  active: string
+  devices: TorrentDevice[]
+}
+
+export interface TorrentDeviceInput {
+  label?: string
+  url?: string
+  username?: string
+  /** Blank on an edit means "keep the stored password". */
+  password?: string
+}
+
+export interface TorrentDeviceTest {
+  ok: boolean
+  server: string | null
+  detail: string | null
+  save_folders: string[]
+}
+
 export interface TorrentStatus {
   running: boolean
   server: string | null
   detail: string | null
   url: string | null // BitComet's own Web UI, for handing the user over to it
+  /** Which BitComet the fields above describe. */
+  device?: TorrentDevice | null
+  /** False for a BitComet on the LAN: its folders are on ITS disk, so the
+   *  native folder picker (which browses this Mac) is the wrong control. */
+  is_local?: boolean
+  /** The folders that BitComet will accept as a download destination. */
+  save_folders?: string[]
 }
 
 export interface TorrentSendPayload {

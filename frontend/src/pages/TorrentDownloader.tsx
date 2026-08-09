@@ -1,7 +1,7 @@
-// Torrent Downloader — add magnets or .torrent files, keep only the files worth
-// keeping, and hand the task to BitComet. There is no queue on this page: once
-// a torrent is sent it is BitComet's, and BitComet's own window is where it is
-// paused, resumed, watched and removed.
+// Torrent Downloader — pick which BitComet gets the job, add magnets or
+// .torrent files, keep only the files worth keeping, and hand the task over.
+// There is no queue on this page: once a torrent is sent it is BitComet's, and
+// BitComet's own window is where it is paused, resumed, watched and removed.
 // Mirrors backend/src/toolkit_api/routers/torrent.py.
 
 import { useEffect, useRef, useState } from 'react'
@@ -24,6 +24,9 @@ import {
   updateTorrent,
 } from '../torrent'
 import type {
+  TorrentDevice,
+  TorrentDeviceList,
+  TorrentDeviceTest,
   TorrentFileRow,
   TorrentResolve,
   TorrentSent,
@@ -42,6 +45,16 @@ interface Failure {
   msg: string
   magnet: string | null
 }
+
+interface DeviceForm {
+  id: string | null // null = adding a new one
+  label: string
+  url: string
+  username: string
+  password: string
+}
+
+const BLANK_DEVICE: DeviceForm = { id: null, label: '', url: '', username: '', password: '' }
 
 // A magnet is too long to show whole in an error line; its btih is enough.
 function magnetLabel(uri: string): string {
@@ -103,6 +116,15 @@ function FileList({
 export default function TorrentDownloader() {
   const [status, setStatus] = useState<TorrentStatus | null>(null)
 
+  // --- which BitComet (step 0) ---
+  const [devices, setDevices] = useState<TorrentDeviceList | null>(null)
+  const [picking, setPicking] = useState(false)
+  const [form, setForm] = useState<DeviceForm | null>(null)
+  const [testing, setTesting] = useState(false)
+  const [tested, setTested] = useState<TorrentDeviceTest | null>(null)
+  const [deviceBusy, setDeviceBusy] = useState(false)
+  const [deviceError, setDeviceError] = useState<string | null>(null)
+
   // --- inputs (step 1) ---
   const [magnets, setMagnets] = useState('')
   const [pendingFiles, setPendingFiles] = useState<File[]>([])
@@ -147,16 +169,54 @@ export default function TorrentDownloader() {
 
   useEffect(() => {
     let cancelled = false
-    api
-      .torrentStatus()
-      .then((s) => !cancelled && setStatus(s))
-      .catch(
-        () => !cancelled && setStatus({ running: false, server: null, detail: null, url: null }),
-      )
+    void (async () => {
+      const [next, book] = await Promise.all([
+        api.torrentStatus().catch(
+          (): TorrentStatus => ({ running: false, server: null, detail: null, url: null }),
+        ),
+        api.torrentDevices().catch(() => null),
+      ])
+      if (cancelled) return
+      setStatus(next)
+      setDevices(book)
+    })()
     return () => {
       cancelled = true
     }
   }, [])
+
+  // A destination is a path on a PARTICULAR machine: `~/Downloads` means
+  // nothing on a NAS, and `/volume1/downloads` means nothing here. So each
+  // device keeps its own, and switching swaps the box rather than carrying a
+  // path across to a filesystem it does not exist on.
+  const dirsByDevice = useRef<Map<string, string>>(new Map())
+  const deviceId = status?.device?.id ?? null
+
+  useEffect(() => {
+    if (status === null || deviceId === null) return
+    const folders = status.save_folders ?? []
+    // What that device would pick for itself: its own first registered folder
+    // when it is remote (nothing here can browse it), the usual default here.
+    const fallback = status.is_local === false ? (folders[0] ?? '') : DEFAULT_SAVE_DIR
+    setSaveDir(dirsByDevice.current.get(deviceId) ?? fallback)
+    // Keyed on the device alone. Depending on `status` as well would re-run on
+    // every re-probe and stamp over a folder the user was halfway through
+    // typing; the values read from it are only ever needed at a switch.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deviceId])
+
+  function changeSaveDir(next: string) {
+    setSaveDir(next)
+    if (deviceId !== null) dirsByDevice.current.set(deviceId, next)
+  }
+
+  async function refreshStatus() {
+    try {
+      setStatus(await api.torrentStatus())
+    } catch {
+      setStatus({ running: false, server: null, detail: null, url: null })
+    }
+  }
 
   function pushFailure(id: string, msg: string, magnet: string | null = null) {
     setFailures((prev) => [...prev, { id, msg, magnet }])
@@ -175,6 +235,75 @@ export default function TorrentDownloader() {
       const next = new Set(prev)
       next.delete(infohash)
       return next
+    })
+  }
+
+  // =======================================================
+  // DEVICES
+  // =======================================================
+  async function applyDevices(run: () => Promise<TorrentDeviceList>) {
+    setDeviceBusy(true)
+    setDeviceError(null)
+    try {
+      setDevices(await run())
+      setForm(null)
+      setTested(null)
+      // Every device change re-points the backend at a different BitComet, so
+      // the status on screen is about the wrong machine until this lands.
+      await refreshStatus()
+    } catch (e) {
+      setDeviceError(errMsg(e, 'Could not change the BitComet device.'))
+    } finally {
+      setDeviceBusy(false)
+    }
+  }
+
+  async function testForm() {
+    if (form === null) return
+    setTesting(true)
+    setTested(null)
+    try {
+      setTested(
+        await api.torrentDeviceTest({
+          url: form.url,
+          username: form.username,
+          password: form.password,
+          id: form.id ?? undefined,
+        }),
+      )
+    } catch (e) {
+      setTested({ ok: false, server: null, detail: errMsg(e, 'Test failed.'), save_folders: [] })
+    } finally {
+      setTesting(false)
+    }
+  }
+
+  function saveForm() {
+    if (form === null) return
+    const payload = {
+      label: form.label,
+      url: form.url,
+      username: form.username,
+      password: form.password,
+    }
+    void applyDevices(() =>
+      form.id === null
+        ? api.torrentDeviceAdd(payload)
+        : api.torrentDeviceUpdate(form.id, payload),
+    )
+  }
+
+  function editDevice(device: TorrentDevice) {
+    setTested(null)
+    setDeviceError(null)
+    setForm({
+      id: device.id,
+      label: device.label,
+      url: device.url ?? '',
+      username: device.username,
+      // Left blank on purpose: the browser is never sent the stored password,
+      // and blank means "keep it" all the way through to the device book.
+      password: '',
     })
   }
 
@@ -367,6 +496,9 @@ export default function TorrentDownloader() {
   // save folder when the task is created and cannot move it afterwards.
   const noDestination = !saveDir.trim()
   const readyCount = resolved.filter((t) => t.ready && selectedFor(t).size > 0).length
+  const active = status?.device ?? devices?.devices.find((d) => d.id === devices.active) ?? null
+  const remote = status?.is_local === false
+  const folders = status?.save_folders ?? []
   const copyableFailures = failures.filter((f) => f.magnet !== null)
 
   return (
@@ -379,6 +511,179 @@ export default function TorrentDownloader() {
         worth keeping to BitComet. From there the download is BitComet's — pause it, watch it and
         remove it in its own window.
       </p>
+
+      {/* ---------- which BitComet ---------- */}
+      <div className="tor-device">
+        <span className={`lamp${status?.running ? '' : ' off'}`}>
+          <i />
+        </span>
+        <span className="grow" style={{ minWidth: 0 }}>
+          <span className="tor-device-name">
+            {active?.label ?? 'BitComet'}
+            {status?.server && (
+              <span className="tor-device-url"> · {status.server}</span>
+            )}
+          </span>
+          <br />
+          <span className="tor-device-url">{status?.url ?? 'not connected'}</span>
+        </span>
+        <Button size="sm" onClick={() => setPicking((p) => !p)}>
+          {picking ? 'Done' : 'Change device'}
+        </Button>
+        {status?.url && (
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => window.open(status.url!, '_blank', 'noopener')}
+          >
+            Open ↗
+          </Button>
+        )}
+      </div>
+
+      {picking && (
+        <div className="panel">
+          <div className="step">Which BitComet gets the download</div>
+          <p style={{ color: 'var(--muted)', fontSize: 13, margin: '0 0 10px' }}>
+            BitComet's Remote Access answers on the network, so a torrent can go to another
+            machine on this Wi-Fi — the one with the disk space, or the one that stays awake.
+            It needs that machine's own Web UI username and password.
+          </p>
+
+          <div className="tor-device-list">
+            {devices?.devices.map((device) => (
+              <label
+                key={device.id}
+                className={`tor-device-row${device.id === devices.active ? ' active' : ''}`}
+              >
+                <input
+                  type="radio"
+                  name="bitcomet-device"
+                  checked={device.id === devices.active}
+                  disabled={deviceBusy}
+                  onChange={() => void applyDevices(() => api.torrentDeviceSelect(device.id))}
+                />
+                <span className="grow" style={{ minWidth: 0 }}>
+                  <span className="tor-device-name">{device.label}</span>
+                  <br />
+                  <span className="tor-device-url">
+                    {device.is_local ? 'this machine · read from BitComet’s own settings' : device.url}
+                  </span>
+                </span>
+                {!device.is_local && (
+                  <>
+                    <Button size="sm" variant="ghost" onClick={() => editDevice(device)}>
+                      Edit
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      disabled={deviceBusy}
+                      onClick={() => void applyDevices(() => api.torrentDeviceRemove(device.id))}
+                    >
+                      Forget
+                    </Button>
+                  </>
+                )}
+              </label>
+            ))}
+          </div>
+
+          {form === null ? (
+            <Button size="sm" onClick={() => setForm({ ...BLANK_DEVICE })}>
+              + Add a device
+            </Button>
+          ) : (
+            <div className="tor-form">
+              <div className="step">{form.id === null ? 'Add a device' : 'Edit device'}</div>
+              <div className="field">
+                <label htmlFor="dev-url">Address</label>
+                <input
+                  id="dev-url"
+                  className="control"
+                  value={form.url}
+                  placeholder="192.168.1.50:19377"
+                  spellCheck={false}
+                  onChange={(e) => setForm({ ...form, url: e.target.value })}
+                />
+                <p style={{ font: '12px var(--mono)', color: 'var(--faint)', margin: '4px 0 0' }}>
+                  Host and port, or a full http:// address. Port 19377 is assumed if you leave
+                  it off.
+                </p>
+              </div>
+              <div className="row">
+                <div className="field grow">
+                  <label htmlFor="dev-user">Web UI username</label>
+                  <input
+                    id="dev-user"
+                    className="control"
+                    value={form.username}
+                    spellCheck={false}
+                    autoComplete="off"
+                    onChange={(e) => setForm({ ...form, username: e.target.value })}
+                  />
+                </div>
+                <div className="field grow">
+                  <label htmlFor="dev-pass">Web UI password</label>
+                  <input
+                    id="dev-pass"
+                    className="control"
+                    type="password"
+                    value={form.password}
+                    autoComplete="new-password"
+                    placeholder={form.id === null ? '' : 'unchanged'}
+                    onChange={(e) => setForm({ ...form, password: e.target.value })}
+                  />
+                </div>
+              </div>
+              <div className="field">
+                <label htmlFor="dev-label">Name (optional)</label>
+                <input
+                  id="dev-label"
+                  className="control"
+                  value={form.label}
+                  placeholder="Basement NAS"
+                  onChange={(e) => setForm({ ...form, label: e.target.value })}
+                />
+              </div>
+
+              <div className="row">
+                <Button size="sm" loading={testing} disabled={!form.url} onClick={() => void testForm()}>
+                  Test connection
+                </Button>
+                <Button
+                  size="sm"
+                  variant="primary"
+                  loading={deviceBusy}
+                  disabled={!form.url || !form.username}
+                  onClick={saveForm}
+                >
+                  {form.id === null ? 'Add & use' : 'Save'}
+                </Button>
+                <Button size="sm" variant="ghost" onClick={() => { setForm(null); setTested(null) }}>
+                  Cancel
+                </Button>
+              </div>
+
+              {tested && (
+                <div className={`note ${tested.ok ? 'ok' : 'error'}`}>
+                  {tested.ok ? (
+                    <>
+                      Reached {tested.server}.{' '}
+                      {tested.save_folders.length > 0
+                        ? `Download folders there: ${tested.save_folders.join(', ')}`
+                        : 'It has no download folder configured yet.'}
+                    </>
+                  ) : (
+                    tested.detail
+                  )}
+                </div>
+              )}
+              {deviceError && <div className="note error">{deviceError}</div>}
+            </div>
+          )}
+        </div>
+      )}
 
       {bitcometDown && (
         <div className="note error">
@@ -469,7 +774,35 @@ export default function TorrentDownloader() {
             </p>
           </div>
 
-          <FolderField label="Save to" value={saveDir} onChange={setSaveDir} />
+          {/* The native picker browses THIS Mac, which is the wrong filesystem
+              for a BitComet on the LAN — so a remote device gets that device's
+              own registered folders instead of a Browse button. */}
+          {remote ? (
+            <div className="field">
+              <label htmlFor="savedir">Save to (on {active?.label ?? 'that device'})</label>
+              <input
+                id="savedir"
+                className="control"
+                value={saveDir}
+                list="tor-remote-folders"
+                spellCheck={false}
+                placeholder={folders[0] ?? '/volume1/downloads'}
+                onChange={(e) => changeSaveDir(e.target.value)}
+              />
+              <datalist id="tor-remote-folders">
+                {folders.map((folder) => (
+                  <option key={folder} value={folder} />
+                ))}
+              </datalist>
+              <p style={{ font: '12px var(--mono)', color: 'var(--faint)', margin: '4px 0 0' }}>
+                {folders.length > 0
+                  ? `A folder on that machine — its own are ${folders.join(', ')}.`
+                  : 'A full path on that machine. It has no download folder configured yet.'}
+              </p>
+            </div>
+          ) : (
+            <FolderField label="Save to" value={saveDir} onChange={changeSaveDir} />
+          )}
           <p style={{ font: '12px var(--mono)', color: 'var(--faint)', margin: '4px 0 0' }}>
             Applied when you resolve. BitComet fixes a torrent's folder as it is added, so
             changing this afterwards only affects the next one.
@@ -623,7 +956,7 @@ export default function TorrentDownloader() {
         <div className="panel">
           <div className="row" style={{ marginBottom: 4 }}>
             <div className="step grow" style={{ margin: 0 }}>
-              4 · Sent to BitComet ({sent.length})
+              4 · Sent to {active?.label ?? 'BitComet'} ({sent.length})
             </div>
             {status?.url && (
               <Button

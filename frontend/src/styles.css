@@ -743,6 +743,52 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; gap: 6
 }
 .tor-bulk { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; }
 
+/* --- which BitComet ------------------------------------------------------
+   A bar rather than a tucked-away setting: on a page whose only job is to
+   hand a download to another program, WHICH program is about to receive it is
+   part of the action, not a preference. */
+.tor-device {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  margin-bottom: 14px;
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-s);
+  background: var(--panel);
+}
+.tor-device-name { font-size: 13.5px; font-weight: 600; }
+.tor-device-url { font: 11px var(--mono); color: var(--faint); }
+/* .lamp's dot is sized with width/height, which an inline element ignores —
+   the healthline gets that for free from its own flex row, and this bar has
+   to ask for it. Without this the connection indicator is simply invisible. */
+.tor-device .lamp { display: inline-flex; align-items: center; flex: none; }
+
+/* The add/edit form, recessed inside the picker so it reads as a sub-step of
+   choosing a device rather than a second panel competing with it. */
+.tor-form {
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-s);
+  background: var(--bench);
+  padding: 12px;
+}
+.tor-form .step { margin-top: 0; }
+
+.tor-device-list { display: grid; gap: 6px; margin-bottom: 10px; }
+.tor-device-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-s);
+  background: var(--panel-2);
+  cursor: pointer;
+}
+.tor-device-row.active { border-color: var(--amber); }
+.tor-device-row input { accent-color: var(--amber); flex: none; }
+
 /* The failed-magnet row. The link is the point of the row — it is what the
    user came back for — so it gets a copy button of its own rather than being
    folded into a sentence they would have to select by hand. */

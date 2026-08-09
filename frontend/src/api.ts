@@ -22,6 +22,9 @@ import type {
   Subscription,
   SubsGeneratePayload,
   SubsHistoryItem,
+  TorrentDeviceInput,
+  TorrentDeviceList,
+  TorrentDeviceTest,
   TorrentResolve,
   TorrentSendPayload,
   TorrentSent,
@@ -297,6 +300,27 @@ export const api = {
   torrentDiscard: (infohash: string) =>
     request<{ infohash: string; state: string }>(`/torrent/${infohash}`, {
       method: 'DELETE',
+    }),
+  // Which BitComet gets the task. Every one of these returns the whole list
+  // back, so the page never has to guess what changed and re-fetch.
+  torrentDevices: () => request<TorrentDeviceList>('/torrent/devices'),
+  torrentDeviceAdd: (payload: TorrentDeviceInput) =>
+    request<TorrentDeviceList>('/torrent/devices', { method: 'POST', body: payload }),
+  torrentDeviceUpdate: (id: string, payload: TorrentDeviceInput) =>
+    request<TorrentDeviceList>(`/torrent/devices/${id}`, {
+      method: 'PATCH',
+      body: payload,
+    }),
+  torrentDeviceRemove: (id: string) =>
+    request<TorrentDeviceList>(`/torrent/devices/${id}`, { method: 'DELETE' }),
+  torrentDeviceSelect: (id: string) =>
+    request<TorrentDeviceList>(`/torrent/devices/${id}/select`, { method: 'POST' }),
+  // Answers with ok:false and a reason rather than throwing — a failed test is
+  // the expected outcome of typing an address, not an exception.
+  torrentDeviceTest: (payload: TorrentDeviceInput & { id?: string }) =>
+    request<TorrentDeviceTest>('/torrent/devices/test', {
+      method: 'POST',
+      body: payload,
     }),
 
   // watermark remover
