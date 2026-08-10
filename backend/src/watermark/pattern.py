@@ -126,6 +126,19 @@ _EVIDENCE_FLOOR = 1.0
 # If this little of the stamped area survives that check, the repeat was an
 # artefact of the period estimate rather than ink on the photo.
 _MIN_EVIDENCE_SHARE = 0.2
+# Evidence share under one site's stamp above which the copy is believed to be
+# there and the WHOLE recovered shape is stamped, rather than only the pixels
+# that individually carry evidence (see the per-site trim in apply_mark).
+_SITE_FILL_SHARE = 0.12
+# The percentile the filled shape is cut at -- the mark's ink outline, tighter
+# than any slider setting widens the stamp (see the fill in apply_mark).
+_FILL_PCT = 90.0
+# Pieces of the filled shape smaller than this are the fold's residue, not the
+# mark's ink, and are not completed (see the fill in apply_mark).
+_FILL_MIN_PIECE = 40
+# How far the filled shape is pulled inside the ink's blurred edge, in px at the
+# working size. The removal mask is dilated by more than this before inpainting.
+_FILL_ERODE_PX = 3
 # Footprint the evidence share is measured over — the mark's strong core, fixed
 # so the gate does not move when sensitivity widens the footprint being masked.
 _GATE_PCT = 90.0
@@ -961,7 +974,65 @@ def apply_mark(
     if int(np.count_nonzero(reference & supported)) < _MIN_EVIDENCE_SHARE * gate_area:
         return None
 
-    mask[~supported] = 0
+    # The trim is per SITE, not per pixel. Per pixel it shredded exactly the
+    # copies this detector exists to remove: a copy over glass or foliage has
+    # local evidence under only a third of its ink, so the stamp came back as
+    # fragments and the inpaint left a legible ghost -- while the copy over
+    # smooth sky next to it was masked crisply. But the mark's whole shape is
+    # already KNOWN, folded out of the batch's cleanest copies; there is nothing
+    # left for one busy copy's pixels to decide about it. So each site answers
+    # one question -- is a copy really here -- by the evidence share under its
+    # stamp, and a site that clears it gets the whole shape. What stays per
+    # pixel is the phantom end: a site whose stamp has next to nothing under it
+    # keeps only its evidenced pixels, which for a truly empty site is nothing,
+    # exactly as before.
+    # The filled shape is cut TIGHTER than the sensitivity-controlled stamp.
+    # The slider widens the stamp into the mark's halo on purpose -- per-pixel
+    # trimming used to pare that halo back to whatever had evidence. Fill with
+    # the loose stamp and the halo lands whole at every site: measured, mean
+    # false positives went 0.013 -> 0.071. The fill exists to complete the
+    # mark's INK where a busy background hid it, so it uses the ink's own
+    # outline; the trimmed halo still contributes wherever evidence backs it.
+    fill = _stamp_at(max(footprint_pct, _FILL_PCT))
+    # Only the mark's BODY is worth completing. The folded template's residue
+    # crosses any percentile somewhere, and those specks -- a few pixels each,
+    # scattered over the tile -- would otherwise be stamped at every site of
+    # every image. The ink is a few large pieces; residue is not, and the cut
+    # between them is wide.
+    pieces, labels, stats, _mids = cv2.connectedComponentsWithStats(fill, 8)
+    for label in range(1, pieces):
+        if stats[label][cv2.CC_STAT_AREA] < _FILL_MIN_PIECE:
+            fill[labels == label] = 0
+    fill = cv2.erode(fill, np.ones((_FILL_ERODE_PX,) * 2, np.uint8))
+
+    # Deliberately NOT limited to the span of the confident matches. That was
+    # tried, to keep a walked site beyond the overlay's edge from being filled
+    # on busy ground -- and it excluded exactly the copies the fill exists for,
+    # because "no confident match here" is what being on busy ground MEANS: on
+    # the sky-over-grass fixtures every confident match sits in the sky, so the
+    # hull cut away the entire grass half and recall fell straight back to the
+    # per-pixel figure. The overlay tools this detector answers tile the whole
+    # frame; a partial overlay costs some needless fill on busy ground, bounded
+    # by the destruction guard downstream.
+    trimmed = mask.copy()
+    trimmed[~supported] = 0
+    for site_y, site_x in sites:
+        top, left = site_y - crop_top, site_x - crop_left
+        src_y, src_x = max(0, -top), max(0, -left)
+        dst_y, dst_x = max(0, top), max(0, left)
+        span_y = min(fill.shape[0] - src_y, mask.shape[0] - dst_y)
+        span_x = min(fill.shape[1] - src_x, mask.shape[1] - dst_x)
+        if span_y <= 0 or span_x <= 0:
+            continue
+        body = fill[src_y : src_y + span_y, src_x : src_x + span_x] > 0
+        ink = int(np.count_nonzero(body))
+        if ink == 0:
+            continue
+        under = supported[dst_y : dst_y + span_y, dst_x : dst_x + span_x]
+        if np.count_nonzero(body & under) >= _SITE_FILL_SHARE * ink:
+            region = trimmed[dst_y : dst_y + span_y, dst_x : dst_x + span_x]
+            region[:] = np.maximum(region, body.astype(np.uint8) * 255)
+    mask = trimmed
     if not mask.any():
         return None
 

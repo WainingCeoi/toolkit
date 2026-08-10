@@ -13,6 +13,7 @@ arbitrary vectors, not a row/column pitch.
 
 from __future__ import annotations
 
+import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
@@ -159,6 +160,17 @@ def tiled_pair(
     ink = np.asarray(overlay)[:, :, 3]
     core = ink >= max(1, round(0.2 * int(ink.max())))
     truth = np.where(core & (ink > 0), TRUTH_MARK, np.where(ink > 0, TRUTH_FRINGE, 0))
+    # The mark's ENCLOSED GAPS -- the counter of an O, the space between two
+    # letters -- are don't-care too. A detector that stamps the mark's whole
+    # footprint masks them, and that costs nothing at removal: they are a few
+    # pixels wide and refill from their surroundings. One that stamps only the
+    # ink leaves them, which is equally fine. Counting them as clean made the
+    # footprint-stamping detector read 2-4% "false positives" that no eye could
+    # find in the output.
+    body = cv2.morphologyEx(
+        (ink > 0).astype(np.uint8), cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8)
+    )
+    truth = np.where((body > 0) & (truth == 0), TRUTH_FRINGE, truth)
     return clean, np.asarray(marked.convert("RGB")), truth.astype(np.uint8)
 
 

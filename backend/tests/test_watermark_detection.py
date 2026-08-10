@@ -539,6 +539,40 @@ def test_a_short_clean_frame_batch_is_still_refused_a_grid():
         assert mark.grid is None, f"a clean strip batch was handed {mark.grid}"
 
 
+def test_a_copy_over_busy_ground_is_masked_whole_not_in_fragments():
+    # The per-pixel evidence trim kept only the pixels that individually stood
+    # out, and over grass or glass that is about a third of a copy's ink -- the
+    # stamp came back as fragments and the inpaint left a legible ghost, while
+    # the copy over smooth sky next to it was masked crisply. The mark's whole
+    # shape is already known from the batch's cleanest copies, so a site with
+    # enough evidence that a copy is THERE now gets the whole shape. Measured
+    # on the grass half of the standard frame: core recall 0.388 trimmed,
+    # 0.544 filled, at false positives below the trimmed detector's own old
+    # figure.
+    from watermark import pattern
+
+    _clean, marked, truth = tiled_pair(basis=RECTANGULAR)
+    half = truth.shape[0] // 2  # sky above, grass below
+    core = truth[half:] == 255
+
+    mask, used = propose(marked)
+    assert used == "pattern"
+    filled = np.count_nonzero((mask[half:] > 0) & core) / max(core.sum(), 1)
+
+    before = pattern._SITE_FILL_SHARE
+    pattern._SITE_FILL_SHARE = 9.9  # the fill can never fire
+    try:
+        trimmed_mask, _ = propose(marked)
+    finally:
+        pattern._SITE_FILL_SHARE = before
+    trimmed = np.count_nonzero((trimmed_mask[half:] > 0) & core) / max(core.sum(), 1)
+
+    assert filled > trimmed + 0.10, (
+        f"the fill recovered nothing over grass: {filled:.3f} vs {trimmed:.3f}"
+    )
+    assert filled > 0.45, f"grass-half recall is still only {filled:.3f}"
+
+
 # =========================================================================
 # Spending the lattice: every copy's position is known once the grid is
 # =========================================================================
