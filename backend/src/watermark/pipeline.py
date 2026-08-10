@@ -9,6 +9,7 @@ import cv2
 import numpy as np
 
 from .detect import (
+    AUTO,
     DEFAULT_DETECTOR,
     DEFAULT_SENSITIVITY,
     PATTERN,
@@ -224,7 +225,7 @@ def clean_folder(
     # at a time and only the marks are kept; the pass costs detection twice over,
     # which is seconds against inpainting's minutes.
     marks = []
-    if detector == PATTERN:
+    if detector in (PATTERN, AUTO):
         marks = collect_marks(lambda: _read_each(files), sensitivity)
 
     cleaned: list[str] = []
@@ -244,7 +245,7 @@ def clean_folder(
                 # carries a repeating mark that no route could isolate, it is
                 # PROTECTED: deliberately left alone, not overlooked. Words
                 # only -- nothing is inpainted either way.
-                if detector == PATTERN and repeating_evidence(rgb):
+                if detector in (PATTERN, AUTO) and repeating_evidence(rgb):
                     protected.append(path.name)
                 else:
                     # Copying the image out unchanged would pass a no-op off

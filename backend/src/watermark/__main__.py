@@ -44,10 +44,10 @@ def main(argv: list[str] | None = None) -> int:
         "--detector",
         choices=DETECTORS,
         default=DEFAULT_DETECTOR,
-        help="texture: judge each pixel against its neighbourhood, works on "
-        "anything; pattern: recover a repeating watermark and mask only its "
-        "instances — far more precise when the mark really is tiled, and it "
-        f"falls back to texture per image when it is not (default: {DEFAULT_DETECTOR})",
+        help="auto: recover a repeating watermark and mask its instances, and "
+        "fall back to the texture detector only for an image that demonstrably "
+        "carries a mark no pattern could be recovered for; pattern and texture "
+        f"run just that one detector (default: {DEFAULT_DETECTOR})",
     )
     clean.add_argument(
         "--dilate",

@@ -78,11 +78,15 @@ from .pattern import (
 
 DEFAULT_SENSITIVITY = 50
 
-# Which detector to use, and which produced a mask.
+# Which detector to use, and which produced a mask. AUTO is the mode callers
+# should not have to think about: pattern where a repeat is recoverable, and
+# texture only for an image that demonstrably carries a repeating mark the
+# pattern routes could not turn into a mask (see propose_mask_detailed).
+AUTO = "auto"
 PATTERN = "pattern"
 TEXTURE = "texture"
-DETECTORS = (PATTERN, TEXTURE)
-DEFAULT_DETECTOR = PATTERN
+DETECTORS = (AUTO, PATTERN, TEXTURE)
+DEFAULT_DETECTOR = AUTO
 
 # Reported instead of a detector name when no watermark could be found, with an
 # empty mask. NOT a failure to handle quietly: it means "leave this image
@@ -154,12 +158,24 @@ def propose_mask_detailed(
 ) -> tuple[np.ndarray, str]:
     """The mask plus which detector produced it, or NONE and an empty mask.
 
-    PATTERN does NOT fall back to TEXTURE. It used to, and that was actively
-    harmful: on a sample of eight photos, six had no recoverable repeat, so six
-    got a texture mask instead — which marks thin image detail like tent seams
-    and railings, not the watermark. Inpainting that damaged the photo AND left
-    the watermark in place, which is worse than doing nothing. Those images now
-    come back NONE with an empty mask, for the caller to skip and report.
+    PATTERN does NOT fall back to TEXTURE. It used to, unconditionally, and
+    that was actively harmful: on a sample of eight photos, six had no
+    recoverable repeat, so six got a texture mask instead — which marks thin
+    image detail like tent seams and railings, not the watermark. Inpainting
+    that damaged the photo AND left the watermark in place, which is worse
+    than doing nothing. Asked for by name, PATTERN answers NONE for those.
+
+    AUTO is the difference between that lesson and abandoning the images it
+    was learned on. It leads with PATTERN, and falls back to TEXTURE only for
+    an image that DEMONSTRABLY carries a repeating mark (repeating_evidence) —
+    which is precisely the case the blanket fallback got wrong in reverse: the
+    six damaged photos had no such evidence reading, while the screenshot
+    whose mark no pattern route can express does. An image with neither a
+    recoverable repeat nor evidence of one stays NONE, so a clean photograph
+    in an AUTO batch is never handed a texture mask of its own seams. The
+    caller still owns the last word on any fallback mask: texture flags
+    content along with the mark, and the destruction guard downstream is what
+    decides whether removal would cost more than the mark is worth.
 
     TEXTURE still runs when it is asked for explicitly.
     """
@@ -175,6 +191,10 @@ def propose_mask_detailed(
         pattern = propose_pattern_mask(rgb, sensitivity)
     if pattern is not None:
         return pattern, PATTERN
+    if detector == AUTO and repeating_evidence(rgb):
+        texture = propose_texture_mask(rgb, sensitivity)
+        if texture.any():
+            return texture, TEXTURE
     return np.zeros(rgb.shape[:2], np.uint8), NONE
 
 

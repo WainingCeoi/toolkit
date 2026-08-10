@@ -223,19 +223,16 @@ def test_run_inpaints_only_the_masked_pixels(client):
     }
 
     # The result carries everything the results view needs on its own, so it
-    # still renders after the page has been unmounted and remounted.
+    # still renders after the page has been unmounted and remounted. The zip is
+    # the ONE deliverable -- there are no per-file artifacts to fall back on.
     assert snap["result"]["batch_id"] == batch["batch_id"]
-    file_entry = snap["result"]["files"][0]
-    assert file_entry["image_id"] == image["id"]
-    download = client.get(f"/api/artifacts/{file_entry['artifact_id']}")
-    cleaned = np.asarray(Image.open(io.BytesIO(download.content)))
-    assert cleaned[28, 40].mean() < 145  # square filled from its gray surround
-    assert np.array_equal(cleaned[:10, :10], rgb[:10, :10])  # far corner intact
-
     zip_download = client.get(f"/api/artifacts/{snap['result']['artifact_id']}")
     assert snap["result"]["filename"] == "cleaned_images.zip"
     with zipfile.ZipFile(io.BytesIO(zip_download.content)) as archive:
         assert archive.namelist() == ["square.png"]
+        cleaned = np.asarray(Image.open(io.BytesIO(archive.read("square.png"))))
+    assert cleaned[28, 40].mean() < 145  # square filled from its gray surround
+    assert np.array_equal(cleaned[:10, :10], rgb[:10, :10])  # far corner intact
 
 
 def test_run_processes_only_images_that_got_a_mask(client):
@@ -307,16 +304,12 @@ def test_a_crash_midway_still_hands_back_what_finished(client, app_state, monkey
         ("first.png", png_bytes((20, 10))),
         ("second.png", png_bytes((20, 10))),
     ).json()
-    real_put = app_state.artifacts.put_bytes
-    calls = {"n": 0}
 
-    def exploding_put(filename, content, media_type):
-        calls["n"] += 1
-        if calls["n"] == 2:  # second image, outside the per-file try/except
-            raise MemoryError("out of memory inpainting a huge image")
-        return real_put(filename, content, media_type)
+    def exploding_replace(artifact_id, content):
+        # The second image's zip update, outside the per-file try/except.
+        raise MemoryError("out of memory inpainting a huge image")
 
-    monkeypatch.setattr(app_state.artifacts, "put_bytes", exploding_put)
+    monkeypatch.setattr(app_state.artifacts, "replace_bytes", exploding_replace)
 
     masks = {
         image["id"]: mask_b64(20, 10, box=(0, 0, 5, 5)) for image in batch["images"]
@@ -329,10 +322,12 @@ def test_a_crash_midway_still_hands_back_what_finished(client, app_state, monkey
 
     assert snap["state"] == "failed"
     assert "out of memory" in snap["error"]
-    # ...and the first image is still there, downloadable.
+    # ...and the first image is still there, inside the already-published zip.
     assert snap["result"]["done"] == ["first.png"]
-    harvested = snap["result"]["files"][0]
-    assert client.get(f"/api/artifacts/{harvested['artifact_id']}").status_code == 200
+    download = client.get(f"/api/artifacts/{snap['result']['artifact_id']}")
+    assert download.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(download.content)) as archive:
+        assert archive.namelist() == ["first.png"]
 
 
 def test_results_are_published_before_the_batch_ends(client, app_state):
@@ -385,7 +380,6 @@ def test_an_empty_mask_is_skipped_not_written_back(client):
     assert snap["state"] == "done"
     assert snap["result"]["skipped"] == ["plain.png"]
     assert snap["result"]["done"] == []
-    assert snap["result"]["files"] == []
     assert "artifact_id" not in snap["result"]
 
 

@@ -575,10 +575,10 @@ def test_a_copy_over_busy_ground_is_masked_whole_not_in_fragments():
 
 def test_an_unmaskable_repeat_is_protected_not_reported_clean(tmp_path):
     # "No watermark found" and "a watermark is visible but cannot be removed
-    # safely" are opposite messages, and both used to end in SKIPPED. An image
-    # carrying an evenly spaced run that no route can turn into a mask -- one
-    # lone frame with a sparse overlay, like the chat-screenshot in the real
-    # sample -- is deliberately left alone, and the batch report has to say so.
+    # safely" are opposite messages, and both used to end in SKIPPED. Under the
+    # pattern detector alone, an image carrying an evenly spaced run that no
+    # pattern route can turn into a mask is deliberately left alone, and the
+    # batch report has to say so.
     from PIL import Image
 
     from watermark.pipeline import clean_folder
@@ -593,10 +593,44 @@ def test_an_unmaskable_repeat_is_protected_not_reported_clean(tmp_path):
     Image.fromarray(clean).save(src / "holiday.png")
 
     cleaned, skipped, protected, failed = clean_folder(
-        src, tmp_path / "out", inpainter="cv2"
+        src, tmp_path / "out", inpainter="cv2", detector="pattern"
     )
     assert failed == []
     assert protected == ["screenshot.png"], "the visible repeat went unreported"
+    assert skipped == ["holiday.png"], "a clean photo must stay plainly skipped"
+
+
+def test_auto_rescues_a_repeat_the_pattern_routes_cannot_mask(tmp_path):
+    # The same folder under the DEFAULT detector. Auto leads with pattern and,
+    # for the one image that demonstrably carries a repeating mark no pattern
+    # could be recovered for, falls back to the texture detector -- measured on
+    # this fixture: a 0.52% mask at a destruction of 23 against the bar of 88,
+    # so the mark is actually removed. The clean photo shows no repeating
+    # evidence, gets no fallback, and is skipped untouched -- the blanket
+    # fallback that damaged six of eight photos stays gone.
+    from PIL import Image
+
+    from watermark.detect import propose_mask_detailed
+    from watermark.pipeline import clean_folder
+
+    sparse = tiled_pair(
+        basis=((0, 300), (300, 0)), size=(1300, 800), glyph_size=30, alpha=70
+    )[1]
+    mask, used = propose_mask_detailed(sparse, 50, "auto")
+    assert used == "texture", "auto never reached the fallback"
+    assert np.count_nonzero(mask) > 0
+
+    src = tmp_path / "in"
+    src.mkdir()
+    Image.fromarray(sparse).save(src / "screenshot.png")
+    clean = tiled_pair(watermarked=False, background="sky_grass")[0]
+    Image.fromarray(clean).save(src / "holiday.png")
+
+    cleaned, skipped, protected, failed = clean_folder(
+        src, tmp_path / "out", inpainter="cv2"
+    )
+    assert failed == []
+    assert cleaned == ["screenshot.png"], "auto did not rescue the sparse mark"
     assert skipped == ["holiday.png"], "a clean photo must stay plainly skipped"
 
 

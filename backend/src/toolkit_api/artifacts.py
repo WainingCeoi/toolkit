@@ -34,6 +34,23 @@ class ArtifactStore:
             }
         return artifact_id
 
+    def replace_bytes(self, artifact_id: str, content: bytes) -> None:
+        """Overwrite an artifact's content in place, keeping its id and name.
+
+        For results that grow as a job runs -- a zip republished after every
+        finished image so a batch that dies still hands over what it got. The
+        write goes to a sibling temp file first and lands with os.replace, so a
+        download racing the update streams a complete old zip or a complete
+        new one, never a torn file.
+        """
+        with self._lock:
+            item = self._items.get(artifact_id)
+        if item is None:
+            raise KeyError(f"Unknown artifact: {artifact_id}")
+        staging = item["path"].with_suffix(".staging")
+        staging.write_bytes(content)
+        staging.replace(item["path"])
+
     def put_file(self, filename: str, src: Path, media_type: str) -> str:
         """Move an existing file (e.g. from a job's tempdir) into the store."""
         artifact_id = uuid.uuid4().hex[:12]

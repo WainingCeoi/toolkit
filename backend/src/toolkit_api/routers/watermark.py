@@ -24,6 +24,7 @@ from pydantic import BaseModel
 from toolkit_engine.fsutil import dedupe_filenames
 from watermark import imgio
 from watermark.detect import (
+    AUTO,
     DEFAULT_DETECTOR,
     DEFAULT_SENSITIVITY,
     DETECTORS,
@@ -190,9 +191,12 @@ def auto_mask(
 ) -> Response:
     """The proposed mask as a PNG (white = watermark), recomputed per call.
 
-    ``X-Watermark-Detector`` names the detector that actually ran: asking for
-    ``pattern`` on an image with no recoverable repeat answers with the
-    ``texture`` mask instead, and the header is how the page knows.
+    ``X-Watermark-Detector`` names the detector that actually ran — under
+    ``auto`` that is ``pattern``, or ``texture`` for an image that demonstrably
+    carries a repeating mark no pattern could be recovered for, or ``none``.
+    An empty mask means the image will be left alone; a texture fallback mask
+    is shown as proposed, and the run's destruction guard still has the last
+    word on whether removing it would cost more than the mark is worth.
     """
     if detector not in DETECTORS:
         raise HTTPException(
@@ -205,7 +209,11 @@ def auto_mask(
     if entry is None:
         raise HTTPException(status_code=404, detail="Unknown or expired batch.")
     rgb = imgio.load_rgb(entry["path"].read_bytes())
-    marks = watermarks.marks(batch_id, _collect_marks) if detector == PATTERN else []
+    marks = (
+        watermarks.marks(batch_id, _collect_marks)
+        if detector in (PATTERN, AUTO)
+        else []
+    )
     mask, used = propose_mask_detailed(rgb, sensitivity, detector, marks)
     return Response(
         content=imgio.encode_png(mask),
@@ -281,26 +289,49 @@ def run(req: WatermarkRunIn, state: StateDep, watermarks: WatermarksDep):
         failed: list[tuple[str, str]] = []
         skipped: list[str] = []
         protected: list[str] = []
-        file_results: list[dict] = []
-        buffer = io.BytesIO()
-        archive = zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED)
+        cleaned: list[tuple[str, bytes]] = []
+        zip_id: str | None = None
+
+        def bundle() -> bytes:
+            """The zip of everything cleaned so far, rebuilt from scratch.
+
+            STORED, not DEFLATED: the members are PNGs, already compressed, so
+            deflate bought nothing and made each rebuild cost real time.
+            """
+            buffer = io.BytesIO()
+            with zipfile.ZipFile(buffer, "w", zipfile.ZIP_STORED) as archive:
+                for name, png in cleaned:
+                    archive.writestr(name, png)
+            return buffer.getvalue()
 
         def publish() -> dict:
             """Hand back everything finished so far.
 
             Called after every image, not just at the end: a batch can die on
             its last file (a huge photo, an out-of-memory kill) and the images
-            already cleaned must not die with it. Each is its own artifact
-            the moment it is ready, so the zip is the only thing that waits.
+            already cleaned must not die with it. The zip is republished under
+            ONE artifact id every time an image lands, so whatever the run got
+            to is always a click away — there are no per-file downloads to
+            fall back on, so the zip itself has to be the harvest.
             """
+            nonlocal zip_id
+            if cleaned:
+                if zip_id is None:
+                    zip_id = state.artifacts.put_bytes(
+                        "cleaned_images.zip", bundle(), "application/zip"
+                    )
+                else:
+                    state.artifacts.replace_bytes(zip_id, bundle())
             partial = {
                 "batch_id": req.batch_id,
                 "done": list(done),
                 "failed": list(failed),
                 "skipped": list(skipped),
                 "protected": list(protected),
-                "files": list(file_results),
             }
+            if zip_id is not None:
+                partial["artifact_id"] = zip_id
+                partial["filename"] = "cleaned_images.zip"
             job.set_result(partial)
             return partial
 
@@ -343,38 +374,15 @@ def run(req: WatermarkRunIn, state: StateDep, watermarks: WatermarksDep):
                     failed.append((entry["name"], str(e)))
                     publish()
                     continue
-                artifact_id = state.artifacts.put_bytes(out_name, png, "image/png")
-                archive.writestr(out_name, png)
-                file_results.append(
-                    {
-                        # Which input produced this output. The name alone does
-                        # not say, since two inputs can dedupe to one stem.
-                        "image_id": entry["id"],
-                        "name": out_name,
-                        "artifact_id": artifact_id,
-                    }
-                )
+                cleaned.append((out_name, png))
                 done.append(out_name)
                 job.update_item(idx, pct=100, state="done")
                 publish()
-        archive.close()
 
         # batch_id rides along so the results view survives a page unmount:
         # the snapshot outlives this page's local state, and the "before"
         # image is fetched from the batch.
-        result = publish()
-        if done:
-            # A fresh dict rather than mutating the published one, which a
-            # reader may be serialising for an SSE frame right now.
-            result = {
-                **result,
-                "artifact_id": state.artifacts.put_bytes(
-                    "cleaned_images.zip", buffer.getvalue(), "application/zip"
-                ),
-                "filename": "cleaned_images.zip",
-            }
-            job.set_result(result)
-        return result
+        return publish()
 
     job = state.jobs.submit("watermark", [entry["name"] for entry in selected], worker)
     return JobStartedOut(job_id=job.id)

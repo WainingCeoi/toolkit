@@ -197,10 +197,12 @@ def test_asking_for_pattern_on_an_image_with_no_repeat_declines():
     assert np.count_nonzero(mask) == 0
 
 
-def test_the_default_detector_is_pattern():
+def test_the_default_detector_is_auto():
+    # Nobody should have to pick a detector: auto leads with pattern and falls
+    # back to texture only on demonstrated repeating evidence.
     from watermark.detect import DEFAULT_DETECTOR
 
-    assert DEFAULT_DETECTOR == "pattern"
+    assert DEFAULT_DETECTOR == "auto"
 
 
 def test_a_clean_photo_is_never_given_an_invented_pattern():
