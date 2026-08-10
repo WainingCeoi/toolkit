@@ -559,12 +559,12 @@ def test_a_copy_over_busy_ground_is_masked_whole_not_in_fragments():
     assert used == "pattern"
     filled = np.count_nonzero((mask[half:] > 0) & core) / max(core.sum(), 1)
 
-    before = pattern._SITE_FILL_SHARE
-    pattern._SITE_FILL_SHARE = 9.9  # the fill can never fire
+    before = pattern._FILL_MIN_PIECE
+    pattern._FILL_MIN_PIECE = 10**9  # no piece survives, so the fill never fires
     try:
         trimmed_mask, _ = propose(marked)
     finally:
-        pattern._SITE_FILL_SHARE = before
+        pattern._FILL_MIN_PIECE = before
     trimmed = np.count_nonzero((trimmed_mask[half:] > 0) & core) / max(core.sum(), 1)
 
     assert filled > trimmed + 0.10, (

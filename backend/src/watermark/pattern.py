@@ -126,10 +126,6 @@ _EVIDENCE_FLOOR = 1.0
 # If this little of the stamped area survives that check, the repeat was an
 # artefact of the period estimate rather than ink on the photo.
 _MIN_EVIDENCE_SHARE = 0.2
-# Evidence share under one site's stamp above which the copy is believed to be
-# there and the WHOLE recovered shape is stamped, rather than only the pixels
-# that individually carry evidence (see the per-site trim in apply_mark).
-_SITE_FILL_SHARE = 0.12
 # The percentile the filled shape is cut at -- the mark's ink outline, tighter
 # than any slider setting widens the stamp (see the fill in apply_mark).
 _FILL_PCT = 90.0
@@ -974,18 +970,20 @@ def apply_mark(
     if int(np.count_nonzero(reference & supported)) < _MIN_EVIDENCE_SHARE * gate_area:
         return None
 
-    # The trim is per SITE, not per pixel. Per pixel it shredded exactly the
-    # copies this detector exists to remove: a copy over glass or foliage has
-    # local evidence under only a third of its ink, so the stamp came back as
-    # fragments and the inpaint left a legible ghost -- while the copy over
-    # smooth sky next to it was masked crisply. But the mark's whole shape is
-    # already KNOWN, folded out of the batch's cleanest copies; there is nothing
-    # left for one busy copy's pixels to decide about it. So each site answers
-    # one question -- is a copy really here -- by the evidence share under its
-    # stamp, and a site that clears it gets the whole shape. What stays per
-    # pixel is the phantom end: a site whose stamp has next to nothing under it
-    # keeps only its evidenced pixels, which for a truly empty site is nothing,
-    # exactly as before.
+    # Every site gets the mark's whole shape, UNCONDITIONALLY. Two weaker rules
+    # were built and each failed against the annotated sample in turn. Per-pixel
+    # evidence shredded the copies over glass and foliage into fragments that
+    # inpainted as legible ghosts. Per-site evidence -- fill only where enough of
+    # the ink has support -- then left precisely the copies the user circled:
+    # the ones on bright cloud and white canvas, where a faint white mark has
+    # the least contrast of all, so the sites that most need the known shape
+    # are structurally the ones least able to earn it. But presence was never
+    # this site's question to answer. The grid was corroborated image-wide by
+    # confident matches sitting ON its nodes, and the mark's shape was folded
+    # from the batch's cleanest copies; a site over clean sky costs nothing to
+    # fill (the inpaint repaints sky with sky), and a site over the mark is the
+    # entire point. The per-pixel trim still applies to the sensitivity-widened
+    # HALO, which is how the slider keeps meaning.
     # The filled shape is cut TIGHTER than the sensitivity-controlled stamp.
     # The slider widens the stamp into the mark's halo on purpose -- per-pixel
     # trimming used to pare that halo back to whatever had evidence. Fill with
@@ -1003,7 +1001,18 @@ def apply_mark(
     for label in range(1, pieces):
         if stats[label][cv2.CC_STAT_AREA] < _FILL_MIN_PIECE:
             fill[labels == label] = 0
-    fill = cv2.erode(fill, np.ones((_FILL_ERODE_PX,) * 2, np.uint8))
+    # The blurred cut leaves a halo ring, and repeating that ring at every site
+    # of every image is where the fill's false area lives -- so it is eroded
+    # off. But only where there is a body to erode INTO: the mark's lettering
+    # is thinner than the erosion itself, and a flat erode deleted the text
+    # outright, leaving stamps that were all logo and no letters -- the exact
+    # half-removed look this pass exists to end. The opening residue is the
+    # thin structure the erosion destroys, and it is added back whole; being
+    # thin is why its halo is small.
+    kernel = np.ones((_FILL_ERODE_PX,) * 2, np.uint8)
+    eroded = cv2.erode(fill, kernel)
+    thin = cv2.subtract(fill, cv2.dilate(eroded, kernel))
+    fill = cv2.max(eroded, thin)
 
     # Deliberately NOT limited to the span of the confident matches. That was
     # tried, to keep a walked site beyond the overlay's edge from being filled
@@ -1025,13 +1034,10 @@ def apply_mark(
         if span_y <= 0 or span_x <= 0:
             continue
         body = fill[src_y : src_y + span_y, src_x : src_x + span_x] > 0
-        ink = int(np.count_nonzero(body))
-        if ink == 0:
+        if not body.any():
             continue
-        under = supported[dst_y : dst_y + span_y, dst_x : dst_x + span_x]
-        if np.count_nonzero(body & under) >= _SITE_FILL_SHARE * ink:
-            region = trimmed[dst_y : dst_y + span_y, dst_x : dst_x + span_x]
-            region[:] = np.maximum(region, body.astype(np.uint8) * 255)
+        region = trimmed[dst_y : dst_y + span_y, dst_x : dst_x + span_x]
+        region[:] = np.maximum(region, body.astype(np.uint8) * 255)
     mask = trimmed
     if not mask.any():
         return None
