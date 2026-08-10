@@ -14,6 +14,7 @@ from .detect import (
     PATTERN,
     collect_marks,
     propose_mask,
+    repeating_evidence,
 )
 from .imgio import encode_png, load_rgb
 from .inpaint import get_inpainter
@@ -196,10 +197,12 @@ def clean_folder(
 
     An image is SKIPPED when no watermark could be found -- copying it out
     unchanged would pass a no-op off as a result. It is PROTECTED when a
-    watermark was found but removing it would destroy the picture underneath, as
-    on a document whose body text the mark overlaps; see would_destroy_content.
-    Both are left alone, and they are reported separately because they mean
-    opposite things about the image.
+    watermark was found but the image is deliberately left alone anyway: either
+    removing the proposed mask would destroy the picture underneath (see
+    would_destroy_content), or a repeating mark is demonstrably present and no
+    route could isolate a mask for it at all (see repeating_evidence). Both
+    outcomes leave the file untouched, and they are reported separately from
+    SKIPPED because they mean opposite things about the image.
 
     `on_progress(done, total)` is called after each file; returning True stops
     the run early (cancellation).
@@ -235,9 +238,18 @@ def clean_folder(
             rgb = load_rgb(path.read_bytes())
             mask = propose_mask(rgb, sensitivity, detector, marks)
             if not mask.any():
-                # No watermark found. Copying the image out unchanged would
-                # pass a no-op off as a result.
-                skipped.append(path.name)
+                # Nothing maskable -- but "no watermark found" and "a watermark
+                # is visible and cannot be removed safely" are opposite
+                # messages, and both end here. When the image demonstrably
+                # carries a repeating mark that no route could isolate, it is
+                # PROTECTED: deliberately left alone, not overlooked. Words
+                # only -- nothing is inpainted either way.
+                if detector == PATTERN and repeating_evidence(rgb):
+                    protected.append(path.name)
+                else:
+                    # Copying the image out unchanged would pass a no-op off
+                    # as a result.
+                    skipped.append(path.name)
                 if on_progress is not None and on_progress(idx + 1, len(files)):
                     break
                 continue

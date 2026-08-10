@@ -96,7 +96,7 @@ def main(argv: list[str] | None = None) -> int:
         # found, and leaving the image alone is the deliberate answer.
         print(
             f"left {len(protected)} image(s) alone — a watermark was found, but "
-            "removing it would have destroyed the picture under it "
+            "it could not be removed without destroying the picture under it "
             "(text or line art the mark sits on):"
         )
         for name in protected:

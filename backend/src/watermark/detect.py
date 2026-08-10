@@ -70,6 +70,7 @@ import numpy as np
 
 from .pattern import (
     Mark,
+    _anchored_run,
     propose_pattern_mask,
     propose_pattern_mask_shared,
     shareable_marks,
@@ -175,6 +176,26 @@ def propose_mask_detailed(
     if pattern is not None:
         return pattern, PATTERN
     return np.zeros(rgb.shape[:2], np.uint8), NONE
+
+
+def repeating_evidence(rgb: np.ndarray) -> bool:
+    """Whether a repeating mark is demonstrably present, maskable or not.
+
+    True when the image contains an evenly spaced run of mutually correlating
+    patches -- the signature of a tiled overlay -- regardless of whether any
+    route could turn that into a mask. The one image of the sample of nine that
+    comes back with nothing is exactly this case: a chat-app screenshot whose
+    logos repeat at a pitch nothing else in the batch shares, over a document
+    that no mask could be cut for without destroying it (texture's mask on it
+    measures a destruction of 206 against the bar of 88).
+
+    The caller uses this to tell "no watermark found" from "a watermark is
+    visible but cannot be removed safely" -- opposite messages to put on an
+    image that comes back unmasked. It decides WORDS, never pixels: nothing is
+    ever inpainted on its say-so, which is why an occasional false positive on
+    coincidentally regular scenery costs a mislabel and not a photograph.
+    """
+    return _anchored_run(rgb) is not None
 
 
 def propose_texture_mask(

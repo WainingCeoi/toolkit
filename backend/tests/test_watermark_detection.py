@@ -573,6 +573,33 @@ def test_a_copy_over_busy_ground_is_masked_whole_not_in_fragments():
     assert filled > 0.45, f"grass-half recall is still only {filled:.3f}"
 
 
+def test_an_unmaskable_repeat_is_protected_not_reported_clean(tmp_path):
+    # "No watermark found" and "a watermark is visible but cannot be removed
+    # safely" are opposite messages, and both used to end in SKIPPED. An image
+    # carrying an evenly spaced run that no route can turn into a mask -- one
+    # lone frame with a sparse overlay, like the chat-screenshot in the real
+    # sample -- is deliberately left alone, and the batch report has to say so.
+    from PIL import Image
+
+    from watermark.pipeline import clean_folder
+
+    src = tmp_path / "in"
+    src.mkdir()
+    sparse = tiled_pair(
+        basis=((0, 300), (300, 0)), size=(1300, 800), glyph_size=30, alpha=70
+    )[1]
+    Image.fromarray(sparse).save(src / "screenshot.png")
+    clean = tiled_pair(watermarked=False, background="sky_grass")[0]
+    Image.fromarray(clean).save(src / "holiday.png")
+
+    cleaned, skipped, protected, failed = clean_folder(
+        src, tmp_path / "out", inpainter="cv2"
+    )
+    assert failed == []
+    assert protected == ["screenshot.png"], "the visible repeat went unreported"
+    assert skipped == ["holiday.png"], "a clean photo must stay plainly skipped"
+
+
 # =========================================================================
 # Spending the lattice: every copy's position is known once the grid is
 # =========================================================================
