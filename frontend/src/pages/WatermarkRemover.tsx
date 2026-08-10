@@ -1,5 +1,7 @@
 // Watermark Remover — auto-detect a mask, review it, inpaint it away. One job
-// per batch; each cleaned image is its own artifact plus one zip of them all.
+// per batch; the one deliverable is a zip of everything cleaned, republished
+// as each image lands so a run that dies mid-batch still hands over what it
+// got.
 //
 // The mask is reviewed, not edited. There used to be a brush and an eraser, and
 // dropping them is a deliberate narrowing: the detector masks the copies of a
@@ -22,12 +24,7 @@ import CodeBox from '../components/CodeBox'
 import FileDrop from '../components/FileDrop'
 import JobPanel from '../components/JobPanel'
 import MaskPreview, { type MaskPreviewHandle } from '../components/MaskPreview'
-import type {
-  WatermarkBatch,
-  WatermarkDetector,
-  WatermarkHealth,
-  WatermarkResult,
-} from '../types/api'
+import type { WatermarkBatch, WatermarkHealth, WatermarkResult } from '../types/api'
 
 const ACCEPT = '.png,.jpg,.jpeg,.webp'
 const DEFAULT_SENSITIVITY = 50
@@ -45,7 +42,8 @@ export default function WatermarkRemover() {
   const [applied, setApplied] = useState<Record<string, number>>({})
   const [ready, setReady] = useState<Record<string, boolean>>({})
   const [noPattern, setNoPattern] = useState<Record<string, boolean>>({})
-  const [detector, setDetector] = useState<WatermarkDetector>('pattern')
+  // Nobody picks a detector or an engine: detection runs in auto mode, and the
+  // inpainter is LaMa whenever torch is present, cv2 otherwise (see health).
   const [inpainter, setInpainter] = useState<'lama' | 'cv2'>('lama')
   const previews = useRef<Record<string, MaskPreviewHandle | null>>({})
 
@@ -189,9 +187,9 @@ export default function WatermarkRemover() {
         {uploadError && <div className="note error">{uploadError}</div>}
         {!batch && !uploadError && (
           <div className="note info">
-            Detection proposes a mask per image (tuned for semi-transparent
-            tiled text) — you see exactly what will be removed before anything
-            is changed, and an image with no watermark found is left alone.
+            Detection proposes a mask per image automatically — you see
+            exactly what will be removed before anything is changed, and an
+            image with no watermark found is left alone.
           </div>
         )}
       </div>
@@ -210,26 +208,6 @@ export default function WatermarkRemover() {
               Start over
             </Button>
           </div>
-          <div className="row wm-toolbar">
-            <label className="wm-slider" htmlFor="wm-detector">
-              detection
-            </label>
-            <select
-              id="wm-detector"
-              className="control"
-              style={{ width: 'auto' }}
-              value={detector}
-              onChange={(e) => setDetector(e.target.value as WatermarkDetector)}
-            >
-              <option value="pattern">Repeating pattern — recovers a tiled mark</option>
-              <option value="texture">Standing out locally — any watermark</option>
-            </select>
-            <span className="wm-hint">
-              {detector === 'pattern'
-                ? 'Recovers the repeated mark and masks only its copies, so edges and detail are left alone. A mark found on one image is tried on the rest of the batch; any image with no recoverable repeat is skipped, not guessed at.'
-                : 'Works on anything, including a single logo — but thin detail like seams and wires read as watermark too, and there is no brush to correct that. Prefer the pattern detector.'}
-            </span>
-          </div>
 
           {batch.images.map((img) => (
             <div className="wm-card" key={img.id}>
@@ -237,7 +215,7 @@ export default function WatermarkRemover() {
                 <strong>{img.name}</strong>
                 <span className="wm-dims">
                   {ready[img.id] === false && 'detecting… · '}
-                  {noPattern[img.id] && 'no watermark found — will be skipped · '}
+                  {noPattern[img.id] && 'no watermark found — will be left alone · '}
                   {img.width}×{img.height}
                 </span>
               </div>
@@ -250,7 +228,6 @@ export default function WatermarkRemover() {
                   batch.batch_id,
                   img.id,
                   applied[img.id] ?? DEFAULT_SENSITIVITY,
-                  detector,
                 )}
                 width={img.width}
                 height={img.height}
@@ -294,25 +271,11 @@ export default function WatermarkRemover() {
             <span className="n">03</span>
             <span>INPAINT</span>
           </div>
-          <div className="field">
-            <label htmlFor="wm-inpainter">Inpainting engine</label>
-            <select
-              id="wm-inpainter"
-              className="control"
-              value={inpainter}
-              onChange={(e) => setInpainter(e.target.value as 'lama' | 'cv2')}
-            >
-              <option value="lama" disabled={health ? !health.lama : false}>
-                LaMa — best quality (ML)
-              </option>
-              <option value="cv2">cv2 — instant, rougher on large areas</option>
-            </select>
-          </div>
           {health && !health.lama && (
             <div className="note info">
-              LaMa needs the backend&apos;s <code>watermark</code> extra
-              (torch): <code>uv sync --extra watermark</code>. Falling back to
-              cv2 until then.
+              Best quality needs the backend&apos;s <code>watermark</code>{' '}
+              extra (torch): <code>uv sync --extra watermark</code>. Using the
+              instant cv2 inpainter until then.
             </div>
           )}
           {inpainter === 'lama' && health?.lama && !showJob && (
@@ -345,7 +308,7 @@ export default function WatermarkRemover() {
                 {result.done.length > 0 && (
                   <div className={`note ${snapshot.state === 'failed' ? 'warn' : 'ok'}`}>
                     {snapshot.state === 'running' &&
-                      `${result.done.length} done so far — each is ready to download as it lands.`}
+                      `${result.done.length} done so far — the zip below updates as each lands.`}
                     {snapshot.state === 'done' &&
                       `✅ Cleaned ${result.done.length} image(s).`}
                     {snapshot.state === 'cancelled' &&
@@ -356,22 +319,21 @@ export default function WatermarkRemover() {
                 )}
                 {result.artifact_id && (
                   <Button as="a" href={artifactUrl(result.artifact_id)}>
-                    ⬇ Download all (.zip)
+                    ⬇ Download cleaned images (.zip)
                   </Button>
                 )}
-                {result.files.map((file) => (
-                  <div className="row wm-file" key={file.artifact_id}>
-                    <strong>{file.name}</strong>
-                    <Button as="a" size="sm" href={artifactUrl(file.artifact_id)}>
-                      ⬇ Download
-                    </Button>
-                  </div>
-                ))}
                 {result.skipped.length > 0 && (
                   <div className="note warn">
-                    Left untouched — no repeating watermark could be recovered,
-                    so nothing was inpainted rather than risk damaging the
-                    image: {result.skipped.join(', ')}
+                    Left untouched — no watermark could be found, so nothing
+                    was inpainted: {result.skipped.join(', ')}
+                  </div>
+                )}
+                {(result.protected ?? []).length > 0 && (
+                  <div className="note warn">
+                    Left untouched on purpose — a watermark was found, but
+                    removing it would have destroyed the picture under it
+                    (text or line art the mark sits on):{' '}
+                    {result.protected.join(', ')}
                   </div>
                 )}
                 {result.failed.length > 0 && (

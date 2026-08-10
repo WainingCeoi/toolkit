@@ -367,13 +367,13 @@ export interface WatermarkBatch {
 /**
  * Which mask proposer to use.
  *
- * `texture` judges each pixel against its neighbourhood — works on any
- * watermark, also flags thin image detail. `pattern` recovers a repeating
- * watermark and masks only its instances; when the mark really is tiled it is
- * far more precise, and it falls back to `texture` per image when no repeat
- * can be recovered (the `X-Watermark-Detector` response header says which ran).
+ * `auto` (the only mode the page uses) recovers a repeating watermark and
+ * masks its instances, falling back to the `texture` detector only for an
+ * image that demonstrably carries a repeating mark no pattern could be
+ * recovered for. `pattern` and `texture` run just that one detector; the
+ * `X-Watermark-Detector` response header says which actually ran.
  */
-export type WatermarkDetector = 'texture' | 'pattern'
+export type WatermarkDetector = 'auto' | 'texture' | 'pattern'
 
 /** Mirrors WatermarkHealthOut. */
 export interface WatermarkHealth {
@@ -390,13 +390,6 @@ export interface WatermarkRunPayload {
   dilate_px?: number
 }
 
-export interface WatermarkFileResult {
-  /** Which uploaded image produced this output. */
-  image_id: string
-  name: string
-  artifact_id: string
-}
-
 export interface WatermarkResult {
   /**
    * The batch these results came from. The snapshot outlives the page's local
@@ -408,8 +401,16 @@ export interface WatermarkResult {
   failed: TupleFailure[]
   /** Left untouched: no watermark could be found, so nothing was inpainted. */
   skipped: string[]
-  files: WatermarkFileResult[]
-  /** Absent entirely when nothing cleaned, so there is no archive to offer. */
+  /**
+   * Left untouched on purpose: a watermark WAS found, but removing it would
+   * have destroyed the picture under it (text or line art the mark sits on).
+   */
+  protected: string[]
+  /**
+   * The one deliverable: a zip of everything cleaned so far, republished under
+   * the same id as each image lands — so a run that dies mid-batch still hands
+   * over what it got. Absent until the first image is cleaned.
+   */
   artifact_id?: string
   filename?: string
 }
