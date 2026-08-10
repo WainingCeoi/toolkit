@@ -3,9 +3,10 @@
 //
 // Open tools stay MOUNTED — an inactive one is display:none, not unmounted —
 // so a half-configured form survives jumping to another tool and back. The
-// dock shows one browser-style tab per open tool with its latest job state
-// inline; a tab with a running job refuses to close, so running work can
-// never silently disappear.
+// dock shows one browser-style tab per open tool, with every tracked job
+// riding inside it as a chip; each finished chip has its own dismiss ×, so a
+// stale job can be cleared without unmounting the tool. A tab with a running
+// job refuses to close, so running work can never silently disappear.
 
 import React, { Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { NavLink, Link, useLocation, useNavigate } from 'react-router'
@@ -74,8 +75,9 @@ function Dock({ openTabs, activeSlug, titles, onCloseTab }: DockProps) {
   const tabs = tabOrder(openTabs, jobSlugs)
 
   const close = (slug: ToolSlug) => {
-    // Closing a tab is also how its finished jobs get dismissed; running ones
-    // can't reach here (the × is disabled) and would keep the tab derived.
+    // Closing a tab also sweeps up whatever finished jobs it still shows;
+    // running ones can't reach here (the × is disabled) and would keep the
+    // tab derived.
     for (const [id, j] of Object.entries(jobs)) {
       if (j.toolPath === toolPath(slug) && j.snapshot.state !== 'running') dismiss(id)
     }
@@ -97,61 +99,75 @@ function Dock({ openTabs, activeSlug, titles, onCloseTab }: DockProps) {
         const emoji = title?.split(' ')[0] || TOOL_EMOJI[path] || '⚙️'
         const label = title ? title.split(' ').slice(1).join(' ') : slug.replace(/-/g, ' ')
 
-        // Badge: the tool's running job if any, else its most recent one.
-        const toolJobs = Object.values(jobs).filter((j) => j.toolPath === path)
-        const runningJob = toolJobs.findLast((j) => j.snapshot.state === 'running')
-        const shown = runningJob ?? toolJobs[toolJobs.length - 1]
-        let badge: React.ReactNode = null
-        if (shown) {
-          const { snapshot } = shown
-          const items = snapshot.items ?? []
-          const total = items.length
-          const done = items.filter((i) => i.state === 'done').length
-          const pct = total > 0 ? Math.round(items.reduce((s, i) => s + i.pct, 0) / total) : null
-          badge =
-            snapshot.state === 'running' ? (
-              pct === null ? (
-                <span>{snapshot.message || 'working…'}</span>
-              ) : (
-                <>
-                  <LedBar pct={pct} state="running" />
-                  <span>{total ? `${done}/${total}` : `${pct}%`}</span>
-                </>
-              )
-            ) : (
-              // State name spelled out: failed and cancelled share the red ✕,
-              // and a bare glyph says nothing to a screen reader.
-              <span className={`state-${snapshot.state}`}>
-                {snapshot.state === 'done' ? '✓ done' : `✕ ${snapshot.state}`}
-              </span>
-            )
-        }
+        // One chip per tracked job, oldest first: an earlier run's outcome
+        // stays visible beside a newer one, and each finished chip carries
+        // its own dismiss × — clearing a job never touches the tab itself.
+        const toolJobs = Object.entries(jobs).filter(([, j]) => j.toolPath === path)
+        const hasRunning = toolJobs.some(([, j]) => j.snapshot.state === 'running')
 
         return (
-          <Link
-            key={slug}
-            className={`dock-tab ${slug === activeSlug ? 'active' : ''}`}
-            to={path}
-            aria-current={slug === activeSlug ? 'page' : undefined}
-          >
-            <span>{emoji}</span>
-            <span className="dock-tab-label">{label}</span>
-            {badge}
+          // A div, not a Link: the buttons live beside the anchor instead of
+          // illegally nested inside it. The link covers emoji + label.
+          <div key={slug} className={`dock-tab ${slug === activeSlug ? 'active' : ''}`}>
+            <Link
+              className="dock-tab-link"
+              to={path}
+              aria-current={slug === activeSlug ? 'page' : undefined}
+            >
+              <span>{emoji}</span>
+              <span className="dock-tab-label">{label}</span>
+            </Link>
+            {toolJobs.map(([id, { snapshot }]) => {
+              const items = snapshot.items ?? []
+              const total = items.length
+              const done = items.filter((i) => i.state === 'done').length
+              const pct =
+                total > 0 ? Math.round(items.reduce((s, i) => s + i.pct, 0) / total) : null
+              return (
+                <span key={id} className="dock-job">
+                  {snapshot.state === 'running' ? (
+                    pct === null ? (
+                      <span>{snapshot.message || 'working…'}</span>
+                    ) : (
+                      <>
+                        <LedBar pct={pct} state="running" />
+                        <span>{total ? `${done}/${total}` : `${pct}%`}</span>
+                      </>
+                    )
+                  ) : (
+                    // State name spelled out: failed and cancelled share the
+                    // red ✕, and a bare glyph says nothing to a screen reader.
+                    <span className={`state-${snapshot.state}`}>
+                      {snapshot.state === 'done' ? '✓ done' : `✕ ${snapshot.state}`}
+                    </span>
+                  )}
+                  {snapshot.state !== 'running' && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="dock-dismiss"
+                      title="dismiss this job"
+                      onClick={() => dismiss(id)}
+                      aria-label={`Dismiss ${snapshot.state} ${label} job`}
+                    >
+                      ×
+                    </Button>
+                  )}
+                </span>
+              )
+            })}
             <Button
               variant="ghost"
               size="sm"
               className="dock-close"
-              disabled={runningJob !== undefined}
-              title={runningJob ? 'a job is still running' : 'close tool'}
-              onClick={(e) => {
-                e.preventDefault()
-                close(slug)
-              }}
+              disabled={hasRunning}
+              title={hasRunning ? 'a job is still running' : 'close tool'}
+              onClick={() => close(slug)}
               aria-label={`Close ${label}`}
             >
               ×
             </Button>
-          </Link>
+          </div>
         )
       })}
     </div>

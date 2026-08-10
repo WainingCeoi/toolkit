@@ -469,7 +469,9 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; gap: 6
 
 /* ---------- tab dock (signature) ---------- */
 /* One tab per open tool, browser-style; the active one carries an amber lamp
-   along its top edge, and a tool's latest job state rides inside its tab. */
+   along its top edge. Every tracked job rides inside its tab as a chip, and
+   a finished chip's own × dismisses just that job — the tab's trailing ×
+   closes the tool. */
 .dock {
   grid-column: 2;
   border-top: 1px solid var(--edge);
@@ -492,13 +494,31 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; gap: 6
   padding: 0 4px 0 10px;
   font: 12px var(--mono);
   color: var(--muted);
-  text-decoration: none;
   white-space: nowrap;
   background: var(--bench);
   border: 1px solid var(--edge);
   border-radius: var(--radius-s);
 }
 .dock-tab:hover { background: var(--panel-2); color: var(--text); }
+.dock-tab-link {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  align-self: stretch; /* full tab height: the whole label area activates */
+  color: inherit;
+  text-decoration: none;
+}
+.dock-job {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 4px 0 6px;
+  background: var(--panel);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-s);
+}
+.dock-dismiss { min-height: 18px; padding: 0 5px; }
 .dock-tab.active {
   background: var(--panel-2);
   color: var(--text);
