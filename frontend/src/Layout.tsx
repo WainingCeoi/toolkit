@@ -13,11 +13,13 @@ import { api } from './api'
 import { useJobs } from './jobs'
 import { LedBar } from './components/JobPanel'
 import Button from './components/Button'
+import ErrorBoundary from './components/ErrorBoundary'
 import ThemeToggle from './components/ThemeToggle'
 import Home from './Home'
 import { PAGES, isToolSlug, type ToolSlug } from './pages'
 import { TOOL_EMOJI } from './tools'
 import { nextTabAfterClose, parseToolSlug, restoreTabs, tabOrder } from './tabs'
+import { ToolActiveContext } from './toolHost'
 import type { Category } from './types/api'
 
 // sessionStorage (not local): each browser tab is its own workbench, and a
@@ -61,7 +63,9 @@ function Dock({ openTabs, activeSlug, titles, onCloseTab }: DockProps) {
     }
     if (slug === activeSlug) {
       const next = nextTabAfterClose(tabs, slug)
-      navigate(next ? toolPath(next) : '/')
+      // replace, not push: the closed tool's path must leave the history
+      // stack, or one Back press would resurrect the tab as a blank copy.
+      navigate(next ? toolPath(next) : '/', { replace: true })
     }
     onCloseTab(slug)
   }
@@ -97,8 +101,10 @@ function Dock({ openTabs, activeSlug, titles, onCloseTab }: DockProps) {
                 </>
               )
             ) : (
+              // State name spelled out: failed and cancelled share the red ✕,
+              // and a bare glyph says nothing to a screen reader.
               <span className={`state-${snapshot.state}`}>
-                {snapshot.state === 'done' ? '✓' : '✕'}
+                {snapshot.state === 'done' ? '✓ done' : `✕ ${snapshot.state}`}
               </span>
             )
         }
@@ -108,6 +114,7 @@ function Dock({ openTabs, activeSlug, titles, onCloseTab }: DockProps) {
             key={slug}
             className={`dock-tab ${slug === activeSlug ? 'active' : ''}`}
             to={path}
+            aria-current={slug === activeSlug ? 'page' : undefined}
           >
             <span>{emoji}</span>
             <span className="dock-tab-label">{label}</span>
@@ -168,17 +175,15 @@ export default function Layout() {
 
   // Per-route scroll memory: pages share one scroll container, so switching
   // tabs would otherwise carry one tool's scroll position into the next.
+  // Saved as the user scrolls, NOT at switch time: by the time the layout
+  // effect runs the outgoing page is already hidden and the browser has
+  // clamped scrollTop to the incoming page's height, so reading it there
+  // would overwrite a long page's position with 0.
   const mainRef = useRef<HTMLElement>(null)
   const scrollsRef = useRef(new Map<string, number>())
-  const prevPathRef = useRef(location.pathname)
   useLayoutEffect(() => {
     const el = mainRef.current
-    if (!el) return
-    if (prevPathRef.current !== location.pathname) {
-      scrollsRef.current.set(prevPathRef.current, el.scrollTop)
-      prevPathRef.current = location.pathname
-    }
-    el.scrollTop = scrollsRef.current.get(location.pathname) ?? 0
+    if (el) el.scrollTop = scrollsRef.current.get(location.pathname) ?? 0
   }, [location.pathname])
 
   // Load the tool catalog; on failure keep an error note and retry when the
@@ -305,7 +310,11 @@ export default function Layout() {
           aria-label="Close navigation"
         />
       )}
-      <main className="main" ref={mainRef}>
+      <main
+        className="main"
+        ref={mainRef}
+        onScroll={(e) => scrollsRef.current.set(location.pathname, e.currentTarget.scrollTop)}
+      >
         {/* Home stays mount-on-visit so its health lamps re-check each time. */}
         {location.pathname === '/' && <Home />}
         {location.pathname !== '/' && activeSlug === null && (
@@ -316,10 +325,18 @@ export default function Layout() {
         {openTabs.map((slug) => {
           const Page = PAGES[slug]
           return (
+            // Per-host ErrorBoundary: Suspense doesn't catch a rejected lazy
+            // chunk or a render error, and without a boundary here one broken
+            // tool would unmount every host — losing all the kept-alive state
+            // these tabs exist to preserve.
             <div key={slug} className="tool-host" hidden={slug !== activeSlug}>
-              <Suspense fallback={<div className="note info">Loading…</div>}>
-                <Page />
-              </Suspense>
+              <ToolActiveContext.Provider value={slug === activeSlug}>
+                <ErrorBoundary>
+                  <Suspense fallback={<div className="note info">Loading…</div>}>
+                    <Page />
+                  </Suspense>
+                </ErrorBoundary>
+              </ToolActiveContext.Provider>
             </div>
           )
         })}

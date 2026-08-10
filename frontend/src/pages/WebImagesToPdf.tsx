@@ -7,6 +7,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { api, artifactUrl } from '../api'
 import Button from '../components/Button'
+import { useToolActive } from '../toolHost'
 import type { WebPdfCapture } from '../types/api'
 
 export default function WebImagesToPdf() {
@@ -17,10 +18,16 @@ export default function WebImagesToPdf() {
   const [result, setResult] = useState<WebPdfCapture | null>(null)
   const [error, setError] = useState<string | null>(null)
   const busy = useRef(false) // pause the poll while a request is in flight
+  const active = useToolActive()
 
-  // Independent status region: poll every 3s while mounted so a session
-  // opened before a reload (or closed out-of-band) is reflected here.
+  // Independent status region: poll every 3s while the tab is VISIBLE so a
+  // session opened before a reload (or closed out-of-band) is reflected here.
+  // Gated on the tab, not the mount: keep-alive keeps this page mounted in
+  // the background, and an open-ended poll from a hidden tab would hit the
+  // backend forever. Re-activating runs tick() immediately, so the status is
+  // fresh the moment the user returns.
   useEffect(() => {
+    if (!active) return
     let alive = true
     const tick = async () => {
       if (busy.current) return
@@ -37,7 +44,7 @@ export default function WebImagesToPdf() {
       alive = false
       clearInterval(timer)
     }
-  }, [])
+  }, [active])
 
   const openBrowser = async () => {
     setError(null)

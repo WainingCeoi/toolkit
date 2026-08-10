@@ -4,13 +4,17 @@
 
 /** Tool slug from a location pathname, or null when not a tool route. */
 export function parseToolSlug(pathname: string): string | null {
-  const m = /^\/tools\/([^/]+)$/.exec(pathname)
+  // Trailing slash tolerated: the old exact-route table accepted it, and
+  // bookmarks/hand-typed links carry it.
+  const m = /^\/tools\/([^/]+)\/?$/.exec(pathname)
   return m ? m[1] : null
 }
 
 /** Open tabs in opening order, then tools that only have tracked jobs. */
 export function tabOrder<T extends string>(open: T[], jobSlugs: T[]): T[] {
-  return [...open, ...jobSlugs.filter((s) => !open.includes(s))]
+  // Set-dedupe: jobSlugs carries one entry per JOB, so two tracked jobs of
+  // the same tool must still collapse to one tab.
+  return [...new Set([...open, ...jobSlugs])]
 }
 
 /**

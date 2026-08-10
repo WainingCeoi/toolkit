@@ -10,6 +10,10 @@ describe('parseToolSlug', () => {
     expect(parseToolSlug('/tools/magnet-scraper')).toBe('magnet-scraper')
   })
 
+  it('tolerates a trailing slash, like the old route table did', () => {
+    expect(parseToolSlug('/tools/remux/')).toBe('remux')
+  })
+
   it('returns null for home, unknown routes, and nested paths', () => {
     expect(parseToolSlug('/')).toBeNull()
     expect(parseToolSlug('/nope')).toBeNull()
@@ -26,6 +30,11 @@ describe('tabOrder', () => {
   it('passes open tabs through when every job tool is already open', () => {
     expect(tabOrder(['a', 'b'], ['a'])).toEqual(['a', 'b'])
     expect(tabOrder([], [])).toEqual([])
+  })
+
+  it('collapses multiple jobs of one tool into a single tab', () => {
+    expect(tabOrder([], ['x', 'x'])).toEqual(['x'])
+    expect(tabOrder(['a'], ['x', 'x', 'a'])).toEqual(['a', 'x'])
   })
 })
 
