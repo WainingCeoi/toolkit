@@ -215,7 +215,11 @@ export default function WatermarkRemover() {
                 <strong>{img.name}</strong>
                 <span className="wm-dims">
                   {ready[img.id] === false && 'detecting… · '}
-                  {noPattern[img.id] && 'no watermark found — will be left alone · '}
+                  {/* Deliberately not "no watermark found": an empty proposal
+                      also covers the image whose mark IS there and cannot be
+                      isolated safely. Which of the two it was is said in the
+                      results, where it can be said accurately. */}
+                  {noPattern[img.id] && 'nothing to remove — will be left alone · '}
                   {img.width}×{img.height}
                 </span>
               </div>
@@ -308,7 +312,7 @@ export default function WatermarkRemover() {
                 {result.done.length > 0 && (
                   <div className={`note ${snapshot.state === 'failed' ? 'warn' : 'ok'}`}>
                     {snapshot.state === 'running' &&
-                      `${result.done.length} done so far — the zip below updates as each lands.`}
+                      `${result.done.length} done so far — the download appears once the run finishes.`}
                     {snapshot.state === 'done' &&
                       `✅ Cleaned ${result.done.length} image(s).`}
                     {snapshot.state === 'cancelled' &&
@@ -317,7 +321,13 @@ export default function WatermarkRemover() {
                       `The run stopped early, but these ${result.done.length} image(s) finished and are safe to download.`}
                   </div>
                 )}
-                {result.artifact_id && (
+                {/* Only once the run has stopped — finished, cancelled or
+                    failed. Mid-run the zip exists and is downloadable, but a
+                    button offering it while images are still landing invites
+                    taking a partial batch for the whole one. The harvest still
+                    happens: cancel or crash lands here too, with whatever was
+                    cleaned. */}
+                {result.artifact_id && snapshot.state !== 'running' && (
                   <Button as="a" href={artifactUrl(result.artifact_id)}>
                     ⬇ Download cleaned images (.zip)
                   </Button>
