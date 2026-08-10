@@ -383,6 +383,31 @@ def test_an_empty_mask_is_skipped_not_written_back(client):
     assert "artifact_id" not in snap["result"]
 
 
+def test_an_empty_mask_on_a_visible_repeat_is_protected(client, monkeypatch):
+    # An empty proposal covers two opposite cases, and the API has to separate
+    # them exactly as the folder pipeline does: nothing was found, or a mark is
+    # demonstrably there and no route could isolate one worth using. The
+    # screenshot in the real sample is the second, and it was being reported as
+    # the first.
+    from toolkit_api.routers import watermark as router
+
+    monkeypatch.setattr(router, "repeating_evidence", lambda rgb: True)
+    batch = upload(client, ("sheet.png", png_bytes((20, 10)))).json()
+    image = batch["images"][0]
+    resp = client.post(
+        "/api/watermark/run",
+        json={
+            "batch_id": batch["batch_id"],
+            "inpainter": "cv2",
+            "masks": {image["id"]: mask_b64(20, 10)},
+        },
+    )
+    snap = wait_for_job(client, resp.json()["job_id"])
+    assert snap["state"] == "done"
+    assert snap["result"]["protected"] == ["sheet.png"]
+    assert snap["result"]["skipped"] == []
+
+
 def test_run_rejects_an_unknown_inpainter(client):
     batch = upload(client, ("a.png", png_bytes())).json()
     resp = client.post(

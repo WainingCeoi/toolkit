@@ -779,6 +779,45 @@ def test_a_watermarked_document_is_left_alone_rather_than_wrecked():
     )
 
 
+def test_auto_withholds_a_fallback_mask_it_would_not_be_allowed_to_use():
+    """The fallback may only OFFER a mask it would actually be allowed to use.
+
+    A page of text is the shape that breaks the auto fallback: its lines form
+    an evenly spaced run, so it reads as carrying a repeating mark, and the
+    texture filter then marks the LETTERING — 8.44% of the frame at a
+    destruction of 222 against a bar of 88. The run's own guard refused that
+    mask, so nothing was ever damaged, but the review panel had already shown
+    a page covered in red over the content rather than any watermark. The real
+    case was a product sheet whose watermark is a large faint per-panel logo,
+    a shape the texture filter cannot see at all; this reproduces it without
+    shipping the photograph.
+
+    Asking the removal question at proposal time is what withholds the offer.
+    """
+    from watermark import detect
+    from watermark.pipeline import destruction
+
+    page = _document()
+    fallback = detect.propose_texture_mask(page, 50)
+    assert fallback.any(), "fixture no longer makes the texture detector fire"
+    assert destruction(page, fallback, 3) > 88, "fixture is no longer destructive"
+
+    mask, used = propose_mask_detailed(page, 50, detector="auto")
+    assert used == "none", f"auto offered a {used} mask over a page of text"
+    assert np.count_nonzero(mask) == 0
+
+    # And the gate is the only thing standing between the two: with it
+    # disabled the same call hands back exactly the mask above.
+    real = detect._worth_removing
+    detect._worth_removing = lambda rgb, m: True
+    try:
+        ungated, kind = propose_mask_detailed(page, 50, detector="auto")
+    finally:
+        detect._worth_removing = real
+    assert kind == "texture"
+    assert np.count_nonzero(ungated) == np.count_nonzero(fallback)
+
+
 @pytest.mark.parametrize("background", ["sky_grass", "render_dither", "gradient"])
 def test_an_ordinary_photograph_is_not_refused(background):
     # The guard must not cost a single ordinary image. Measured over five

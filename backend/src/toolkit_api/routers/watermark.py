@@ -31,6 +31,7 @@ from watermark.detect import (
     PATTERN,
     collect_marks,
     propose_mask_detailed,
+    repeating_evidence,
 )
 from watermark.inpaint import (
     INPAINTERS,
@@ -194,9 +195,11 @@ def auto_mask(
     ``X-Watermark-Detector`` names the detector that actually ran — under
     ``auto`` that is ``pattern``, or ``texture`` for an image that demonstrably
     carries a repeating mark no pattern could be recovered for, or ``none``.
-    An empty mask means the image will be left alone; a texture fallback mask
-    is shown as proposed, and the run's destruction guard still has the last
-    word on whether removing it would cost more than the mark is worth.
+    An empty mask means the image will be left alone, either because nothing
+    was found or because what was found could not be isolated into a mask worth
+    using; the run says which. Any mask returned here is one the run would
+    actually apply — the fallback is checked against the destruction guard
+    before it is offered, not after.
     """
     if detector not in DETECTORS:
         raise HTTPException(
@@ -353,8 +356,15 @@ def run(req: WatermarkRunIn, state: StateDep, watermarks: WatermarksDep):
                     if not mask.any():
                         # Nothing to remove. Writing the image back unchanged
                         # would present a no-op as a cleaned result, so say
-                        # plainly that it was left alone.
-                        skipped.append(entry["name"])
+                        # plainly that it was left alone -- and say WHICH kind
+                        # of left alone, exactly as the folder pipeline does.
+                        # An empty proposal covers two opposite cases: no
+                        # watermark was found, or one is demonstrably there and
+                        # no route could isolate a mask worth using.
+                        if repeating_evidence(rgb):
+                            protected.append(entry["name"])
+                        else:
+                            skipped.append(entry["name"])
                         job.update_item(idx, pct=100, state="done")
                         publish()
                         continue

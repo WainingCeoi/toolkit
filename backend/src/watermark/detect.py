@@ -166,16 +166,19 @@ def propose_mask_detailed(
     than doing nothing. Asked for by name, PATTERN answers NONE for those.
 
     AUTO is the difference between that lesson and abandoning the images it
-    was learned on. It leads with PATTERN, and falls back to TEXTURE only for
-    an image that DEMONSTRABLY carries a repeating mark (repeating_evidence) —
-    which is precisely the case the blanket fallback got wrong in reverse: the
-    six damaged photos had no such evidence reading, while the screenshot
-    whose mark no pattern route can express does. An image with neither a
-    recoverable repeat nor evidence of one stays NONE, so a clean photograph
-    in an AUTO batch is never handed a texture mask of its own seams. The
-    caller still owns the last word on any fallback mask: texture flags
-    content along with the mark, and the destruction guard downstream is what
-    decides whether removal would cost more than the mark is worth.
+    was learned on. It leads with PATTERN, and falls back to TEXTURE only when
+    two things hold at once: the image DEMONSTRABLY carries a repeating mark
+    (repeating_evidence), and removing the texture mask would not cost more
+    than the mark is worth (_worth_removing). The first condition is what the
+    blanket fallback got wrong in reverse — the six damaged photos had no such
+    evidence reading. The second is what stops the fallback offering a mask of
+    the picture: on a product sheet whose watermark is a large faint per-panel
+    logo, texture marks the mullions and the body text instead, and that offer
+    is now withheld rather than shown and then vetoed downstream.
+
+    An image with neither a recoverable repeat nor evidence of one stays NONE,
+    so a clean photograph in an AUTO batch is never handed a texture mask of
+    its own seams.
 
     TEXTURE still runs when it is asked for explicitly.
     """
@@ -193,9 +196,35 @@ def propose_mask_detailed(
         return pattern, PATTERN
     if detector == AUTO and repeating_evidence(rgb):
         texture = propose_texture_mask(rgb, sensitivity)
-        if texture.any():
+        if texture.any() and _worth_removing(rgb, texture):
             return texture, TEXTURE
     return np.zeros(rgb.shape[:2], np.uint8), NONE
+
+
+def _worth_removing(rgb: np.ndarray, mask: np.ndarray) -> bool:
+    """Whether removing ``mask`` would cost less than the watermark is worth.
+
+    The fallback is only allowed to OFFER a mask it would actually be allowed
+    to use. Without this the auto route proposed a texture mask on a product
+    sheet whose real watermark is a large faint logo, one per photo panel at a
+    different size — a shape the texture filter cannot see. What it marked
+    instead was the content: window mullions, furniture edges, body text. The
+    run's own guard then refused that mask (measured: a destruction of 206
+    against a bar of 88) so nothing was ever damaged, but the review panel had
+    already shown a page covered in red over the picture rather than the mark,
+    and the reason given for skipping the image was wrong.
+
+    Asking the same question at proposal time makes the offer honest: the
+    fallback appears only where it is real, and where it is not, the image is
+    reported as carrying a watermark that could not be isolated. Only the
+    fallback pays for this — the pattern routes mask their own recovered mark
+    and answer for themselves.
+    """
+    # Imported at call time, not module scope: pipeline imports this module, so
+    # the dependency can only close once something actually asks the question.
+    from .pipeline import DEFAULT_DILATE_PX, would_destroy_content
+
+    return not would_destroy_content(rgb, mask, DEFAULT_DILATE_PX)
 
 
 def repeating_evidence(rgb: np.ndarray) -> bool:
