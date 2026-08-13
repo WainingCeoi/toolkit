@@ -7,401 +7,312 @@
 ![License](https://img.shields.io/github/license/WainingCeoi/toolkit?style=for-the-badge&logo=gnu&logoColor=white)
 ![Stars](https://img.shields.io/github/stars/WainingCeoi/toolkit?style=for-the-badge&logo=github)
 
-A local app bundling small media & file utilities — a FastAPI backend driving the
-engines, and a React single-page UI.
+Twelve small media & file utilities in one local app — a FastAPI backend driving
+the engines, a React single-page UI, and one `make` entrance.
 
 > **macOS only.** Folder pickers use AppleScript (`osascript`), and several tools
-> drive desktop apps (Chrome, LibreOffice) on this Mac.
-
-A **monorepo** with one entrance:
-
-```
-toolkit/
-├── Makefile        one entrance: install / dev / start / host / build / test / clean
-├── backend/        FastAPI service + the engines (Python, src layout)
-└── frontend/       React + Vite single-page UI (TypeScript)
-```
+> drive desktop apps (Chrome, LibreOffice, BitComet) on this Mac.
 
 ## Tools
 
-|     | Tool                | What it does                                                                         |
-| --- | ------------------- | ----------------------------------------------------------------------------------- |
-| 🧲  | **Magnet Scraper**  | Scrape unwatched video magnet links automatically, in bulk, or de-duplicate a list. |
-| 🖼️  | **Image to PDF**    | Combine selected images into a single PDF.                                           |
-| 🎬  | **Remux Processor** | Parallel, lossless remuxing (stream-copy) of videos with configurable tracks.       |
-| 🌊  | **Torrent Downloader** | Add a magnet or `.torrent`, keep only the files worth keeping, and send it to BitComet to download. |
-| 🧽  | **Watermark Remover** | Auto-detect watermarks, correct the mask by hand, and inpaint them away (LaMa or cv2). |
-| 📦  | **File Gatherer**   | Recursively gather files by type from a folder and move them into one target.       |
-| 🛰️  | **Optimized-IP Subscription** | Rewrite nodes with optimized Cloudflare IPs and serve LAN subscriptions (Shadowrocket / Clash / Surge). |
-| 🧹  | **Cache Purge**     | Recursively find and delete cache / junk files from a folder.                       |
-| 🌐  | **Web Images to PDF** | Open a web page, scroll to load its images, and capture them into a single PDF.    |
-| 📄  | **Doc to PDF** | Clean a Word doc (accept changes, remove comments) and export it to PDF (LibreOffice). |
-| 📝  | **Doc to Markdown** | Convert PDFs, Office docs, and images into Markdown — text, tables, formulas, images — with MinerU. |
+**🎬 Media**
+
+|     | Tool                   | What it does                                                                     |
+| --- | ---------------------- | -------------------------------------------------------------------------------- |
+| 🧲  | **Magnet Scraper**     | Scrape unwatched video magnets automatically, in bulk, or de-duplicate a list.    |
+| 🎬  | **Remux Processor**    | Parallel, lossless remuxing (stream-copy) with configurable tracks.               |
+| 🌊  | **Torrent Downloader** | Keep only the files worth keeping, then hand the torrent to BitComet.             |
+
+**🗂️ Files & Tools**
+
+|     | Tool                    | What it does                                                                    |
+| --- | ----------------------- | ------------------------------------------------------------------------------- |
+| 🌐  | **Web Images to PDF**   | Open a page, scroll to load its images, capture them into one PDF.               |
+| 📦  | **File Gatherer**       | Recursively gather files by type and move them into one folder.                  |
+| 🖼️  | **Image to PDF**        | Combine selected images (incl. iPhone HEIC) into a single PDF.                   |
+| 🧽  | **Watermark Remover**   | Detect watermarks, review the mask, inpaint them away.                           |
+| 📄  | **Doc to PDF**          | Accept tracked changes, strip comments, render to PDF via LibreOffice.           |
+| 📝  | **Doc to Markdown**     | PDFs / Office docs / images → Markdown with MinerU (text, tables, formulas).     |
+| 🧹  | **Cache Purge**         | Recursively find and delete cache / junk files.                                  |
+| 📦  | **Dependency Upgrader** | Scan a project's `pyproject.toml` / `package.json`, upgrade and commit each one. |
+
+**🌐 Network**
+
+|     | Tool                          | What it does                                                          |
+| --- | ----------------------------- | --------------------------------------------------------------------- |
+| 🛰️  | **Optimized-IP Subscription** | Rewrite nodes with optimized Cloudflare IPs, serve LAN subscriptions.  |
 
 ## Quick start
 
 ```bash
 make install     # backend deps (uv) + frontend deps (npm)
-make dev         # backend :8000 + frontend :5173 together, hot-reload
+make dev         # → http://localhost:5173
 ```
 
-Open **http://localhost:5173**. One command runs both servers; one Ctrl-C stops both.
-The Vite dev server proxies `/api` to the backend, so the UI calls same-origin and
-streaming needs no CORS.
+| Command      | What runs                                | Reachable from            |
+| ------------ | ---------------------------------------- | ------------------------- |
+| `make dev`   | Vite `:5173` + API `:8000`, hot-reload   | this Mac                  |
+| `make start` | built UI + API in one process, `:8000`   | this Mac (loopback)       |
+| `make host`  | the same, bound to `0.0.0.0`             | every device on the Wi-Fi |
 
-Single-server (build the UI and serve it + the API from one process, loopback):
+One Ctrl-C stops everything. In dev, Vite proxies `/api` to the backend, so the UI
+calls same-origin and streaming needs no CORS. `make host PORT=9000` moves the base
+port (auto-advances if busy); `HOST=127.0.0.1 make host` keeps it local.
 
-```bash
-make start       # builds frontend/dist, then serves UI + API on 127.0.0.1:8000
+> ⚠️ **`make host` has no authentication**, and these tools move and permanently
+> delete files on this Mac. It's plain HTTP — run it only on a network you trust.
+
+## How it works
+
+```mermaid
+flowchart LR
+    UI["React + Vite<br/>frontend/src"]
+    subgraph one["one Python process"]
+        API["FastAPI<br/>routers/ — one per tool"]
+        REG["job registry<br/>bounded worker pool"]
+        ENG["engines<br/>toolkit_engine · subgen · watermark"]
+    end
+    EXT["ffmpeg · Chrome · LibreOffice<br/>MinerU · BitComet · SQLite"]
+    UI -- "JSON + SSE over /api" --> API
+    API --> REG --> ENG --> EXT
 ```
 
-### Host it on your LAN
+| Path                            | Role                                                                    |
+| ------------------------------- | ----------------------------------------------------------------------- |
+| `backend/src/toolkit_engine/`   | Framework-free domain logic: ffmpeg, docx, scanning, scraping, PDFs.    |
+| `backend/src/subgen/`           | Subscription engine — parse / rewrite / render / SQLite.                |
+| `backend/src/watermark/`        | Watermark detection and inpainting.                                     |
+| `backend/src/toolkit_api/`      | App factory, `deps.py`, `schemas.py`, `routers/`, the job registry.     |
+| `frontend/src/`                 | `api.ts` (one HTTP + SSE wrapper) and the React pages.                  |
 
-To reach the app from another device on the same Wi-Fi (e.g. import a proxy
-subscription on your phone):
+Anything long-running — remux, conversions, scans, deletions — is a **job**:
 
-```bash
-make host                    # serves API + UI on http://<this-machine>.local:8000
-make host PORT=9000          # different base port (auto-advances if busy)
-HOST=127.0.0.1 make host     # local-only
+```mermaid
+sequenceDiagram
+    participant UI as React page
+    participant API as FastAPI
+    participant W as worker thread
+    UI->>API: POST /api/remux/start
+    API-->>UI: { job_id }
+    API->>W: queued on the pool
+    UI->>API: GET /api/jobs/{id}/events (SSE)
+    loop per item
+        W->>API: pct / state
+        API-->>UI: progress frame
+    end
+    W->>API: result + artifact
+    API-->>UI: done
+    UI->>API: GET /api/artifacts/{id}
 ```
 
-> ⚠️ `make host` binds `0.0.0.0` — everyone on the Wi-Fi can reach the app. **This
-> app has no authentication, and its tools move and permanently delete files on this
-> Mac**, so anyone on the network has full access to those actions. It's plain HTTP;
-> run it only on a network you trust.
-
-## Architecture
-
-```
-frontend (React + Vite) ──/api (JSON + SSE)──▶ backend (FastAPI) ──▶ engines ──▶ ffmpeg / BitComet / Chrome / LibreOffice / MinerU / SQLite
-```
-
-- **`backend/src/subgen/`** — the Optimized-IP Subscription engine (parse / rewrite /
-  render / SQLite store), lifted intact from the Streamlit app.
-- **`backend/src/toolkit_engine/`** — the other tools' domain logic (framework-free,
-  importable): ffmpeg command building, docx cleanup, scanning, scraping, PDF
-  assembly, the native folder picker.
-- **`backend/src/toolkit_api/`** — the web layer: `main.py` (app factory + lifespan
-  builds the shared state on `app.state`), `deps.py`, `schemas.py`, `routers/` (one
-  per tool), and a small job registry streaming long-running progress over SSE.
-- **`frontend/src/`** — `api.ts` (one HTTP + SSE wrapper) and the React components.
-
-Long-running work (remux, conversions, scans, deletions) runs as **jobs**: the UI
-submits a batch, then follows per-item progress over Server-Sent Events.
+Jobs are tracked app-wide, not per page: every open tool keeps a tab in the bottom
+dock with its running jobs, so switching tools — or reloading — never loses a run.
 
 ## Configuration
 
-Settings are read from environment variables / `backend/.env` (copy
-`backend/.env.example`). Everything is optional:
+Environment variables, or `backend/.env` (copy `backend/.env.example`). All optional.
 
-| Variable | Default | Description |
-| --- | --- | --- |
-| `WEBSITE_URL` | empty | Magnet Scraper: base URL walked by Automatic mode |
-| `CUTOFF_VIDEO` | empty | Magnet Scraper: stopping anchor; auto-advanced after each run |
-| `SUB_DB_PATH` | `backend/data/sub.db` | Optimized-IP Subscription: SQLite database path |
-| `SUB_ACCESS_TOKEN` | empty | Require `?token=…` on subscription links |
-| `SUB_PUBLIC_HOST` | empty | Host used in subscription links; defaults to the Mac's `.local` name, then a LAN IP |
-| `WATERMARK_DEVICE` | auto-detected | Watermark Remover: pin the device LaMa runs on (`cpu`, `mps`, `cuda`); by default the best available is used |
-| `WATERMARK_LAMA_MODEL` | empty | Watermark Remover: path to a pre-downloaded `big-lama.pt` (skips the first-use download) |
-| `APP_CORS_ORIGINS` | Vite dev origins | CORS allowlist (only exercised when calling the API cross-origin) |
-| `APP_STATIC_DIR` | `../frontend/dist` | Built UI served by the single-server modes |
-| `TOOLKIT_DISABLED_TOOLS` | empty | Tool slugs to switch off here — hidden from the UI *and* their API not mounted (404). Read at startup |
-| `HOST` / `PORT` | `0.0.0.0` / `8000` | `make host` bind address / base port (shell env, not `.env`) |
+| Variable                 | Default               | What it does                                                     |
+| ------------------------ | --------------------- | ---------------------------------------------------------------- |
+| `WEBSITE_URL`            | empty                 | Magnet Scraper: base URL walked by Automatic mode                |
+| `CUTOFF_VIDEO`           | empty                 | Magnet Scraper: stopping anchor, auto-advanced after each run    |
+| `SUB_DB_PATH`            | `backend/data/sub.db` | Subscription: SQLite database path                               |
+| `SUB_ACCESS_TOKEN`       | empty                 | Require `?token=…` on subscription links                         |
+| `SUB_PUBLIC_HOST`        | `.local` name         | Host used in subscription links, then a LAN IP                   |
+| `WATERMARK_DEVICE`       | auto                  | Pin LaMa to `cpu` / `mps` / `cuda`                               |
+| `WATERMARK_LAMA_MODEL`   | empty                 | Path to a pre-downloaded `big-lama.pt` (skips the download)      |
+| `APP_CORS_ORIGINS`       | Vite dev origins      | CORS allowlist (cross-origin API calls only)                     |
+| `APP_STATIC_DIR`         | `../frontend/dist`    | Built UI served by the single-server modes                       |
+| `TOOLKIT_DISABLED_TOOLS` | empty                 | Slugs to switch off — hidden **and** unmounted (404). Read at startup |
+| `HOST` / `PORT`          | `0.0.0.0` / `8000`    | `make host` bind / base port (shell env, not `.env`)             |
+
+## Requirements
+
+| Needed by             | Requirement                                            | Notes                                                             |
+| --------------------- | ------------------------------------------------------ | ----------------------------------------------------------------- |
+| everything            | [uv](https://docs.astral.sh/uv/)                       | Python 3.14, managed via `.python-version`                        |
+| everything            | [Node.js](https://nodejs.org/) ≥ 20                    | frontend build                                                    |
+| Remux Processor       | [FFmpeg](https://ffmpeg.org/)                          | `brew install ffmpeg`                                             |
+| Torrent Downloader    | [BitComet](https://www.bitcomet.com/)                  | *Options → Remote Access*: enable **both** switches, set user/pass |
+| Watermark Remover     | [torch](https://pytorch.org/)                          | via the `watermark` extra; big-lama (~200 MB) auto-downloads. Falls back to cv2 |
+| Web Images to PDF     | [Google Chrome](https://www.google.com/chrome/)        | matching driver downloaded automatically                          |
+| Doc to PDF            | [LibreOffice](https://www.libreoffice.org/)            | `brew install --cask libreoffice`                                 |
+| Doc to Markdown       | [MinerU](https://github.com/opendatalab/MinerU)        | installed with the backend; models download on first run          |
+
+For BitComet on *this* Mac the app reads credentials from BitComet's own config —
+nothing to configure twice.
 
 ## Development
 
 ```bash
-uv run pytest                  # run ALL backend tests (from backend/) — the single test command
-uv run ruff check src tests    # lint the backend: PEP 8 via ruff — zero errors
-make test                      # the full gate: the above + ruff format, then
-                               # frontend typecheck + eslint + vitest + build
-make build                     # frontend/dist only
-make clean                     # remove build artifacts
+make test        # backend pytest + ruff, then frontend typecheck + eslint + vitest + build
+make build       # frontend/dist only
+make clean       # remove build artifacts
 ```
 
-## Requirements
+From `backend/`: `uv run pytest` is the single backend test command, and
+`uv run ruff check src tests` the lint.
 
-- **macOS** (native folder pickers, desktop-app integrations)
-- [uv](https://docs.astral.sh/uv/) — Python 3.14 is managed automatically via `.python-version`
-- [Node.js](https://nodejs.org/) ≥ 20 (frontend build)
-- [FFmpeg](https://ffmpeg.org/) on your `PATH` — required by **Remux Processor** (`brew install ffmpeg`)
-- [BitComet](https://www.bitcomet.com/) — required by **Torrent Downloader**. Turn on
-  *Options → Remote Access* and enable **both** switches ("via BitComet Mobile App" and
-  "via Web UI"), then set a username and password; for the BitComet on *this* machine the
-  app reads them from BitComet's own config, so there is nothing to configure twice. A
-  BitComet on another machine on the same Wi-Fi can be used instead — see
-  [Sending to another machine's BitComet](#sending-to-another-machines-bitcomet)
-- [torch](https://pytorch.org/) — required by **Watermark Remover**'s LaMa inpainter; installed with the backend via the `watermark` extra, and the big-lama checkpoint (~200 MB) downloads automatically on first use (cached under `~/.cache/torch`). Without it the tool still runs on its cv2 inpainter
-- [Google Chrome](https://www.google.com/chrome/) — required by **Web Images to PDF** (the matching driver is downloaded automatically)
-- [LibreOffice](https://www.libreoffice.org/) — required by **Doc to PDF** (`brew install --cask libreoffice`)
-- [MinerU](https://github.com/opendatalab/MinerU) — required by **Doc to Markdown**; installed with the backend via the `mineru[core]` dependency, its ML models download automatically on first run (cached under `~/.cache/huggingface`)
+## Tool notes
 
-## Tools in detail
+<details>
+<summary><b>🧲 Magnet Scraper</b> — three modes</summary>
 
-### 🧲 Magnet Scraper
+| Mode                  | What it does                                                                      |
+| --------------------- | --------------------------------------------------------------------------------- |
+| **Automatic**         | Walks `WEBSITE_URL` page by page until it reaches `CUTOFF_VIDEO`, scrapes everything newer, then advances the cutoff. |
+| **Manual**            | Paste video page URLs, get their magnets.                                          |
+| **Remove Duplicated** | Paste raw magnets, get the unique set back.                                        |
 
-Three modes:
+</details>
 
-- **Automatic** — walks your source site page by page from the configured
-  `WEBSITE_URL` until it reaches the last-seen video (`CUTOFF_VIDEO`), then scrapes
-  magnets for everything newer. The cutoff is advanced automatically to the newest
-  link after each successful run.
-- **Manual** — paste video page URLs and scrape their magnets.
-- **Remove Duplicated** — paste raw magnet links and get the unique set back.
+<details>
+<summary><b>🎬 Remux Processor</b></summary>
 
-### 🖼️ Image to PDF
+Pick a source folder and videos, set video / audio / subtitle track indices and the
+subtitle language tag, optionally attach external subtitles (matched by filename
+stem), choose an output folder and worker count. Live per-file progress, then a
+success/failure summary. No re-encoding.
 
-Upload one or more images (`png`, `jpg`, `jpeg`, `heic` — iPhone HEIC photos
-supported via `pillow-heif`), name the output, and download the combined PDF.
-Images are ordered by filename.
+</details>
 
-### 🎬 Remux Processor
+<details>
+<summary><b>🌊 Torrent Downloader</b> — a dispatcher, not a download manager</summary>
 
-Lossless, parallel remuxing with FFmpeg (no re-encoding): pick a source folder,
-select videos, configure video / audio / subtitle track indices and the subtitle
-language tag, optionally attach external subtitle files (matched by filename stem),
-choose an output folder and worker count, then watch per-file live progress and a
-success/failure summary.
+```mermaid
+flowchart TD
+    P["paste magnets / pick .torrent"] --> Q["queue held on this side"]
+    Q -- "10 in flight — each answer admits the next" --> R["BitComet fetches metadata"]
+    R --> V["review, folded one row each<br/>default filter: video &gt; 100 MB"]
+    V --> S["Send — same 10-wide window"]
+    S -- "timed out" --> T["retry, up to 3 passes"]
+    T --> S
+    S -- ok --> B["BitComet owns the task"]
+    S -- "failed for real" --> F["Failed panel + Copy magnet"]
+```
 
-### 🌊 Torrent Downloader
+- Every file is reviewed **before any content downloads**. Tick a row to override
+  the filter. The minimum size applies to video and audio only — a global floor
+  would discard every ~40 KB subtitle.
+- Windowing exists because a magnet must be staged *running* to learn its file
+  list: an unwindowed paste of thirty would put thirty swarm fetches on BitComet in
+  one click. A client that starts grinding simply stops being fed.
+- Retries are safe because a send is idempotent — during a batch BitComet's API can
+  answer so slowly that a send reads as failed when the task actually landed.
+- Once sent, the task is BitComet's: pause, watch and remove it there. Nothing is
+  stored here to drift out of date. *Discard* only cancels a staging you never sent.
+- **Pick the destination folder before you resolve** — BitComet fixes a task's save
+  folder at creation and cannot move it after.
 
-Paste a magnet link or pick a `.torrent`, review every file inside it **before any
-content downloads**, and fetch only what matches your filter — by default video
-files over 100 MB, so the screenshots, samples and `RARBG.txt` are left behind.
-Tick any row to override the rule.
+**Another machine's BitComet.** *Change device* → its address (`192.168.1.50:19377`,
+or just the host; port 19377 assumed) + the Web UI credentials **it** uses → *Test
+connection*. Remembered across restarts. Two differences, both because its disk is
+not this one: *Save to* offers that machine's registered folders instead of Browse,
+and `~/…` is refused rather than expanded to this Mac's home.
 
-The minimum size applies to video and audio only. A global floor would discard
-every subtitle the moment you ticked that box, since they are ~40 KB.
+Devices live in `backend/data/torrents.db` (mode `0600`). Remote passwords are
+stored in plaintext because BitComet's login needs the password itself, not a digest
+— the same exposure as `BitComet.xml`, which holds the local one in plaintext too.
 
-This is a **dispatcher, not a download manager**. Once you hit *Send*, the task
-belongs to BitComet: pause it, watch its progress and remove it in BitComet's own
-window, which is the only thing that actually knows what the download is doing.
-Nothing is stored on this side, so there is no second copy of BitComet's task list
-here to drift out of date with it.
+</details>
 
-BitComet is yours — this tool never starts, stops or quits it. *Discard* on a
-review card is the one exception, and it cancels a staging you never sent: a
-magnet has to run while it fetches its metadata, so abandoning one without that
-would leave it downloading with every file enabled.
+<details>
+<summary><b>🧽 Watermark Remover</b> — review the mask, never paint it</summary>
 
-Pick the destination folder *before* you resolve: BitComet fixes a torrent's save
-folder as the task is created and cannot move it afterwards.
+```mermaid
+flowchart TD
+    A["up to 20 png / jpg / webp"] --> D["detect — chosen automatically"]
+    D --> D1["fold the repeating grid<br/>median all tiles together"]
+    D --> D2["pool sparse instances<br/>across the batch"]
+    D --> D3["dual top-hat fallback<br/>single corner logo"]
+    D1 --> V{"does the photo really<br/>deviate under the stamp?"}
+    D2 --> V
+    D3 --> V
+    V -- yes --> M["mask, previewed in red<br/>sensitivity slider widens it"]
+    V -- no --> K["image skipped — nothing written"]
+    M --> I["dilate → inpaint<br/>LaMa, else cv2 · tiled for big photos"]
+    I --> Z["one zip of cleaned PNGs"]
+```
 
-Torrents under review are listed **folded**, one row each, showing only what you
-need to decide — name, how many files are selected, and how big that is. Open a
-row to tick individual files. Long release names are truncated in the middle, so
-the extension and the quality tag stay visible instead of ten rows all reading
-`The.Same.Long.Prefix…`; the full name is in the tooltip.
+- **You see every mask before anything changes.** There is no brush: the detector
+  masks the copies of a mark it actually recovered, or reports that it recovered
+  nothing. Hand-painting the second case damaged photographs while leaving the
+  watermark in place, so the image is skipped instead and the page says which.
+- Folding recovers the mark itself rather than judging pixels — the overlay is
+  identical in every tile, so it survives the median while the photograph cancels
+  out. That makes a mark far too faint to see anywhere on its own legible.
+- Folding alone is **not** evidence: a clean photo can lock onto its own sky
+  gradient. Verifying each stamp against the image is what separates them, and it
+  is why a mark buried in busy texture is skipped rather than guessed at. Evidence
+  and the gates that were tried and rejected are in `backend/src/watermark/pattern.py`.
+- Marks are shared across the batch — one watermarking tool usually ran over all of
+  them — so an image that cannot recover its own is masked from a sibling's.
+- Only marked pixels are ever written, always as PNG (re-encoding inpainted pixels
+  as JPEG would stamp fresh artifacts right where the fill happened). LaMa picks
+  CUDA → MPS → CPU; on an M-series Mac MPS is ~8× faster for output differing by at
+  most one grey level.
 
-BitComet is never shown a whole paste at once. **Resolving is windowed**: it is
-kept at exactly ten magnets fetching metadata, and each one that answers (or
-dies) releases its slot to the next in the queue — nine fetching means one more
-goes, eight means two. The rest of the paste is held on this side, with a
-counter showing how many wait. This matters because a magnet must be staged
-*running* to learn its file list, so an unwindowed paste of thirty would put
-thirty simultaneous swarm fetches on BitComet in one click. **Sending keeps a
-full window the same way** — ten in the air, each answer admitting the next —
-so the pace of both steps adapts to how fast BitComet is actually answering,
-and a client that starts grinding stops being fed until it catches up. Sends that time out anyway are **retried
-automatically** — whatever timed out in a pass is harvested and sent again, up
-to three passes with a pause between them. Starting a task is real work for BitComet (allocate, hash-check,
-reach the swarm), and during a batch its API can answer so slowly that a send
-reads as failed when the task actually landed; retrying is safe because a send
-is idempotent, so a retry that finds the work done simply succeeds. Only what
-still fails on the last pass is reported.
-
-Anything that fails for real — a dead magnet, a BitComet that stayed
-unreachable, a rejected send — lands in a **Failed** panel with its magnet link
-and a *Copy magnet* button, so a torrent worth retrying later is never lost
-back to wherever you copied it from. Its row also stays in the review list with
-the selection intact, so a later manual *Send* needs no re-pasting.
-
-#### Sending to another machine's BitComet
-
-BitComet's Remote Access answers on the LAN, not just on loopback, so the tool
-can hand a torrent to the BitComet on **another machine on the same Wi-Fi** — the
-one with the disk space, or the one that stays awake. Use *Change device* on the
-page, give it that machine's address (`192.168.1.50:19377`, or just the host —
-port 19377 is assumed) plus the Web UI username and password **it** is configured
-with, and press *Test connection* before saving. Devices are remembered and the
-choice survives a restart.
-
-Two things differ for a remote device, both because its disk is not this one:
-the *Save to* field offers that machine's own registered download folders instead
-of a Browse button (which would browse the wrong filesystem), and a `~/…` path is
-refused rather than silently expanded to this Mac's home.
-
-Saved devices live in the tool's local database, `backend/data/torrents.db`
-(mode `0600`; a `bitcomet-devices.json` from an earlier revision is imported
-automatically and removed). Passwords for remote devices are stored in
-plaintext — BitComet's login needs the password itself, not a digest. That is
-the same exposure as `BitComet.xml`, which holds the local one in plaintext
-too. The BitComet on *this* machine is never stored here: its credentials are
-read from BitComet's own config every time.
-
-### 🧽 Watermark Remover
-
-Drop up to 20 `png` / `jpg` / `webp` images and the backend proposes a
-watermark mask per image. **You see every mask before anything changes**: each
-image is drawn with its mask tinted red, over a sensitivity slider that
-refetches the proposal. On run the masks are dilated a few pixels and inpainted
-— **LaMa** (ML, best quality; the ~200 MB model downloads on first use) or
-**cv2** (instant, rougher on large areas). Progress streams per file; results
-are per-file downloads plus a zip of everything.
-
-The mask is reviewed, not painted. There was a brush and an eraser, and dropping
-them is deliberate: the detector masks the copies of a mark it actually
-recovered, or reports that it recovered nothing and the image is **skipped**.
-Hand-painting the second case masks whatever the person could see rather than
-the watermark, and inpainting that damaged photographs while leaving the
-watermark in place — measured at 2.6–6.8% of pixels moved by 31–58 grey levels,
-with the watermark still there afterwards. Doing nothing is the better answer,
-and the page says which images got it.
-
-Only the pixels you marked are ever written, and each image becomes available
-the moment it is done — so a run that stops early still hands back everything
-it finished. Large photos are inpainted in tiles, which is what keeps a 36 MP
-phone photo inside about 12 GB instead of the 100 GB+ it would otherwise ask
-for.
-
-There are two detectors, and the default — *Repeating pattern* — recovers the
-mark itself rather than judging pixels. It finds the grid the overlay repeats
-on and medians all the tiles together, so the mark, identical in every tile,
-survives while the photograph cancels out. That is contrast amplification done
-statistically, and it makes a mark far too faint to see anywhere on its own
-perfectly legible: on one 36 MP photo, folding 29 sky tiles recovered a logo
-and its lettering clearly enough to read. The recovered mark is then matched
-back over the image and **only its copies are masked**, so seams, wires and
-detail are untouched.
-
-Every stamp is then checked against the photo, and kept only where the image
-really does deviate there. That check is what lets this lead: it is how the
-tool knows when the "repeat" it found was an artefact rather than ink. Any
-image where little of the stamp survives falls back, on its own, to the second
-detector — a dual top-hat filter normalised against each pixel's own
-neighbourhood, which works on any watermark including a single corner logo, at
-the cost of also flagging thin detail like tent seams and railings. A batch can
-mix the two, and the page says which ran.
-
-> Folding alone is not evidence of a watermark. A *clean* test photo passed a
-> fold-significance check by locking onto its own sky gradient, scoring higher
-> than genuinely watermarked photos. Verifying each stamp against the image is
-> what separates them: 0.53–0.57 of the stamp survived where a mark was really
-> recovered, against 0.00–0.20 where the period estimate had locked onto
-> scenery — 0.00 on the watermark-free photo.
-
-Recovery does not always work, and when it does not the image is skipped rather
-than guessed at. Two things rescue images that would otherwise be: the mark is
-shared across the batch, so an image that cannot recover its own is masked from
-a sibling's (one watermarking tool usually ran over all of them), and
-sensitivity widens each stamp. Coverage is still thinner over busy ground than
-over sky, where the mark is genuinely buried in the texture.
-
-A third route covers the mark too large for any single frame to fold: about six
-copies of a ~300 px cell, where the fold needs nine. Instances are located
-directly (a copy on smooth sky is a local response peak, and a patch cut around
-one correlates at the others at 0.92–0.94), then **pooled across the batch** —
-nine samples from nine different photographs, which is what makes averaging mean
-anything. What certifies it is that a real overlay repeats at the *same* pitch in
-every image: measured 294.0, 294.0, 294.0 across three photos, against
-321/236/173 and 311/306/213 for coincidental runs in clean frames.
-
-Measured on a sample of eight photos: **8 detected, 0 skipped**, with clean
-control frames still masking nothing at all. Masks from the pooled route are
-small — 0.20–0.27% of frame against 2.0–5.8% for the folded route — because only
-the copies that correlate confidently are stamped.
-
-> The pooled route's one gate is that pitch agreement, and it distinguishes a
-> watermark from coincidence but **not** from a structure that genuinely recurs
-> across a batch at one spacing — a tiled floor, a brick wall, a rank of windows,
-> photographed three or more times. Two things blunt that: matches must be evenly
-> spaced, which excludes repeats receding with perspective, and every mask still
-> faces the per-pixel evidence check. Two stronger gates were tried and both
-> measured worse than useless; see the notes in `pattern.py`.
-
-LaMa runs on the best accelerator it finds — CUDA, then Apple's MPS, then CPU.
-On an M-series Mac that is roughly 8× faster than CPU for output that differs
-by at most one grey level, and it took a 36 MP photo from 118s to 22s. Pin it
-with `WATERMARK_DEVICE` if you need a specific backend.
-
-
-Cleaned images are written as PNG regardless of input — re-encoding inpainted
-pixels as JPEG would stamp fresh artifacts right where the fill happened.
-
-The engine also runs headless over a folder, no web app involved:
+Headless over a folder, no web app involved — it shares marks across the folder the
+same way, and prints what it skipped:
 
 ```bash
 cd backend && uv run python -m watermark clean IN_DIR OUT_DIR --inpainter lama
 ```
 
-The CLI sees the whole folder at once, so it shares marks across it exactly as
-the web page does across a batch. It prints which images were skipped; a
-watermark faint enough to hide inside the scene's own texture does not separate
-at any sensitivity, and nothing is written for those.
+> For images you own or are licensed to edit — removing someone else's watermark
+> from content you have no rights to is not what this is for.
 
-> For images you own or are licensed to edit — removing someone else's
-> watermark from content you have no rights to is not what this is for.
+</details>
 
-### 📦 File Gatherer
+<details>
+<summary><b>🧹 Cache Purge</b> and <b>📦 File Gatherer</b></summary>
 
-Recursively collect files by type and move them into a single folder. Pick source
-and target folders, choose categories (Video, Audio, Image, Subtitle, Document,
-Archive) and/or custom glob patterns, then **Scan & Move** in one click — with live
-progress, auto-numbered duplicate names (`name_1.ext`), and a moved/failed summary.
+**Cache Purge** — edit the globs (defaults `*.dwl`, `*.dwl2`, `*.bak`, `*.log`,
+`*.db`, `*.tmp`, `*.err`; catch-all patterns are refused), **Scan** to preview every
+match with its total size, then **Delete** behind an explicit confirmation. Deletion
+is permanent — the preview is the safety net.
 
-### 🛰️ Optimized-IP Subscription
+**File Gatherer** — pick source and target, choose categories (Video, Audio, Image,
+Subtitle, Document, Archive) and/or custom globs, then **Scan & Move** in one click.
+Duplicates are auto-numbered (`name_1.ext`); you get a moved/failed summary.
 
-Engine in `backend/src/subgen/`. Batch-replace the server in your self-built
-`vmess` / `vless` / `trojan` nodes with optimized Cloudflare IPs, then generate
-subscriptions for Shadowrocket / Clash / Surge — as a LAN link, a QR code, or
-downloadable files. Everything is stored locally in `backend/data/sub.db`; nothing
-leaves your machine.
+</details>
 
-- Paste nodes plus optimized `host[:port][#remark]` addresses; base64 subscriptions
-  auto-expand and duplicates are removed.
-- One click produces Raw / Clash / Surge output, a subscription link
-  (`/sub/{id}?target=…`, served natively by the backend), and a QR code a phone on
-  the same Wi-Fi can import directly — use `make host` so the phone can reach it.
+<details>
+<summary><b>🛰️ Optimized-IP Subscription</b></summary>
+
+Batch-replace the server in your self-built `vmess` / `vless` / `trojan` nodes with
+optimized Cloudflare IPs, then serve subscriptions for Shadowrocket / Clash / Surge.
+Everything stays in `backend/data/sub.db`; nothing leaves the machine.
+
+- Paste nodes plus `host[:port][#remark]` addresses — base64 subscriptions
+  auto-expand, duplicates are dropped.
+- One click yields Raw / Clash / Surge output, a link (`/sub/{id}?target=…`) and a
+  QR code a phone on the same Wi-Fi can import — run `make host` so it can reach it.
 - Identical inputs reuse the same short link (deduplicated by content hash); history
   is listed to reload or delete.
 
-### 🧹 Cache Purge
+</details>
 
-Recursively find and delete cache / junk files from a folder. Edit the file-type
-globs (defaults cover `*.dwl`, `*.dwl2`, `*.bak`, `*.log`, `*.db`, `*.tmp`,
-`*.err`; catch-all patterns are refused), **Scan** to preview every match with total
-size, then **Delete** after an explicit confirmation. Deletion is permanent, so the
-preview is your safety net.
+<details>
+<summary><b>📄 Doc to PDF</b>, <b>📝 Doc to Markdown</b>, <b>🌐 Web Images to PDF</b>, <b>🖼️ Image to PDF</b></summary>
 
-### 🌐 Web Images to PDF
+- **Doc to PDF** — upload `.docx`; tracked changes are accepted and comments removed
+  at the XML level, then LibreOffice renders the PDFs into one zip. No Word needed.
+- **Doc to Markdown** — `pdf`, `png`, `jpg`, `docx`, `pptx`, `xlsx`; each is parsed
+  in a subprocess with live batch progress, and Markdown + `images/` + JSON sidecars
+  come back as one zip. Advanced options pick the backend (`hybrid-engine` default,
+  `pipeline`, `vlm-engine`), parse method, OCR language, effort, formula/table
+  toggles. MinerU's models download on first run, so the first conversion is slower.
+- **Web Images to PDF** — enter a URL, **Open in browser** (a real Chrome window
+  opens on this Mac), scroll until every image has loaded, then **Capture & build
+  PDF**. A bookmarked table of contents is added when the page exposes one.
+- **Image to PDF** — `png` / `jpg` / `jpeg` / `heic`, ordered by filename.
 
-Capture a lazy-loaded web page's images into a single PDF (requires Google Chrome):
-enter the page URL, **Open in browser** — a real Chrome window opens on this Mac —
-scroll until every image has loaded, then **Capture & build PDF**. The page's images
-are downloaded, stitched into a PDF, and a bookmarked table of contents is added
-when the page exposes one.
-
-### 📄 Doc to PDF
-
-Clean Word documents and export them to PDF (no Microsoft Word needed): upload
-`.docx` files; every tracked change is accepted and comments are removed at the XML
-level, then LibreOffice renders the PDFs — bundled into a single zip download.
-
-### 📝 Doc to Markdown
-
-Convert documents to Markdown with MinerU — text, tables, formulas, and extracted
-images. Upload `pdf`, `png`, `jpg`, `docx`, `pptx`, or `xlsx` files; each is parsed
-in a subprocess with live batch progress; all output (Markdown + `images/` + JSON
-sidecars) is bundled into a single zip download. Advanced options pick the MinerU
-backend (`hybrid-engine` default, `pipeline`, `vlm-engine`), parse method, OCR
-language, effort, and formula/table toggles.
-
-> MinerU's models download on first run, so the first conversion takes longer.
+</details>
 
 ## License
 
 Copyright (c) 2026 Waining Ceoi. Licensed under the
-[GNU General Public License v3.0 or later](LICENSE) (GPL-3.0-or-later) — you may
-use, modify, and redistribute this software, but derivative works that you
+[GNU General Public License v3.0 or later](LICENSE) — derivative works you
 distribute must also be released under the GPL.
