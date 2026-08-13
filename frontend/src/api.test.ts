@@ -99,17 +99,16 @@ describe('api helpers', () => {
     )
     vi.stubGlobal('fetch', fetchMock)
 
-    const out = await api.purgeDelete('/tmp/cache', ['/tmp/cache/a.log'])
+    const out = await api.purgeDelete('scan123')
     expect(out).toEqual({ job_id: 'j1' })
 
     const [url, opts] = fetchMock.mock.calls[0]
     expect(url).toBe('/api/purge/delete')
     expect(opts.method).toBe('POST')
     expect(opts.headers['Content-Type']).toBe('application/json')
-    expect(JSON.parse(opts.body)).toEqual({
-      folder: '/tmp/cache',
-      files: ['/tmp/cache/a.log'],
-    })
+    // Only the scan id travels: the server holds the file list, so no request
+    // shape can point the delete at a path it did not choose itself.
+    expect(JSON.parse(opts.body)).toEqual({ scan_id: 'scan123' })
     vi.unstubAllGlobals()
   })
 

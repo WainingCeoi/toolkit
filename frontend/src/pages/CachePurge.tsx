@@ -94,11 +94,20 @@ export default function CachePurge() {
     }
   }
 
-  function runDelete() {
+  async function runDelete() {
     // Unreachable while the Delete button is gated on a current scan.
     if (!scan) return
     setError(null)
-    start(() => api.purgeDelete(scan.folder, scan.files))
+    const started = await start(() => api.purgeDelete(scan.scan_id))
+    if (started === null) {
+      // The scan is spent or expired server-side, so what is on screen has
+      // stopped describing the disk — an armed list can sit in a hidden tab
+      // for hours while files are rewritten underneath it. Drop the preview
+      // and the confirmation rather than leaving a delete button pointed at
+      // contents nobody reviewed.
+      setScan(null)
+      setConfirm(false)
+    }
   }
 
   // Once a delete job reaches any terminal state the previewed list no longer

@@ -6,6 +6,7 @@ message (including the ❌ prefix) carries over from the Streamlit page.
 
 from __future__ import annotations
 
+import re
 import shutil
 from pathlib import Path
 
@@ -18,6 +19,12 @@ from ..deps import JobsDep
 from ..schemas import JobStartedOut
 
 router = APIRouter(prefix="/remux", tags=["remux"])
+
+# ffmpeg treats a leading "scheme:" as a protocol, and not every one of them
+# needs the "//" that the plainer check catches -- "concat:", "pipe:" and
+# "subfile:" are all bare. A Windows drive letter is a single character, so
+# requiring two rules it out.
+_SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]+:")
 
 
 class ScanIn(BaseModel):
@@ -133,6 +140,23 @@ def start(req: StartIn, jobs: JobsDep) -> JobStartedOut:
             status_code=400,
             detail="❌ Select at least one video, audio, or subtitle track.",
         )
+
+    # Every selected entry has to be a real local file. ffmpeg resolves its
+    # input itself and speaks http/rtmp/concat/pipe among others, so a string
+    # like "http://169.254.169.254/…" reaching ffmpeg.input() is an outbound
+    # fetch on this machine's behalf, and any readable media path is a file
+    # this tool will happily copy somewhere the caller names. /scan validates
+    # what it hands out, but nothing required /start to be given those.
+    for video in [*req.selected, *req.external_sub_map.values()]:
+        if not video or "://" in video or _SCHEME.match(video):
+            raise HTTPException(
+                status_code=400,
+                detail="❌ Inputs must be local file paths, not URLs.",
+            )
+        if not Path(video).expanduser().is_file():
+            raise HTTPException(
+                status_code=400, detail=f"❌ Not a file on this machine: {video}"
+            )
 
     out_path = Path(req.out_folder).expanduser()
     try:

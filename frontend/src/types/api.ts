@@ -274,6 +274,9 @@ export interface GatherStartPayload {
 }
 
 export interface PurgeScanResult {
+  /** Names this scan when deleting. The server keeps the file list; the client
+   *  never gets to say which paths to remove. Single-use and time-limited. */
+  scan_id: string
   files: string[]
   errors: string[]
   total_bytes: number

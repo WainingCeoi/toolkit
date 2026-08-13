@@ -138,9 +138,13 @@ def _soffice_available() -> bool:
 def disabled_slugs() -> set[str]:
     """Tool slugs switched off for this machine via TOOLKIT_DISABLED_TOOLS.
 
-    Set it in backend/.env (comma- or space-separated slugs) to hide tools you
-    can't or don't want to run here — e.g. Doc to Markdown on an Intel Mac,
+    Set it in backend/.env (comma- or space-separated slugs) to turn off tools
+    you can't or don't want to run here — e.g. Doc to Markdown on an Intel Mac,
     where MinerU's torch dependency has no macOS x86_64 wheel.
+
+    A disabled tool is dropped from this manifest *and* its router is never
+    mounted (see main.create_app), so its endpoints 404 rather than quietly
+    staying callable. Read at startup, so changes need a restart.
     """
     raw = os.environ.get("TOOLKIT_DISABLED_TOOLS", "")
     return {slug.lower() for slug in raw.replace(",", " ").split()}

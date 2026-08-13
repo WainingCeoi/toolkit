@@ -9,7 +9,7 @@ from pydantic import BaseModel
 
 from toolkit_engine import purge
 
-from ..deps import JobsDep
+from ..deps import JobsDep, PurgeScansDep
 from ..jobs import Job
 from ..schemas import JobStartedOut
 
@@ -22,6 +22,7 @@ class PurgeScanIn(BaseModel):
 
 
 class PurgeScanOut(BaseModel):
+    scan_id: str
     files: list[str]
     errors: list[str]
     total_bytes: int
@@ -29,12 +30,11 @@ class PurgeScanOut(BaseModel):
 
 
 class PurgeDeleteIn(BaseModel):
-    folder: str
-    files: list[str]
+    scan_id: str
 
 
 @router.post("/scan", response_model=PurgeScanOut)
-def scan_folder(req: PurgeScanIn) -> PurgeScanOut:
+def scan_folder(req: PurgeScanIn, scans: PurgeScansDep) -> PurgeScanOut:
     src = Path(req.folder).expanduser()
     # A relative (or empty) typed path would resolve against the app's CWD —
     # refuse it before the delete flow can target the wrong tree.
@@ -52,6 +52,7 @@ def scan_folder(req: PurgeScanIn) -> PurgeScanOut:
         )
     files, errors, total_bytes = purge.scan_folder(src, patterns)
     return PurgeScanOut(
+        scan_id=scans.put(str(src), files),
         files=files,
         errors=[str(error) for error in errors],
         total_bytes=total_bytes,
@@ -60,31 +61,21 @@ def scan_folder(req: PurgeScanIn) -> PurgeScanOut:
 
 
 @router.post("/delete", response_model=JobStartedOut)
-def delete_files(req: PurgeDeleteIn, jobs: JobsDep) -> JobStartedOut:
-    # The client sends back the previewed list from /scan plus the folder it was
-    # scanned from. Confine the (irreversible) delete to that tree server-side:
-    # every path must be absolute and resolve to a file under the scanned folder,
-    # so a tampered or arbitrary path list can't reach files outside it.
-    base = Path(req.folder).expanduser()
-    if not base.is_absolute() or not base.is_dir():
+def delete_files(
+    req: PurgeDeleteIn, jobs: JobsDep, scans: PurgeScansDep
+) -> JobStartedOut:
+    # The client names a scan, never a path. Deleting is irreversible, so the
+    # list has to be one this server produced from its own extension filtering
+    # — an earlier version took the folder and the file list from the same
+    # request and confined one against the other, which `folder: "/"` satisfied
+    # for every absolute path on the machine.
+    scan = scans.take(req.scan_id)
+    if scan is None:
         raise HTTPException(
-            status_code=400, detail="❌ Invalid or missing scan folder."
+            status_code=409,
+            detail="⌛ That scan has expired or was already used — scan again.",
         )
-    base_resolved = base.resolve()
-    files: list[str] = []
-    for raw in req.files:
-        candidate = Path(raw).expanduser()
-        resolved = candidate.resolve()
-        if not candidate.is_absolute() or not (
-            resolved == base_resolved or base_resolved in resolved.parents
-        ):
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"❌ Refusing to delete a path outside the scanned folder: {raw}"
-                ),
-            )
-        files.append(str(candidate))
+    files = scan["files"]
 
     def worker(job: Job) -> dict | None:
         job.set_message("Deleting…")

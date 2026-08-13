@@ -44,9 +44,19 @@ def test_normalize_pattern():
     assert gather.normalize_pattern("   ") is None
 
 
-@pytest.mark.parametrize("token", ["*", "*.*", "**", "*.", ".*", "?"])
+@pytest.mark.parametrize(
+    "token",
+    # The last four are the ones an enumerated deny-list missed: each selects
+    # every name of at least one character, exactly like a bare '*'.
+    ["*", "*.*", "**", "*.", ".*", "?", "?*", "*?", "*.???", "**?"],
+)
 def test_purge_normalize_pattern_rejects_catch_alls(token):
     assert purge.normalize_pattern(token) is None
+
+
+@pytest.mark.parametrize("token", ["*.log", "*.dwl2", "a*.bak", "log", ".tmp"])
+def test_purge_normalize_pattern_keeps_real_globs(token):
+    assert purge.normalize_pattern(token) is not None
 
 
 # --- File Gatherer API ------------------------------------------------------
@@ -214,9 +224,7 @@ def test_purge_scan_and_delete_end_to_end(tool_client, tmp_path):
     assert body["errors"] == []
     assert body["rejected_tokens"] == ["*"]  # catch-all ignored, not applied
 
-    resp = tool_client.post(
-        "/api/purge/delete", json={"folder": str(folder), "files": body["files"]}
-    )
+    resp = tool_client.post("/api/purge/delete", json={"scan_id": body["scan_id"]})
     assert resp.status_code == 200
     snap = wait_for_job(tool_client, resp.json()["job_id"])
     assert snap["state"] == "done"
@@ -225,6 +233,42 @@ def test_purge_scan_and_delete_end_to_end(tool_client, tmp_path):
     for f in body["files"]:
         assert not Path(f).exists()
     assert (folder / "keep.txt").exists()
+
+    # Single-use: the record described a state of the disk that no longer
+    # exists, so replaying it is refused rather than repeated.
+    again = tool_client.post("/api/purge/delete", json={"scan_id": body["scan_id"]})
+    assert again.status_code == 409
+
+
+def test_purge_delete_only_removes_what_the_scan_recorded(tool_client, tmp_path):
+    # The client names a scan, never a path, so there is no request shape that
+    # points the delete at a file the server did not itself select. This is the
+    # property that replaced confining a client file list against a client
+    # folder -- a check `folder: "/"` satisfied for every path on the machine.
+    folder = tmp_path / "cache"
+    folder.mkdir()
+    (folder / "a.log").write_text("junk")
+    outside = tmp_path / "secret.txt"
+    outside.write_text("do not delete me")
+
+    scan = tool_client.post(
+        "/api/purge/scan",
+        json={"folder": str(folder), "patterns_raw": "*.log"},
+    ).json()
+    assert [Path(f).name for f in scan["files"]] == ["a.log"]
+
+    resp = tool_client.post("/api/purge/delete", json={"scan_id": scan["scan_id"]})
+    assert resp.status_code == 200
+    snap = wait_for_job(tool_client, resp.json()["job_id"])
+    assert snap["state"] == "done"
+    assert outside.exists()
+    assert not (folder / "a.log").exists()
+
+
+def test_purge_delete_refuses_an_unknown_or_expired_scan(tool_client):
+    resp = tool_client.post("/api/purge/delete", json={"scan_id": "deadbeefcafe"})
+    assert resp.status_code == 409
+    assert "scan again" in resp.json()["detail"]
 
 
 def test_purge_delete_cancel_keeps_partial_report(
@@ -239,15 +283,16 @@ def test_purge_delete_cancel_keeps_partial_report(
         release.wait(3.0)
         return [paths[0]], []
 
+    (tmp_path / "a.log").write_text("a")
+    (tmp_path / "b.log").write_text("b")
+    scan = tool_client.post(
+        "/api/purge/scan",
+        json={"folder": str(tmp_path), "patterns_raw": "*.log"},
+    ).json()
+
     monkeypatch.setattr(purge, "delete_files", fake_delete_files)
 
-    resp = tool_client.post(
-        "/api/purge/delete",
-        json={
-            "folder": str(tmp_path),
-            "files": [str(tmp_path / "a.log"), str(tmp_path / "b.log")],
-        },
-    )
+    resp = tool_client.post("/api/purge/delete", json={"scan_id": scan["scan_id"]})
     assert resp.status_code == 200
     job_id = resp.json()["job_id"]
     assert started.wait(3.0)
@@ -262,33 +307,28 @@ def test_purge_delete_cancel_keeps_partial_report(
     assert snap["result"]["failed"] == []
 
 
-def test_purge_delete_rejects_path_outside_scanned_folder(tool_client, tmp_path):
+def test_purge_delete_ignores_a_client_supplied_file_list(tool_client, tmp_path):
+    # Belt and braces for the shape change: even if a caller sends the old
+    # folder+files body, those fields are not part of the request model, so the
+    # named path cannot reach the deleter.
     folder = tmp_path / "cache"
     folder.mkdir()
+    (folder / "a.log").write_text("junk")
     outside = tmp_path / "secret.txt"
     outside.write_text("do not delete me")
 
+    scan = tool_client.post(
+        "/api/purge/scan",
+        json={"folder": str(folder), "patterns_raw": "*.log"},
+    ).json()
+
     resp = tool_client.post(
         "/api/purge/delete",
-        json={"folder": str(folder), "files": [str(outside)]},
+        json={"scan_id": scan["scan_id"], "folder": "/", "files": [str(outside)]},
     )
-    assert resp.status_code == 400
-    assert "outside the scanned folder" in resp.json()["detail"]
+    assert resp.status_code == 200
+    wait_for_job(tool_client, resp.json()["job_id"])
     assert outside.exists()
-
-
-def test_purge_delete_rejects_traversal_escape(tool_client, tmp_path):
-    folder = tmp_path / "cache"
-    folder.mkdir()
-    escape = folder / ".." / "secret.txt"
-    (tmp_path / "secret.txt").write_text("do not delete me")
-
-    resp = tool_client.post(
-        "/api/purge/delete",
-        json={"folder": str(folder), "files": [str(escape)]},
-    )
-    assert resp.status_code == 400
-    assert (tmp_path / "secret.txt").exists()
 
 
 def test_purge_delete_reports_per_file_failures(tool_client, tmp_path, monkeypatch):
@@ -301,6 +341,11 @@ def test_purge_delete_reports_per_file_failures(tool_client, tmp_path, monkeypat
     good.write_text("a")
     bad.write_text("b")
 
+    scan = tool_client.post(
+        "/api/purge/scan",
+        json={"folder": str(folder), "patterns_raw": "*.log"},
+    ).json()
+
     real_unlink = Path.unlink
 
     def flaky_unlink(self, *args, **kwargs):
@@ -310,10 +355,7 @@ def test_purge_delete_reports_per_file_failures(tool_client, tmp_path, monkeypat
 
     monkeypatch.setattr(Path, "unlink", flaky_unlink)
 
-    resp = tool_client.post(
-        "/api/purge/delete",
-        json={"folder": str(folder), "files": [str(good), str(bad)]},
-    )
+    resp = tool_client.post("/api/purge/delete", json={"scan_id": scan["scan_id"]})
     assert resp.status_code == 200
     snap = wait_for_job(tool_client, resp.json()["job_id"])
     assert snap["state"] == "done"

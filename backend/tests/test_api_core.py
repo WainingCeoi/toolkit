@@ -245,6 +245,20 @@ def test_registry_never_evicts_a_running_job():
         release.set()
 
 
+def test_disabled_tools_are_not_mounted_at_all(app_state, monkeypatch):
+    # Dropping a tool from the sidebar while its endpoints kept answering made
+    # the setting read as a kill switch it was not -- worst for exactly the
+    # tools someone reaches for it to switch off, which delete and move files.
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setenv("TOOLKIT_DISABLED_TOOLS", "cache-purge")
+    with TestClient(create_app(state=app_state)) as disabled_client:
+        assert disabled_client.post("/api/purge/scan", json={}).status_code == 404
+        assert disabled_client.post("/api/purge/delete", json={}).status_code == 404
+        # An unrelated tool is untouched.
+        assert disabled_client.post("/api/remux/scan", json={}).status_code != 404
+
+
 def test_cancelling_a_queued_job_stops_it_ever_running():
     # Every worker busy, so the next submit can only sit in the queue. A cancel
     # arriving in that window has to mean the work never starts -- for purge

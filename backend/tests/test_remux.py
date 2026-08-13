@@ -207,6 +207,8 @@ def test_start_runs_batch_and_reports_results(tool_client, tmp_path, monkeypatch
 
     monkeypatch.setattr(remux, "run_remux_task", fake_run_remux_task)
 
+    for name in ("good.mkv", "bad.mkv"):
+        (tmp_path / name).write_bytes(b"")  # start only accepts real local files
     out_dir = tmp_path / "out"
     resp = tool_client.post(
         "/api/remux/start",
@@ -251,6 +253,7 @@ def test_start_cancel_keeps_partial_report(
 
     monkeypatch.setattr(remux, "run_remux_task", fake_run_remux_task)
 
+    (tmp_path / "a.mkv").write_bytes(b"")  # start only accepts real local files
     out_dir = tmp_path / "out"
     resp = tool_client.post(
         "/api/remux/start",

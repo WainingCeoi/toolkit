@@ -9,6 +9,7 @@ from fastapi import Depends, HTTPException, Request
 from .artifacts import ArtifactStore
 from .devices import DeviceBook
 from .jobs import JobRegistry
+from .purgescans import PurgeScans
 from .state import AppState
 from .watermarks import WatermarkBatches
 
@@ -45,6 +46,10 @@ def get_devices(request: Request) -> DeviceBook:
     return book
 
 
+def get_purge_scans(request: Request) -> PurgeScans:
+    return request.app.state.state.purge_scans
+
+
 def get_watermarks(request: Request) -> WatermarkBatches:
     batches = request.app.state.state.watermarks
     if batches is None:
@@ -61,3 +66,4 @@ StoreDep = Annotated[object, Depends(get_store)]
 TorrentsDep = Annotated[object, Depends(get_torrents)]
 DevicesDep = Annotated[DeviceBook, Depends(get_devices)]
 WatermarksDep = Annotated[WatermarkBatches, Depends(get_watermarks)]
+PurgeScansDep = Annotated[PurgeScans, Depends(get_purge_scans)]

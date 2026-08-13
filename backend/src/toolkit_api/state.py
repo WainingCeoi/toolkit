@@ -13,6 +13,7 @@ from subgen.db import Store
 from .artifacts import ArtifactStore
 from .devices import Device, DeviceBook
 from .jobs import JobRegistry
+from .purgescans import PurgeScans
 from .watermarks import WatermarkBatches
 
 
@@ -46,6 +47,9 @@ class AppState:
     # Watermark Remover's upload staging: normalized working copies on disk,
     # TTL-swept. None only when an injected state left it out.
     watermarks: WatermarkBatches | None = None
+    # What each Cache Purge scan found. Delete names a scan, not a file list,
+    # so the paths it removes are always ones this server chose.
+    purge_scans: PurgeScans = field(default_factory=PurgeScans)
 
 
 def data_dir() -> Path:

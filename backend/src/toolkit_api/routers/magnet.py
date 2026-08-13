@@ -66,9 +66,19 @@ def _scrape(
 ) -> dict:
     """The page's execution block: parallel fetch with per-URL progress."""
     if not urls:
-        # Page equivalent: {"urls": [], "successful": [], "failed": []} ->
-        # rendered as "No new unwatched video found."
-        return {"urls": [], "successful": [], "failed": [], "total": 0}
+        # Page equivalent: rendered as "No new unwatched video found." Carries
+        # the same keys as the populated result below — the client types both
+        # counts as always-present numbers, and an early return that omitted
+        # them made that a lie for anything reading them.
+        return {
+            "urls": [],
+            "successful": [],
+            "failed": [],
+            "total": 0,
+            "successful_count": 0,
+            "failed_count": 0,
+            "duplicate_count": 0,
+        }
     total = len(urls)
     job.set_message(f"Fetching magnets… 0/{total}")
 

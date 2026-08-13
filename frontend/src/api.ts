@@ -282,8 +282,8 @@ export const api = {
       method: 'POST',
       body: { folder, patterns_raw: patternsRaw },
     }),
-  purgeDelete: (folder: string, files: string[]) =>
-    request<JobStarted>('/purge/delete', { method: 'POST', body: { folder, files } }),
+  purgeDelete: (scanId: string) =>
+    request<JobStarted>('/purge/delete', { method: 'POST', body: { scan_id: scanId } }),
 
   // image to pdf (direct download)
   imgToPdf: (formData: FormData) => requestBlob('/img-to-pdf', formData),

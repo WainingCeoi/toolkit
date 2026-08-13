@@ -39,6 +39,7 @@ from .routers import (
     watermark,
     webpdf,
 )
+from .routers.meta import disabled_slugs
 from .state import AppState, build_state
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
@@ -101,24 +102,34 @@ def create_app(state: AppState | None = None) -> FastAPI:
         allow_headers=["*"],
     )
 
-    for api_router in (
-        meta.router,
-        fs.router,
-        jobs.router,
-        magnet.router,
-        remux.router,
-        gather.router,
-        purge.router,
-        imgpdf.router,
-        webpdf.router,
-        docpdf.router,
-        docmd.router,
-        subs.router,
-        depsync.router,
-        torrent.router,
-        watermark.router,
-    ):
+    # Infrastructure: the manifest, the folder picker, job streams. Always on,
+    # since every tool's progress and downloads come through them.
+    for api_router in (meta.router, fs.router, jobs.router):
         app.include_router(api_router, prefix="/api")
+
+    # One entry per tool in the manifest. A tool switched off in
+    # TOOLKIT_DISABLED_TOOLS is not mounted at all — it used to be dropped from
+    # the sidebar while its endpoints kept answering, which made the setting
+    # read as a kill switch it was not. That gap matters most for exactly the
+    # tools someone would reach for it to turn off: the ones that permanently
+    # delete and move files.
+    disabled = disabled_slugs()
+    for slug, api_router in (
+        ("magnet-scraper", magnet.router),
+        ("remux", remux.router),
+        ("file-gatherer", gather.router),
+        ("cache-purge", purge.router),
+        ("image-to-pdf", imgpdf.router),
+        ("web-images-to-pdf", webpdf.router),
+        ("doc-to-pdf", docpdf.router),
+        ("doc-to-markdown", docmd.router),
+        ("subscription", subs.router),
+        ("dep-upgrade", depsync.router),
+        ("torrent-downloader", torrent.router),
+        ("watermark-remover", watermark.router),
+    ):
+        if slug not in disabled:
+            app.include_router(api_router, prefix="/api")
     # Public subscription route for proxy clients: GET /sub/{id} (no /api). It
     # carries its own SUB_ACCESS_TOKEN gate for token-gated fetches.
     app.include_router(subs.public_router)

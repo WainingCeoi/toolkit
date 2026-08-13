@@ -18,12 +18,18 @@ def normalize_pattern(token):
 
     Catch-all patterns that would match every file are rejected (return None)
     so a stray '*' can't wipe out the whole folder.
+
+    The test is what the token would still select once its wildcards are taken
+    away: a glob that keeps nothing but '*', '?' and dots constrains nothing.
+    An enumerated deny-list used to stand here and missed the ones nobody
+    thinks to list — '?*' matches every name of at least one character just as
+    surely as '*' does, and so do '*?' and '*.???'.
     """
     token = token.strip()
-    if not token or token in {"*", "*.*", "**", "*.", ".*", "?"}:
+    if not token:
         return None
     if "*" in token or "?" in token:
-        return token
+        return None if not token.strip("*?.") else token
     return f"*.{token.lstrip('.')}"
 
 
