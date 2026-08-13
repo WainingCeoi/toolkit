@@ -293,7 +293,7 @@ def test_device(payload: DeviceTestIn, book: DevicesDep) -> DeviceTestOut:
 
 
 @router.post("/resolve")
-async def resolve(
+def resolve(
     torrents: TorrentsDep,
     magnet: Annotated[str | None, Form()] = None,
     file: Annotated[UploadFile | None, File()] = None,
@@ -306,9 +306,16 @@ async def resolve(
 
     The destination is chosen here rather than at send because BitComet fixes
     a task's save folder when the task is created.
+
+    Deliberately a sync `def`, like every other route here, so FastAPI runs it
+    on the threadpool. It talks to BitComet over blocking `requests` with a
+    30s-per-round-trip budget for a remote device; as an `async def` those
+    calls sat on the event loop, and one asleep LAN peer froze every SSE
+    progress stream and every other request in the process along with it. The
+    upload is read through the sync file object for the same reason.
     """
     if file is not None:
-        data = await file.read()
+        data = file.file.read()
         try:
             return torrents.resolve_torrent(data, save_dir)
         except ValueError as exc:

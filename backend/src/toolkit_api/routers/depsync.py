@@ -6,11 +6,15 @@ Two phases keep the review-then-apply contract:
   bumps for review.
 - POST /deps/apply is synchronous — per manifest it recomputes from the synced
   state (server-authoritative) and rewrites the manifest, then commits every
-  changed manifest + lockfile together in a single commit.
+  changed manifest + lockfile together in a single commit. One at a time per
+  folder; see _exclusive_apply.
 """
 
 from __future__ import annotations
 
+import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
@@ -22,6 +26,31 @@ from ..deps import JobsDep
 from ..schemas import JobStartedOut
 
 router = APIRouter(prefix="/deps", tags=["deps"])
+
+# Folders with an apply in flight. Apply is a long synchronous request — many
+# minutes across a monorepo — and the wait invites a second click. Two applies
+# over one tree each capture their own `originals` snapshot, so a rollback in
+# the loser restores stale manifests over the winner's writes; refusing the
+# second outright is the only way that cannot happen.
+_applying: set[str] = set()
+_applying_lock = threading.Lock()
+
+
+@contextmanager
+def _exclusive_apply(root: str) -> Iterator[None]:
+    with _applying_lock:
+        if root in _applying:
+            raise HTTPException(
+                status_code=409,
+                detail="⏳ An upgrade is already running for this folder.",
+            )
+        _applying.add(root)
+    try:
+        yield
+    finally:
+        with _applying_lock:
+            _applying.discard(root)
+
 
 _NO_MANIFESTS = (
     "❌ No pyproject.toml or package.json found under that folder "
@@ -126,6 +155,11 @@ def apply(req: ApplyIn) -> ApplyOut:
             if depsync.git_root(str(manifest.path.parent)) is None:
                 raise HTTPException(status_code=400, detail=_NOT_A_REPO)
 
+    with _exclusive_apply(str(Path(req.folder).expanduser().resolve())):
+        return _apply_manifests(manifests, req)
+
+
+def _apply_manifests(manifests: list, req: ApplyIn) -> ApplyOut:
     results = [depsync.write_manifest(manifest) for manifest in manifests]
     commits: list[dict] = []
 

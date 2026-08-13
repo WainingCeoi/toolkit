@@ -683,3 +683,26 @@ def test_apply_falls_back_to_default_message_when_blank(client, tmp_path, monkey
     assert r.status_code == 200
     subject = _git(repo, "log", "-1", "--format=%s").stdout.strip()
     assert subject == depsync.COMMIT_SUBJECT
+
+
+def test_apply_refuses_a_second_run_on_the_same_folder():
+    # Two applies over one tree each capture their own `originals`, so a
+    # rollback in the loser can restore stale manifests over the winner's
+    # writes. The long, feedback-free request is exactly what invites the
+    # second click, so the second is refused rather than serialised.
+    from fastapi import HTTPException
+
+    from toolkit_api.routers.depsync import _exclusive_apply
+
+    with _exclusive_apply("/tmp/some-root"):
+        with pytest.raises(HTTPException) as excinfo:
+            with _exclusive_apply("/tmp/some-root"):
+                pass
+        assert excinfo.value.status_code == 409
+        # A different folder is unaffected.
+        with _exclusive_apply("/tmp/other-root"):
+            pass
+
+    # Released on the way out, so a later apply is allowed again.
+    with _exclusive_apply("/tmp/some-root"):
+        pass

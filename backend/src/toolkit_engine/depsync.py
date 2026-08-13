@@ -450,12 +450,19 @@ def npm_outdated(folder: str) -> tuple[dict, str | None]:
     npm = shutil.which("npm")
     if npm is None:
         return {}, "❌ npm is not installed or not on PATH."
-    proc = subprocess.run(
-        [npm, "outdated", "--json"],
-        cwd=folder,
-        capture_output=True,
-        text=True,
-    )
+    try:
+        proc = subprocess.run(
+            [npm, "outdated", "--json"],
+            cwd=folder,
+            capture_output=True,
+            text=True,
+            # Bounded like every other registry call here: this one reaches the
+            # network, and without a timeout an unresponsive registry hangs the
+            # caller indefinitely rather than failing the manifest.
+            timeout=_LOCK_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        return {}, f"❌ npm outdated timed out after {_LOCK_TIMEOUT}s."
     out = proc.stdout.strip()
     if not out:
         return {}, None  # nothing outdated
