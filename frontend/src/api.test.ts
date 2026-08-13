@@ -83,7 +83,7 @@ describe('api helpers', () => {
     // The detector rides in the URL so changing it refetches the proposal,
     // the same way the sensitivity slider does.
     expect(watermarkMaskUrl('b1', 'i1', 70)).toBe(
-      '/api/watermark/b1/i1/mask?sensitivity=70&detector=pattern',
+      '/api/watermark/b1/i1/mask?sensitivity=70&detector=auto',
     )
     expect(watermarkMaskUrl('b1', 'i1', 40, 'texture')).toBe(
       '/api/watermark/b1/i1/mask?sensitivity=40&detector=texture',
