@@ -40,10 +40,16 @@ class AppState:
     # it can be switched to. None only when an injected state left it out.
     devices: DeviceBook | None = None
     # Switching devices swaps `torrents` for a manager holding a different HTTP
-    # session and closes the old one. A request that read `torrents` first and
-    # used it after the swap would be talking through a closed session, so the
-    # read-and-replace is serialized here.
+    # session and closes the old one. Serializing the read-and-replace is not
+    # enough on its own: a request reads the manager once and then talks
+    # through it for its whole duration, which for a slow device is tens of
+    # seconds. Both this lock and the in-flight count below are what let the
+    # replaced manager be closed only when nobody is still using it.
     torrents_lock: threading.Lock = field(default_factory=threading.Lock)
+    # id(manager) -> number of requests currently holding it. Keyed by id
+    # because each holder keeps a strong reference for the whole scope, so the
+    # id cannot be recycled underneath its own entry.
+    torrents_users: dict[int, int] = field(default_factory=dict)
     # Watermark Remover's upload staging: normalized working copies on disk,
     # TTL-swept. None only when an injected state left it out.
     watermarks: WatermarkBatches | None = None
@@ -130,7 +136,11 @@ def use_device(state: AppState, device: Device) -> None:
     with state.torrents_lock:
         previous = state.torrents
         state.torrents = build_torrent_manager(device)
-    if previous is not None:
+        # Only close it here if no request is mid-call through it; otherwise the
+        # last one out does (see deps.get_torrents). Closing under an in-flight
+        # request tore down the session it was still reading from.
+        idle = previous is not None and id(previous) not in state.torrents_users
+    if idle and previous is not None:
         previous.close()
 
 

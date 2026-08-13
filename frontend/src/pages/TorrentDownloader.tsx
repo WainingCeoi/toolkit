@@ -6,6 +6,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { api } from '../api'
+import { useToolActive, useToolBusy } from '../toolHost'
 import Button from '../components/Button'
 import CodeBox from '../components/CodeBox'
 import FileDrop from '../components/FileDrop'
@@ -187,7 +188,20 @@ export default function TorrentDownloader() {
   const [sending, setSending] = useState<Set<string>>(new Set())
   const [retryNote, setRetryNote] = useState<string | null>(null)
 
+  // None of this tool's work goes through the job registry — resolving and
+  // sending are async loops living in this component — so the dock cannot see
+  // it and would let the tab close mid-flight, unmounting the only thing
+  // driving them while magnets kept being staged into BitComet.
+  useToolBusy(staging || batching || resolvingHashes.size > 0)
+
+  // Re-probed every time the tab becomes visible, not once per mount. Under
+  // keep-alive this page stays mounted for the whole session, so a one-shot
+  // check froze `bitcometDown` at whatever was true the first time: open the
+  // tool with BitComet closed, start it as the error note instructs, come
+  // back, and Resolve stayed disabled with the same note forever.
+  const tabActive = useToolActive()
   useEffect(() => {
+    if (!tabActive) return
     let cancelled = false
     void (async () => {
       const [next, book] = await Promise.all([
@@ -203,7 +217,7 @@ export default function TorrentDownloader() {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [tabActive])
 
   // A destination is a path on a PARTICULAR machine: `~/Downloads` means
   // nothing on a NAS, and `/volume1/downloads` means nothing here. So each
@@ -331,11 +345,21 @@ export default function TorrentDownloader() {
   // RESOLVE
   // =======================================================
   // Selection for one torrent: shared rule + that torrent's own live ticks.
+  //
+  // Read through refs, not the enclosing render's values. A send batch runs up
+  // to three passes with 5s and 15s waits between them, and the review list
+  // stays interactive throughout — so a tick changed during a wait belongs to a
+  // later render than the one whose `sendBatch` is still running. Closing over
+  // that render's `overrides` meant the retry re-sent the click-time selection
+  // and the card then closed as sent, leaving no sign the edit was dropped.
+  const liveSelection = useRef({ overrides, categories, minMb })
+  liveSelection.current = { overrides, categories, minMb }
+
   function selectedFor(t: TorrentResolve): Set<number> {
-    const entry = overrides.get(t.infohash)
-    const active =
-      entry && entry.key === ruleKey(t.infohash, categories, minMb) ? entry.map : NO_OVERRIDES
-    return selectionFor(t, categories, minMb * MB, active)
+    const { overrides: live, categories: cats, minMb: floor } = liveSelection.current
+    const entry = live.get(t.infohash)
+    const active = entry && entry.key === ruleKey(t.infohash, cats, floor) ? entry.map : NO_OVERRIDES
+    return selectionFor(t, cats, floor * MB, active)
   }
 
   async function pollUntilReady(infohash: string) {

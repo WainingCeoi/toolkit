@@ -31,10 +31,35 @@ def get_store(request: Request):
 
 
 def get_torrents(request: Request):
-    manager = request.app.state.state.torrents
-    if manager is None:
-        raise HTTPException(status_code=503, detail="The torrent engine is not ready.")
-    return manager
+    """The current TorrentManager, held for the life of the request.
+
+    Yielded rather than returned so the in-flight count can be released at the
+    end: a device switch replaces the manager and wants to close the one it
+    replaced, which must not happen while this request is still talking through
+    it. Whoever finishes last does the closing.
+    """
+    state = request.app.state.state
+    with state.torrents_lock:
+        manager = state.torrents
+        if manager is None:
+            raise HTTPException(
+                status_code=503, detail="The torrent engine is not ready."
+            )
+        key = id(manager)
+        state.torrents_users[key] = state.torrents_users.get(key, 0) + 1
+    try:
+        yield manager
+    finally:
+        with state.torrents_lock:
+            remaining = state.torrents_users.get(key, 1) - 1
+            if remaining > 0:
+                state.torrents_users[key] = remaining
+            else:
+                state.torrents_users.pop(key, None)
+            # Replaced while we were using it, and we were the last one.
+            orphaned = remaining <= 0 and manager is not state.torrents
+        if orphaned:
+            manager.close()
 
 
 def get_devices(request: Request) -> DeviceBook:

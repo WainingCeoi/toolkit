@@ -8,7 +8,15 @@
 // stale job can be cleared without unmounting the tool. A tab with a running
 // job refuses to close, so running work can never silently disappear.
 
-import React, { Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import React, {
+  Suspense,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 import { NavLink, Link, useLocation, useNavigate } from 'react-router'
 import { api } from './api'
 import { useJobs } from './jobs'
@@ -21,7 +29,7 @@ import { PAGES, isToolSlug, type ToolSlug } from './pages'
 import { TOOL_EMOJI } from './tools'
 import { readSession, writeSession } from './sessionStore'
 import { nextTabAfterClose, parseToolSlug, restoreTabs, tabOrder } from './tabs'
-import { ToolActiveContext } from './toolHost'
+import { ToolActiveContext, ToolBusyContext, ToolSlugContext } from './toolHost'
 import type { Category } from './types/api'
 
 // Reload restores the tabs, not their form state. See sessionStore for why
@@ -34,10 +42,11 @@ interface DockProps {
   openTabs: ToolSlug[]
   activeSlug: ToolSlug | null
   titles: Record<string, string>
+  busySlugs: Set<string>
   onCloseTab: (slug: ToolSlug) => void
 }
 
-function Dock({ openTabs, activeSlug, titles, onCloseTab }: DockProps) {
+function Dock({ openTabs, activeSlug, titles, busySlugs, onCloseTab }: DockProps) {
   const { jobs, dismiss } = useJobs()
   const navigate = useNavigate()
 
@@ -86,7 +95,11 @@ function Dock({ openTabs, activeSlug, titles, onCloseTab }: DockProps) {
         // stays visible beside a newer one, and each finished chip carries
         // its own dismiss × — clearing a job never touches the tab itself.
         const toolJobs = Object.entries(jobs).filter(([, j]) => j.toolPath === path)
-        const hasRunning = toolJobs.some(([, j]) => j.snapshot.state === 'running')
+        // Tracked jobs are not the only work worth protecting: a page running
+        // its own async batch (see useToolBusy) is just as unfinished, and
+        // closing its tab would unmount the only thing steering it.
+        const hasRunning =
+          busySlugs.has(slug) || toolJobs.some(([, j]) => j.snapshot.state === 'running')
 
         return (
           // A div, not a Link: the buttons live beside the anchor instead of
@@ -144,7 +157,7 @@ function Dock({ openTabs, activeSlug, titles, onCloseTab }: DockProps) {
               size="sm"
               className="dock-close"
               disabled={hasRunning}
-              title={hasRunning ? 'a job is still running' : 'close tool'}
+              title={hasRunning ? 'this tool is still working' : 'close tool'}
               onClick={() => close(slug)}
               aria-label={`Close ${label}`}
             >
@@ -171,6 +184,21 @@ export default function Layout() {
   const [openTabs, setOpenTabs] = useState<ToolSlug[]>(() =>
     restoreTabs(readSession(TABS_KEY), isToolSlug),
   )
+
+  // Tools reporting page-local work in flight. The setter handed to each host
+  // is cached per slug so it keeps its identity across renders — useToolBusy
+  // depends on it, and a fresh function each render would re-fire that effect
+  // forever.
+  const [busySlugs, setBusySlugs] = useState<Set<string>>(() => new Set())
+  const setToolBusy = useCallback((slug: string, busy: boolean) => {
+    setBusySlugs((prev) => {
+      if (prev.has(slug) === busy) return prev
+      const next = new Set(prev)
+      if (busy) next.add(slug)
+      else next.delete(slug)
+      return next
+    })
+  }, [])
 
   // Visiting a tool opens its tab. Adjusted during render (the documented
   // you-might-not-need-an-effect pattern), and keyed to a path TRANSITION,
@@ -348,11 +376,15 @@ export default function Layout() {
             // these tabs exist to preserve.
             <div key={slug} className="tool-host" hidden={slug !== activeSlug}>
               <ToolActiveContext.Provider value={slug === activeSlug}>
-                <ErrorBoundary>
-                  <Suspense fallback={<div className="note info">Loading…</div>}>
-                    <Page />
-                  </Suspense>
-                </ErrorBoundary>
+                <ToolSlugContext.Provider value={slug}>
+                  <ToolBusyContext.Provider value={setToolBusy}>
+                    <ErrorBoundary>
+                      <Suspense fallback={<div className="note info">Loading…</div>}>
+                        <Page />
+                      </Suspense>
+                    </ErrorBoundary>
+                  </ToolBusyContext.Provider>
+                </ToolSlugContext.Provider>
               </ToolActiveContext.Provider>
             </div>
           )
@@ -362,6 +394,7 @@ export default function Layout() {
         openTabs={openTabs}
         activeSlug={activeSlug}
         titles={titles}
+        busySlugs={busySlugs}
         onCloseTab={(slug) => setOpenTabs((prev) => prev.filter((s) => s !== slug))}
       />
     </div>
