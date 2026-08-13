@@ -56,19 +56,33 @@ export function useToolJob<R>(toolPath: string): ToolJob<R> {
   const { jobs, track } = useJobs()
   const [jobId, setJobId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  // True from the click until the job is tracked. Without it `running` stays
+  // false for the whole start request — which for a mask-laden or multi-file
+  // upload is seconds — leaving every page's Start button live and a second
+  // click free to launch a duplicate of the same heavy job.
+  const [starting, setStarting] = useState(false)
 
   const start = useCallback(
     async (startFn: () => Promise<JobStarted>): Promise<string | null> => {
       setError(null)
+      setStarting(true)
+      let id: string
       try {
-        const { job_id: id } = await startFn()
-        setJobId(id)
-        track(id, toolPath).catch((err: Error) => setError(err.message))
-        return id
+        id = (await startFn()).job_id
       } catch (err) {
         setError((err as Error).message)
+        setStarting(false)
         return null
       }
+      setJobId(id)
+      // Stays set across the SSE handshake too: the snapshot that `running`
+      // reads only exists once the first frame lands. track() resolves when
+      // the job reaches a terminal state, by which point the snapshot carries
+      // the gate on its own.
+      track(id, toolPath)
+        .catch((err: Error) => setError(err.message))
+        .finally(() => setStarting(false))
+      return id
     },
     [track, toolPath],
   )
@@ -84,6 +98,6 @@ export function useToolJob<R>(toolPath: string): ToolJob<R> {
   const activeId = jobId && jobs[jobId] ? jobId : contextId
 
   const snapshot = (activeId ? (jobs[activeId]?.snapshot ?? null) : null) as Job<R> | null
-  const running = snapshot ? snapshot.state === 'running' : false
+  const running = starting || (snapshot ? snapshot.state === 'running' : false)
   return { start, snapshot, running, error, setError }
 }

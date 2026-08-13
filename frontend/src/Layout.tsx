@@ -19,31 +19,14 @@ import ThemeToggle from './components/ThemeToggle'
 import Home from './Home'
 import { PAGES, isToolSlug, type ToolSlug } from './pages'
 import { TOOL_EMOJI } from './tools'
+import { readSession, writeSession } from './sessionStore'
 import { nextTabAfterClose, parseToolSlug, restoreTabs, tabOrder } from './tabs'
 import { ToolActiveContext } from './toolHost'
 import type { Category } from './types/api'
 
-// sessionStorage (not local): each browser tab is its own workbench, and a
-// fresh session starts clean. Reload restores the tabs, not their form state.
-// Guarded reads/writes: storage access can throw (private mode, hardened
-// browsers), and tab persistence is not worth crashing the app over.
+// Reload restores the tabs, not their form state. See sessionStore for why
+// every read and write is guarded.
 const TABS_KEY = 'toolkit.openTabs'
-
-function loadStoredTabs(): string | null {
-  try {
-    return sessionStorage.getItem(TABS_KEY)
-  } catch {
-    return null
-  }
-}
-
-function storeTabs(tabs: string[]) {
-  try {
-    sessionStorage.setItem(TABS_KEY, JSON.stringify(tabs))
-  } catch {
-    // best-effort only
-  }
-}
 
 const toolPath = (slug: string) => `/tools/${slug}`
 
@@ -186,7 +169,7 @@ export default function Layout() {
   const activeSlug = rawSlug !== null && isToolSlug(rawSlug) ? rawSlug : null
 
   const [openTabs, setOpenTabs] = useState<ToolSlug[]>(() =>
-    restoreTabs(loadStoredTabs(), isToolSlug),
+    restoreTabs(readSession(TABS_KEY), isToolSlug),
   )
 
   // Visiting a tool opens its tab. Adjusted during render (the documented
@@ -204,7 +187,7 @@ export default function Layout() {
   }
 
   useEffect(() => {
-    storeTabs(openTabs)
+    writeSession(TABS_KEY, JSON.stringify(openTabs))
   }, [openTabs])
 
   // Per-route scroll memory: pages share one scroll container, so switching

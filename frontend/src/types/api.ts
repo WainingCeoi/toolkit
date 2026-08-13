@@ -62,6 +62,11 @@ export interface JobStarted {
   job_id: string
 }
 
+/** POST /jobs/{id}/cancel. False means the job had already finished. */
+export interface JobCancel {
+  cancelling: boolean
+}
+
 // ---------------------------------------------------------- job result shapes
 
 /**

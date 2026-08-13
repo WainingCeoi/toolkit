@@ -11,6 +11,7 @@ import type {
   GatherStartPayload,
   Health,
   Job,
+  JobCancel,
   JobStarted,
   MagnetConfig,
   MarkdownHealth,
@@ -149,21 +150,51 @@ export const artifactUrl = (id: string): string => `${BASE}/artifacts/${id}`
 const TERMINAL_STATES = new Set(['done', 'failed', 'cancelled'])
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
-// Fallback when the SSE stream drops mid-job: poll the status endpoint until
-// the job reaches a terminal state, then resolve from that. Rejects only if the
-// job can't be reached at all (e.g. it was evicted -> 404).
+const POLL_INTERVAL_MS = 500
+// Roughly a minute of unreachable server before giving up, given the backoff
+// below. Long enough to ride out a Wi-Fi handover, short enough that a truly
+// dead backend still resolves the job instead of polling forever.
+const MAX_POLL_FAILURES = 8
+const MAX_POLL_BACKOFF_MS = 15000
+
+/**
+ * Fallback when the SSE stream drops mid-job: poll until the job reaches a
+ * terminal state.
+ *
+ * There is deliberately NO overall time budget. Jobs here legitimately run for
+ * half an hour (a MinerU conversion), and a poller that gives up first would
+ * report a still-running job as failed — re-enabling Start, inviting a
+ * duplicate run, and losing the artifact id, which only ever travels inside
+ * the snapshot. The only fatal answer is 404: the registry keeps recent jobs,
+ * so a missing one is genuinely gone rather than slow. Everything else is
+ * treated as transient and retried with backoff.
+ */
 async function pollJob<R>(
   jobId: string,
   onSnapshot: (snapshot: Job<R>) => void,
-  maxTries = 1200,
 ): Promise<Job<R>> {
-  for (let i = 0; i < maxTries; i++) {
-    const snap = await request<Job<R>>(`/jobs/${jobId}`)
-    onSnapshot(snap)
-    if (TERMINAL_STATES.has(snap.state)) return snap
-    await sleep(500)
+  let failures = 0
+  let last: string | null = null
+  for (;;) {
+    try {
+      const snap = await request<Job<R>>(`/jobs/${jobId}`)
+      failures = 0
+      // Deduped like the SSE side (routers/jobs.py only pushes on change), so
+      // a quiet job doesn't churn the jobs context twice a second for an hour.
+      const payload = JSON.stringify(snap)
+      if (payload !== last) {
+        last = payload
+        onSnapshot(snap)
+      }
+      if (TERMINAL_STATES.has(snap.state)) return snap
+      await sleep(POLL_INTERVAL_MS)
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) throw err
+      failures += 1
+      if (failures >= MAX_POLL_FAILURES) throw err
+      await sleep(Math.min(POLL_INTERVAL_MS * 2 ** failures, MAX_POLL_BACKOFF_MS))
+    }
   }
-  throw new Error('Timed out waiting for the job to finish.')
 }
 
 // Follow a job's SSE progress stream. Calls onSnapshot(snapshot) for every
@@ -217,7 +248,9 @@ export const api = {
 
   // jobs
   job: (id: string) => request<Job<unknown>>(`/jobs/${id}`),
-  cancelJob: (id: string) => request<null>(`/jobs/${id}/cancel`, { method: 'POST' }),
+  // `cancelling: false` means the job had already finished — a refused cancel,
+  // not an error, so callers can say so instead of leaving the button dead.
+  cancelJob: (id: string) => request<JobCancel>(`/jobs/${id}/cancel`, { method: 'POST' }),
 
   // magnet scraper
   magnetConfig: () => request<MagnetConfig>('/magnet/config'),
