@@ -19,7 +19,7 @@ A **monorepo** with one entrance:
 toolkit/
 ├── Makefile        one entrance: install / dev / start / host / build / test / clean
 ├── backend/        FastAPI service + the engines (Python, src layout)
-└── frontend/       React + Vite single-page UI (JavaScript)
+└── frontend/       React + Vite single-page UI (TypeScript)
 ```
 
 ## Tools
@@ -85,7 +85,7 @@ frontend (React + Vite) ──/api (JSON + SSE)──▶ backend (FastAPI) ─�
 - **`backend/src/toolkit_api/`** — the web layer: `main.py` (app factory + lifespan
   builds the shared state on `app.state`), `deps.py`, `schemas.py`, `routers/` (one
   per tool), and a small job registry streaming long-running progress over SSE.
-- **`frontend/src/`** — `api.js` (one HTTP + SSE wrapper) and the React components.
+- **`frontend/src/`** — `api.ts` (one HTTP + SSE wrapper) and the React components.
 
 Long-running work (remux, conversions, scans, deletions) runs as **jobs**: the UI
 submits a batch, then follows per-item progress over Server-Sent Events.
@@ -106,6 +106,7 @@ Settings are read from environment variables / `backend/.env` (copy
 | `WATERMARK_LAMA_MODEL` | empty | Watermark Remover: path to a pre-downloaded `big-lama.pt` (skips the first-use download) |
 | `APP_CORS_ORIGINS` | Vite dev origins | CORS allowlist (only exercised when calling the API cross-origin) |
 | `APP_STATIC_DIR` | `../frontend/dist` | Built UI served by the single-server modes |
+| `TOOLKIT_DISABLED_TOOLS` | empty | Tool slugs to switch off here — hidden from the UI *and* their API not mounted (404). Read at startup |
 | `HOST` / `PORT` | `0.0.0.0` / `8000` | `make host` bind address / base port (shell env, not `.env`) |
 
 ## Development
@@ -113,7 +114,8 @@ Settings are read from environment variables / `backend/.env` (copy
 ```bash
 uv run pytest                  # run ALL backend tests (from backend/) — the single test command
 uv run ruff check src tests    # lint the backend: PEP 8 via ruff — zero errors
-make test                      # both of the above + a frontend build check
+make test                      # the full gate: the above + ruff format, then
+                               # frontend typecheck + eslint + vitest + build
 make build                     # frontend/dist only
 make clean                     # remove build artifacts
 ```
