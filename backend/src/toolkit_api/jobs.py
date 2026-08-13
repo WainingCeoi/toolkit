@@ -11,6 +11,7 @@ run exactly one worker (see host.py).
 
 from __future__ import annotations
 
+import queue
 import threading
 import time
 import uuid
@@ -104,20 +105,27 @@ class Job:
 
 
 class JobRegistry:
-    """Creates jobs, runs their workers in daemon threads, keeps the last N.
+    """Creates jobs, runs their workers on a bounded pool, keeps the last N.
 
-    Workers run on daemon threads so a long child process (a 30-min MinerU run)
-    never blocks process exit, but concurrency is capped by a semaphore so a
-    burst of submits can't spawn threads without bound. shutdown() cancels
-    in-flight jobs on teardown so their children (ffmpeg, …) get cleaned up.
+    Work is handed to a fixed set of daemon worker threads that pull from a
+    queue. Daemon, so a long child process (a 30-min MinerU run) never blocks
+    process exit; fixed, so a burst of submits queues instead of spawning a
+    thread per job. The pool grows lazily to max_workers and no further, which
+    is the bound — an earlier version acquired its semaphore *inside* the new
+    thread, so N submits still created N live threads with N-8 parked.
+
+    shutdown() cancels in-flight jobs on teardown so their children (ffmpeg, …)
+    get cleaned up.
     """
 
     def __init__(self, max_jobs: int = 50, max_workers: int = 8):
         self._jobs: OrderedDict[str, Job] = OrderedDict()
         self._lock = threading.Lock()
         self._max_jobs = max_jobs
-        self._slots = threading.BoundedSemaphore(max_workers)
-        self._threads: set[threading.Thread] = set()
+        self._max_workers = max_workers
+        # A queued item is a (job, worker) pair; None is the retire signal.
+        self._queue: queue.SimpleQueue = queue.SimpleQueue()
+        self._workers: list[threading.Thread] = []
 
     def submit(
         self,
@@ -125,52 +133,70 @@ class JobRegistry:
         item_names: list[str],
         worker: Callable[[Job], dict | None],
     ) -> Job:
-        """Create a job and run `worker(job)` in a daemon thread.
+        """Create a job and run `worker(job)` on the worker pool.
 
         The worker reports progress via job.update_item()/set_message(),
-        checks job.cancelled between items, and returns the result dict.
+        checks job.cancelled between items, and returns the result dict. A job
+        submitted while every worker is busy waits its turn as 'running'.
         """
         job = Job(tool, item_names)
         with self._lock:
             self._jobs[job.id] = job
             self._evict_finished()
+            self._grow_pool()
+        self._queue.put((job, worker))
+        return job
 
-        def run() -> None:
-            # Cap concurrent execution; a queued job stays 'running' until a slot
-            # frees (a single user never hits the bound in practice).
-            self._slots.acquire()
+    def _grow_pool(self) -> None:
+        """Add a worker thread if the pool is below its cap. Holds the lock."""
+        if len(self._workers) >= self._max_workers:
+            return
+        thread = threading.Thread(
+            target=self._serve, name=f"job-worker-{len(self._workers)}", daemon=True
+        )
+        self._workers.append(thread)
+        thread.start()
+
+    def _serve(self) -> None:
+        while True:
+            item = self._queue.get()
+            if item is None:
+                return
+            job, worker = item
+            # Cancelled while it sat in the queue: the user asked for this not
+            # to happen before any of it had started, so honour that rather
+            # than beginning the work now that a slot is free. Matters most for
+            # purge, whose worker deletes a first batch of files before its own
+            # cooperative check can run.
+            if job.cancelled:
+                job._finish(None)
+                continue
             try:
                 result = worker(job)
             except Exception as exc:  # noqa: BLE001 — surfaced to the client
                 job._fail(str(exc))
             else:
                 job._finish(result)
-            finally:
-                self._slots.release()
-                with self._lock:
-                    self._threads.discard(threading.current_thread())
-
-        thread = threading.Thread(target=run, name=f"job-{tool}", daemon=True)
-        with self._lock:
-            self._threads.add(thread)
-        thread.start()
-        return job
 
     def shutdown(self, timeout: float = 3.0) -> None:
-        """Cancel in-flight jobs and briefly join their workers (teardown).
+        """Cancel in-flight jobs and briefly join the workers (teardown).
 
         Setting the cancel flag lets cooperative workers stop and clean up their
         children (e.g. remux kills its ffmpeg processes); the bounded join gives
-        them a moment before the daemon threads die with the process.
+        them a moment before the daemon threads die with the process. Anything
+        still queued is cancelled too, so a worker that reaches it retires it
+        without running it.
         """
         with self._lock:
             jobs = list(self._jobs.values())
-            threads = list(self._threads)
+            workers = list(self._workers)
         for job in jobs:
             if job.state not in FINISHED_STATES:
                 job._cancel.set()
+        for _ in workers:
+            self._queue.put(None)
         deadline = time.monotonic() + timeout
-        for thread in threads:
+        for thread in workers:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break

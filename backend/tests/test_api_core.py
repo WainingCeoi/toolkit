@@ -6,6 +6,7 @@ import shutil
 import threading
 import time
 
+from toolkit_api.artifacts import ArtifactStore
 from toolkit_api.jobs import FINISHED_STATES, JobRegistry
 from toolkit_api.main import create_app
 from toolkit_engine import docmd
@@ -240,5 +241,55 @@ def test_registry_never_evicts_a_running_job():
         # The running job outlives every finished job past the cap.
         assert reg.get(running.id) is not None
         assert reg.get(running.id).state == "running"
+    finally:
+        release.set()
+
+
+def test_cancelling_a_queued_job_stops_it_ever_running():
+    # Every worker busy, so the next submit can only sit in the queue. A cancel
+    # arriving in that window has to mean the work never starts -- for purge
+    # that is the difference between deleting files and not.
+    reg = JobRegistry(max_workers=1)
+    release = threading.Event()
+    started = threading.Event()
+    reg.submit("blocker", [], lambda job: release.wait(3.0) or {})
+
+    queued = reg.submit("queued", [], lambda job: started.set() or {})
+    assert reg.cancel(queued.id) is True
+    release.set()
+
+    _wait_finished(reg, queued.id)
+    assert reg.get(queued.id).state == "cancelled"
+    assert not started.is_set(), "a cancelled-while-queued worker still ran"
+
+
+def test_artifact_store_sweeps_stale_files_but_keeps_used_ones():
+    # A long-lived `make host` server used to only ever accumulate: nothing
+    # deleted an artifact before shutdown, including ones whose job had been
+    # evicted and which no client could ask for again.
+    store = ArtifactStore(ttl=0.05)
+    try:
+        stale = store.put_bytes("old.txt", b"old", "text/plain")
+        stale_path = store.get(stale)["path"]
+        time.sleep(0.1)
+        fresh = store.put_bytes("new.txt", b"new", "text/plain")  # sweeps
+
+        assert store.get(stale) is None
+        assert not stale_path.exists()
+        assert store.get(fresh) is not None
+    finally:
+        store.cleanup()
+
+
+def test_worker_pool_is_bounded_by_max_workers():
+    # The bound is on threads, not just on concurrent execution: a burst of
+    # submits must not create a thread each.
+    reg = JobRegistry(max_workers=2)
+    release = threading.Event()
+    before = threading.active_count()
+    for _ in range(20):
+        reg.submit("blocker", [], lambda job: release.wait(3.0) or {})
+    try:
+        assert threading.active_count() - before <= 2
     finally:
         release.set()
