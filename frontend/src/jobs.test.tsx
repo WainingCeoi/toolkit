@@ -60,6 +60,33 @@ describe('useToolJob', () => {
     expect(result.current.error).toBe('nope')
   })
 
+  it('picks the newest job by creation time, not by map order', () => {
+    // Jobs re-attached after a reload land in whatever order their probes
+    // resolve, so the finished older job can be inserted last. Reading map
+    // order as recency handed back its 'done' snapshot and re-enabled Start
+    // while the newer job was still running.
+    const snap = (id: string, state: 'running' | 'done', created: string) => ({
+      id,
+      tool: 'remux',
+      state,
+      message: '',
+      items: [],
+      result: null,
+      error: null,
+      created_at: created,
+    })
+    const { wrapper } = harness({
+      jobs: {
+        // Newer-but-running first, older-but-done second: map order lies.
+        b: { toolPath: TOOL, snapshot: snap('b', 'running', '2026-08-10T12:00:00Z') },
+        a: { toolPath: TOOL, snapshot: snap('a', 'done', '2026-08-10T11:00:00Z') },
+      },
+    })
+    const { result } = renderHook(() => useToolJob(TOOL), { wrapper })
+    expect(result.current.snapshot?.id).toBe('b')
+    expect(result.current.running).toBe(true)
+  })
+
   it('still reports running for a job it did not start itself', () => {
     // Reload and revisit both land here: the page has no local job id, so the
     // gate has to come from whatever the provider is tracking for this tool.

@@ -154,29 +154,47 @@ class JobRegistry:
         thread = threading.Thread(
             target=self._serve, name=f"job-worker-{len(self._workers)}", daemon=True
         )
-        self._workers.append(thread)
+        # Appended only once it is actually running: a thread that failed to
+        # start would otherwise sit in the list as a corpse holding a slot.
         thread.start()
+        self._workers.append(thread)
 
     def _serve(self) -> None:
-        while True:
-            item = self._queue.get()
-            if item is None:
-                return
-            job, worker = item
-            # Cancelled while it sat in the queue: the user asked for this not
-            # to happen before any of it had started, so honour that rather
-            # than beginning the work now that a slot is free. Matters most for
-            # purge, whose worker deletes a first batch of files before its own
-            # cooperative check can run.
-            if job.cancelled:
-                job._finish(None)
-                continue
-            try:
-                result = worker(job)
-            except Exception as exc:  # noqa: BLE001 — surfaced to the client
-                job._fail(str(exc))
-            else:
-                job._finish(result)
+        try:
+            while True:
+                item = self._queue.get()
+                if item is None:
+                    return
+                job, worker = item
+                # Cancelled while it sat in the queue: the user asked for this
+                # not to happen before any of it had started, so honour that
+                # rather than beginning the work now that a slot is free.
+                # Matters most for purge, whose worker deletes a first batch of
+                # files before its own cooperative check can run.
+                if job.cancelled:
+                    job._finish(None)
+                    continue
+                try:
+                    result = worker(job)
+                except Exception as exc:  # noqa: BLE001 — surfaced to the client
+                    job._fail(str(exc))
+                except BaseException as exc:  # noqa: BLE001 — thread is dying
+                    # SystemExit out of a library, an interrupt: this thread is
+                    # going down, and the job it was holding must not be left
+                    # reporting 'running' for the life of the process.
+                    job._fail(f"The worker stopped unexpectedly: {exc!r}")
+                    raise
+                else:
+                    job._finish(result)
+        finally:
+            # Give the slot back, however this thread ends. Losing a worker
+            # used to shrink the pool permanently, because _grow_pool counts
+            # entries and dead ones were never removed — enough deaths and
+            # every later job queued behind nobody, staying 'running' forever.
+            # The next submit now replaces it.
+            with self._lock:
+                here = threading.current_thread()
+                self._workers = [t for t in self._workers if t is not here]
 
     def shutdown(self, timeout: float = 3.0) -> None:
         """Cancel in-flight jobs and briefly join the workers (teardown).

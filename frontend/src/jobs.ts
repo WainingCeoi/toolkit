@@ -91,9 +91,21 @@ export function useToolJob<R>(toolPath: string): ToolJob<R> {
   // gone (component-local state is lost on unmount, but the provider keeps the
   // snapshot). This keeps a running job visible — and its Start button
   // disabled — after navigating away and back, so it can't be launched twice.
+  //
+  // "Most recent" is by creation time, not by position in the map. Insertion
+  // order used to mean recency because jobs could only arrive in start order;
+  // re-attaching them after a reload broke that, since each one lands whenever
+  // its own probe and stream handshake finish. Picking the wrong one hands
+  // back a finished snapshot while a newer job is still running, which
+  // re-enables Start — the duplicate-launch this fallback exists to stop.
   const contextId = useMemo(() => {
-    const ids = Object.keys(jobs).filter((id) => jobs[id]?.toolPath === toolPath)
-    return ids.length ? ids[ids.length - 1] : null
+    const mine = Object.keys(jobs).filter((id) => jobs[id]?.toolPath === toolPath)
+    if (mine.length === 0) return null
+    return mine.reduce((newest, id) =>
+      (jobs[id]?.snapshot.created_at ?? '') > (jobs[newest]?.snapshot.created_at ?? '')
+        ? id
+        : newest,
+    )
   }, [jobs, toolPath])
   const activeId = jobId && jobs[jobId] ? jobId : contextId
 

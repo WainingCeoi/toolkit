@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -12,6 +13,13 @@ from .fsutil import natural_sort_key
 
 DEFAULT_CACHE_TYPES = ["*.dwl", "*.dwl2", "*.bak", "*.log", "*.db", "*.tmp", "*.err"]
 
+# Every character that starts a glob construct rather than matching itself.
+_GLOB_CHARS = frozenset("*?[]{}")
+# A bracket expression: [abc], [!0-9], [a-z], and []abc] where a leading ] is
+# literal. Matched as a whole because the whole thing selects one arbitrary
+# character -- `[!/]` excludes only a separator, so `*[!/]*` takes everything.
+_BRACKET = re.compile(r"\[!?\]?[^]]*\]")
+
 
 def normalize_pattern(token):
     """Turn a user token into a glob: 'bak'/'.bak' -> '*.bak'; keep real globs.
@@ -19,18 +27,23 @@ def normalize_pattern(token):
     Catch-all patterns that would match every file are rejected (return None)
     so a stray '*' can't wipe out the whole folder.
 
-    The test is what the token would still select once its wildcards are taken
-    away: a glob that keeps nothing but '*', '?' and dots constrains nothing.
-    An enumerated deny-list used to stand here and missed the ones nobody
-    thinks to list — '?*' matches every name of at least one character just as
-    surely as '*' does, and so do '*?' and '*.???'.
+    The test is what a name would still have to CONTAIN once every construct
+    that matches arbitrary text is taken away. Nothing left means the pattern
+    selects the entire tree, whatever spelling was used to get there.
+
+    This has been got wrong twice, in the same direction both times. First an
+    enumerated deny-list, which missed '?*' and '*?' and '*.???'. Then stripping
+    only '*', '?' and '.', which missed bracket expressions -- '*[!/]*' reads
+    like a constraint and matches every file on the disk. Hence a rule about
+    what survives rather than a list of what to catch.
     """
     token = token.strip()
     if not token:
         return None
-    if "*" in token or "?" in token:
-        return None if not token.strip("*?.") else token
-    return f"*.{token.lstrip('.')}"
+    if not _GLOB_CHARS.intersection(token):
+        return f"*.{token.lstrip('.')}"  # a bare extension
+    residue = _BRACKET.sub("", token).strip("*?.{},")
+    return token if residue else None
 
 
 def delete_file(file_path):

@@ -6,6 +6,8 @@ import shutil
 import threading
 import time
 
+import pytest
+
 from toolkit_api.artifacts import ArtifactStore
 from toolkit_api.jobs import FINISHED_STATES, JobRegistry
 from toolkit_api.main import create_app
@@ -293,6 +295,27 @@ def test_artifact_store_sweeps_stale_files_but_keeps_used_ones():
         assert store.get(fresh) is not None
     finally:
         store.cleanup()
+
+
+@pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
+def test_pool_recovers_from_a_worker_thread_dying():
+    # A worker killed by something that is not an Exception (SystemExit out of
+    # a library) used to take its pool slot with it: the dead thread still
+    # counted against the cap, so enough deaths left every later job queued
+    # behind nobody, reporting 'running' for the life of the process.
+    reg = JobRegistry(max_workers=1)
+
+    def suicidal(job):
+        raise SystemExit("library called exit")
+
+    doomed = reg.submit("doomed", [], suicidal)
+    _wait_finished(reg, doomed.id)
+    assert reg.get(doomed.id).state == "failed"
+
+    # The pool refills on the next submit, and ordinary work still runs.
+    survivor = reg.submit("quick", [], lambda job: {"ok": True})
+    _wait_finished(reg, survivor.id)
+    assert reg.get(survivor.id).state == "done"
 
 
 def test_worker_pool_is_bounded_by_max_workers():

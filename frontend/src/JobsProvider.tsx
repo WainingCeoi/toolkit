@@ -5,7 +5,7 @@
 // context, hooks, and types it builds on live in ./jobs.
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
-import { api, followJob } from './api'
+import { ApiError, api, followJob } from './api'
 import { JobsContext, type AnyJob, type TrackedJob } from './jobs'
 import { readSessionArray, writeSession } from './sessionStore'
 
@@ -97,8 +97,13 @@ export function JobsProvider({ children }: { children: ReactNode }) {
         .then(() => {
           if (!cancelled) void track(id, toolPath).catch(() => {})
         })
-        .catch(() => {
-          retired.current.add(id) // evicted or unreachable
+        .catch((err: unknown) => {
+          // Only a 404 means the job is genuinely gone. A network blip or a
+          // 502 from the dev proxy while the backend restarts says nothing
+          // about the job, and retiring on those threw away the id — leaving
+          // exactly the orphaned run this restore pass exists to prevent.
+          // The id stays in storage, so the next reload tries again.
+          if (err instanceof ApiError && err.status === 404) retired.current.add(id)
         })
     }
     return () => {
