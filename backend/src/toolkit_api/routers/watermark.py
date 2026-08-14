@@ -12,7 +12,8 @@ from __future__ import annotations
 
 import base64
 import binascii
-import io
+import shutil
+import tempfile
 import zipfile
 from pathlib import Path
 from typing import Annotated
@@ -292,20 +293,25 @@ def run(req: WatermarkRunIn, state: StateDep, watermarks: WatermarksDep):
         failed: list[tuple[str, str]] = []
         skipped: list[str] = []
         protected: list[str] = []
-        cleaned: list[tuple[str, bytes]] = []
+        cleaned: list[tuple[str, Path]] = []
         zip_id: str | None = None
+        # Cleaned PNGs are spooled here rather than accumulated in memory. At
+        # this router's limit -- 20 images, up to 36 MP each -- holding every
+        # output as bytes AND the zip built from them is hundreds of MB, and it
+        # is held concurrently with LaMa's inpainting peak, which is measured in
+        # pipeline.py at 12-25 GB. The zip is streamed member by member from
+        # these files for the same reason. Removed in the finally below.
+        spool = Path(tempfile.mkdtemp(prefix="toolkit_watermark_"))
 
-        def bundle() -> bytes:
-            """The zip of everything cleaned so far, rebuilt from scratch.
+        def bundle(dest: Path) -> None:
+            """Write the zip of everything cleaned so far, rebuilt from scratch.
 
             STORED, not DEFLATED: the members are PNGs, already compressed, so
             deflate bought nothing and made each rebuild cost real time.
             """
-            buffer = io.BytesIO()
-            with zipfile.ZipFile(buffer, "w", zipfile.ZIP_STORED) as archive:
+            with zipfile.ZipFile(dest, "w", zipfile.ZIP_STORED) as archive:
                 for name, png in cleaned:
-                    archive.writestr(name, png)
-            return buffer.getvalue()
+                    archive.write(png, arcname=name)
 
         def publish() -> dict:
             """Hand back everything finished so far.
@@ -319,12 +325,14 @@ def run(req: WatermarkRunIn, state: StateDep, watermarks: WatermarksDep):
             """
             nonlocal zip_id
             if cleaned:
+                staging = spool / "cleaned_images.zip"
+                bundle(staging)
                 if zip_id is None:
-                    zip_id = state.artifacts.put_bytes(
-                        "cleaned_images.zip", bundle(), "application/zip"
+                    zip_id = state.artifacts.put_file(
+                        "cleaned_images.zip", staging, "application/zip"
                     )
                 else:
-                    state.artifacts.replace_bytes(zip_id, bundle())
+                    state.artifacts.replace_file(zip_id, staging)
             partial = {
                 "batch_id": req.batch_id,
                 "done": list(done),
@@ -340,59 +348,67 @@ def run(req: WatermarkRunIn, state: StateDep, watermarks: WatermarksDep):
 
         # Pinned for the whole run: images are read lazily, one per iteration,
         # so an unpinned batch could be swept between two of its own images.
-        with watermarks.pin(req.batch_id):
-            for idx, (entry, out_name) in enumerate(
-                zip(selected, out_names, strict=True)
-            ):
-                if job.cancelled:
-                    break
-                job.update_item(idx, state="running")
-                job.set_message(
-                    f"Inpainting {idx + 1}/{len(selected)} — {entry['name']}…"
-                )
-                try:
-                    rgb = imgio.load_rgb(entry["path"].read_bytes())
-                    mask = imgio.load_mask(masks[entry["id"]], rgb.shape[:2])
-                    if not mask.any():
-                        # Nothing to remove. Writing the image back unchanged
-                        # would present a no-op as a cleaned result, so say
-                        # plainly that it was left alone -- and say WHICH kind
-                        # of left alone, exactly as the folder pipeline does.
-                        # An empty proposal covers two opposite cases: no
-                        # watermark was found, or one is demonstrably there and
-                        # no route could isolate a mask worth using.
-                        if repeating_evidence(rgb):
-                            protected.append(entry["name"])
-                        else:
-                            skipped.append(entry["name"])
-                        job.update_item(idx, pct=100, state="done")
-                        publish()
-                        continue
-                    if would_destroy_content(rgb, mask, req.dilate_px):
-                        # The mark IS there, but the picture under it would not
-                        # survive the fill — a document whose text the mark sits
-                        # on. Leaving it alone is the answer, said out loud.
-                        protected.append(entry["name"])
-                        job.update_item(idx, pct=100, state="done")
-                        publish()
-                        continue
-                    png = imgio.encode_png(
-                        remove_watermark(rgb, mask, inpaint, req.dilate_px)
+        try:
+            with watermarks.pin(req.batch_id):
+                for idx, (entry, out_name) in enumerate(
+                    zip(selected, out_names, strict=True)
+                ):
+                    if job.cancelled:
+                        break
+                    job.update_item(idx, state="running")
+                    job.set_message(
+                        f"Inpainting {idx + 1}/{len(selected)} — {entry['name']}…"
                     )
-                except Exception as e:  # noqa: BLE001 — per-file, batch goes on
-                    job.update_item(idx, pct=100, state="failed", error=str(e))
-                    failed.append((entry["name"], str(e)))
+                    try:
+                        rgb = imgio.load_rgb(entry["path"].read_bytes())
+                        mask = imgio.load_mask(masks[entry["id"]], rgb.shape[:2])
+                        if not mask.any():
+                            # Nothing to remove. Writing the image back unchanged
+                            # would present a no-op as a cleaned result, so say
+                            # plainly that it was left alone -- and say WHICH kind
+                            # of left alone, exactly as the folder pipeline does.
+                            # An empty proposal covers two opposite cases: no
+                            # watermark was found, or one is demonstrably there and
+                            # no route could isolate a mask worth using.
+                            if repeating_evidence(rgb):
+                                protected.append(entry["name"])
+                            else:
+                                skipped.append(entry["name"])
+                            job.update_item(idx, pct=100, state="done")
+                            publish()
+                            continue
+                        if would_destroy_content(rgb, mask, req.dilate_px):
+                            # The mark IS there, but the picture under it would not
+                            # survive the fill — a document whose text the mark sits
+                            # on. Leaving it alone is the answer, said out loud.
+                            protected.append(entry["name"])
+                            job.update_item(idx, pct=100, state="done")
+                            publish()
+                            continue
+                        spooled = spool / f"{idx}_{out_name}"
+                        spooled.write_bytes(
+                            imgio.encode_png(
+                                remove_watermark(rgb, mask, inpaint, req.dilate_px)
+                            )
+                        )
+                    except Exception as e:  # noqa: BLE001 — per-file, batch goes on
+                        job.update_item(idx, pct=100, state="failed", error=str(e))
+                        failed.append((entry["name"], str(e)))
+                        publish()
+                        continue
+                    cleaned.append((out_name, spooled))
+                    done.append(out_name)
+                    job.update_item(idx, pct=100, state="done")
                     publish()
-                    continue
-                cleaned.append((out_name, png))
-                done.append(out_name)
-                job.update_item(idx, pct=100, state="done")
-                publish()
 
-        # batch_id rides along so the results view survives a page unmount:
-        # the snapshot outlives this page's local state, and the "before"
-        # image is fetched from the batch.
-        return publish()
+            # batch_id rides along so the results view survives a page unmount:
+            # the snapshot outlives this page's local state, and the "before"
+            # image is fetched from the batch.
+            return publish()
+        finally:
+            # The zip has been moved into the artifact store by now; what is
+            # left here is the spooled PNGs it was built from.
+            shutil.rmtree(spool, ignore_errors=True)
 
     job = state.jobs.submit("watermark", [entry["name"] for entry in selected], worker)
     return JobStartedOut(job_id=job.id)

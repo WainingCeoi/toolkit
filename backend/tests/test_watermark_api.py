@@ -305,11 +305,14 @@ def test_a_crash_midway_still_hands_back_what_finished(client, app_state, monkey
         ("second.png", png_bytes((20, 10))),
     ).json()
 
-    def exploding_replace(artifact_id, content):
+    def exploding_replace(artifact_id, src):
         # The second image's zip update, outside the per-file try/except.
+        # replace_FILE, not replace_bytes: the run spools its PNGs to disk and
+        # streams the zip from them rather than holding every output in memory
+        # beside LaMa's inpainting peak, so the republish moves a file now.
         raise MemoryError("out of memory inpainting a huge image")
 
-    monkeypatch.setattr(app_state.artifacts, "replace_bytes", exploding_replace)
+    monkeypatch.setattr(app_state.artifacts, "replace_file", exploding_replace)
 
     masks = {
         image["id"]: mask_b64(20, 10, box=(0, 0, 5, 5)) for image in batch["images"]

@@ -61,6 +61,24 @@ class ArtifactStore:
         staging.write_bytes(content)
         staging.replace(item["path"])
 
+    def replace_file(self, artifact_id: str, src: Path) -> None:
+        """replace_bytes for a result too big to want in memory.
+
+        Same id, same name, same atomic landing -- the file is moved onto the
+        staging path and then renamed over the live one, so a download racing
+        the update streams a complete old copy or a complete new one. The
+        caller's ``src`` is consumed.
+        """
+        with self._lock:
+            item = self._items.get(artifact_id)
+            if item is not None:
+                item["used"] = time.monotonic()  # still being written to
+        if item is None:
+            raise KeyError(f"Unknown artifact: {artifact_id}")
+        staging = item["path"].with_suffix(".staging")
+        shutil.move(str(src), staging)
+        staging.replace(item["path"])
+
     def put_file(self, filename: str, src: Path, media_type: str) -> str:
         """Move an existing file (e.g. from a job's tempdir) into the store."""
         artifact_id = uuid.uuid4().hex[:12]
