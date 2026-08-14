@@ -22,6 +22,11 @@ from PIL import Image, ImageDraw, ImageFont
 RECTANGULAR = ((56, 0), (0, 114))
 SHALLOW_OBLIQUE = ((16, 84), (-84, 16))  # ~11 degrees, like the render samples
 STEEP_OBLIQUE = ((90, 22), (-22, 90))  # ~76 degrees
+# The tent photograph's lockup: a cell so coarse it fits a 1080x1922 frame
+# 8x2, which is under the 9 tiles the fold needs, and whose 572px column pitch
+# is past the +-540 lag an 1080-wide autocorrelation can even hold. Handled by
+# the tiled route rather than by folding -- see watermark/tiled.py.
+COARSE_RECTANGULAR = ((268, 0), (0, 572))
 
 
 def _background(kind: str, w: int, h: int) -> np.ndarray:

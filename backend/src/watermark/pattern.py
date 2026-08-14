@@ -1057,13 +1057,29 @@ def apply_mark(
     return mask
 
 
-def propose_pattern_mask(rgb: np.ndarray, sensitivity: int) -> np.ndarray | None:
-    """Mask the instances of a repeating watermark, or None if there is no
-    convincing repeating pattern to mask."""
+def _propose_own_folded(rgb: np.ndarray, sensitivity: int) -> np.ndarray | None:
+    """This image's mask from a mark it recovered by folding its own tiles."""
     mark = recover_mark(rgb)
     if mark is None:
         return None
     return apply_mark(rgb, mark, sensitivity)
+
+
+def propose_pattern_mask(rgb: np.ndarray, sensitivity: int) -> np.ndarray | None:
+    """Mask the instances of a repeating watermark, or None if there is no
+    convincing repeating pattern to mask."""
+    own = _propose_own_folded(rgb, sensitivity)
+    if own is not None:
+        return own
+    # Last resort: a cell too big to fold. Only reached once the fold has
+    # already declined, so nothing that is masked today changes. See tiled.py.
+    #
+    # Imported at call time, not module scope: tiled.py imports this module for
+    # its anchors and constants, so the dependency can only close once
+    # something actually reaches the route (as detect._worth_removing does).
+    from .tiled import propose_tiled_mask
+
+    return propose_tiled_mask(rgb, sensitivity)
 
 
 def shareable_marks(
@@ -1691,11 +1707,17 @@ def propose_pattern_mask_shared(
     frame against 5.8% for the image the mark came from — while all three clean
     controls refuse every mark offered to them.
     """
-    own = propose_pattern_mask(rgb, sensitivity)
+    # _propose_own_folded, NOT propose_pattern_mask: the tiled route must run
+    # after borrowing, not before it. A borrowed mark was proved across a whole
+    # batch, while the tiled route proves itself from this image alone, and the
+    # stronger evidence has to win.
+    own = _propose_own_folded(rgb, sensitivity)
     if own is not None:
         return own
     for mark in marks:
         borrowed = apply_mark(rgb, mark, sensitivity, own=False)
         if borrowed is not None:
             return borrowed
-    return None
+    from .tiled import propose_tiled_mask  # deferred: see propose_pattern_mask
+
+    return propose_tiled_mask(rgb, sensitivity)

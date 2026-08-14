@@ -12,6 +12,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 from watermark_fixtures import (
+    COARSE_RECTANGULAR,
     RECTANGULAR,
     SHALLOW_OBLIQUE,
     STEEP_OBLIQUE,
@@ -40,6 +41,50 @@ def test_a_rectangular_lattice_is_recovered_and_masked_precisely():
     # Precision is the point of this detector: it stamps instances of the
     # recovered mark, so it should hardly touch anything else.
     assert false_positives < 0.02, f"{false_positives:.1%} of clean pixels masked"
+
+
+def test_a_lattice_too_coarse_to_fold_is_still_recovered_from_one_image():
+    # The tent photograph's shape: a 572x268 lockup, 13 live copies in 16 cells.
+    # Nothing in the fold could reach it. The cell fits the frame 8x2, under
+    # MIN_TILES=9, and 572 is past the +-540 lag an 1080-wide autocorrelation
+    # can hold at all -- so _rect_period answered (406, 255) and
+    # _fit_rectifying_lattice answered a 38x66 basis fitted to the photograph's
+    # own texture. Both detectors returned an EMPTY mask at sensitivity
+    # 0/25/50/75/100 while repeating_evidence read True, so the image was
+    # reported "protected": a watermark is plainly there and we cannot touch it.
+    _clean, marked, truth = tiled_pair(
+        size=(1080, 1922), basis=COARSE_RECTANGULAR, glyph_size=44, alpha=70
+    )
+    mask, used = propose(marked)
+    assert used == "pattern", "the coarse lattice fell through every route"
+    recall, false_positives = score(mask, truth)
+    assert recall > 0.25, f"only {recall:.1%} of the mark was masked"
+    assert false_positives < 0.02, f"{false_positives:.1%} of clean pixels masked"
+
+
+@pytest.mark.parametrize(
+    "background", ["sky_grass", "grass", "render_dither", "gradient"]
+)
+def test_a_clean_frame_of_that_shape_is_never_given_a_coarse_lattice(background):
+    # The other half of the test above, and the one that matters more. The
+    # tiled route trusts a lattice across the WHOLE frame, so a lattice fitted
+    # to scenery would cost the whole picture rather than a few stamps.
+    #
+    # What stops it is that a photograph's best lattice is a LINE, not a grid:
+    # measured over clean controls, every one put the live cells of its best
+    # lattice in a single row -- along a sky/grass horizon, or the edge of a
+    # render's dithered ground, where the whole band responds and any pitch
+    # across it fits. Their second row is dead (0.00-0.03 against the live
+    # row's 0.12-0.18), which caps live share at ~0.46 against the bar of 0.65.
+    clean = tiled_pair(
+        size=(1080, 1922),
+        basis=COARSE_RECTANGULAR,
+        background=background,
+        watermarked=False,
+    )[0]
+    mask, used = propose(clean)
+    assert used == "none", f"a clean {background} frame was handed a lattice"
+    assert np.count_nonzero(mask) == 0
 
 
 @pytest.mark.parametrize(
@@ -282,8 +327,13 @@ def test_a_mark_too_sparse_to_fold_is_pooled_across_the_batch():
 
     batch = _sparse_batch()
     for marked, _truth in batch:
+        # The guard is on the FOLD alone, not on propose_pattern_mask: the
+        # tiled route now masks this fixture from one image (see tiled.py), and
+        # asking the public entry point would only ever prove that. What has to
+        # stay true for the pooled route to be under test is that no mark is
+        # recoverable by folding, which is what pooling exists to work around.
         assert pattern.recover_mark(marked) is None or (
-            pattern.propose_pattern_mask(marked, 50) is None
+            pattern._propose_own_folded(marked, 50) is None
         ), "fixture no longer needs the pooled route"
 
     marks = pattern.pooled_marks([m for m, _t in batch])
@@ -579,15 +629,23 @@ def test_an_unmaskable_repeat_is_protected_not_reported_clean(tmp_path):
     # pattern detector alone, an image carrying an evenly spaced run that no
     # pattern route can turn into a mask is deliberately left alone, and the
     # batch report has to say so.
+    #
+    # The fixture is a STEEP OBLIQUE lattice, and it has to be: this case used
+    # to be carried by a 300x300 axis-aligned mark, which the tiled route (see
+    # tiled.py) now masks at 3.31%. The tiled route searches the frame's own
+    # axes and cannot express an oblique cell, so a steep one is still evidently
+    # repeating and still unmaskable -- which is exactly the state this test is
+    # about. Measured: propose_mask_detailed(..., "pattern") returns "none" at
+    # 0.00% while repeating_evidence reads True.
     from PIL import Image
 
     from watermark.pipeline import clean_folder
 
     src = tmp_path / "in"
     src.mkdir()
-    sparse = tiled_pair(
-        basis=((0, 300), (300, 0)), size=(1300, 800), glyph_size=30, alpha=70
-    )[1]
+    sparse = tiled_pair(basis=STEEP_OBLIQUE, size=(1300, 800), glyph_size=30, alpha=70)[
+        1
+    ]
     Image.fromarray(sparse).save(src / "screenshot.png")
     clean = tiled_pair(watermarked=False, background="sky_grass")[0]
     Image.fromarray(clean).save(src / "holiday.png")
@@ -604,18 +662,22 @@ def test_auto_rescues_a_repeat_the_pattern_routes_cannot_mask(tmp_path):
     # The same folder under the DEFAULT detector. Auto leads with pattern and,
     # for the one image that demonstrably carries a repeating mark no pattern
     # could be recovered for, falls back to the texture detector -- measured on
-    # this fixture: a 0.52% mask at a destruction of 23 against the bar of 88,
-    # so the mark is actually removed. The clean photo shows no repeating
-    # evidence, gets no fallback, and is skipped untouched -- the blanket
-    # fallback that damaged six of eight photos stays gone.
+    # this fixture: a 5.04% mask, so the mark is actually removed. The clean
+    # photo shows no repeating evidence, gets no fallback, and is skipped
+    # untouched -- the blanket fallback that damaged six of eight photos stays
+    # gone.
+    #
+    # Steep oblique for the same reason as the test above: the axis-aligned
+    # tiled route masks the 300x300 mark this used to use, so the fallback is
+    # no longer reached on it.
     from PIL import Image
 
     from watermark.detect import propose_mask_detailed
     from watermark.pipeline import clean_folder
 
-    sparse = tiled_pair(
-        basis=((0, 300), (300, 0)), size=(1300, 800), glyph_size=30, alpha=70
-    )[1]
+    sparse = tiled_pair(basis=STEEP_OBLIQUE, size=(1300, 800), glyph_size=30, alpha=70)[
+        1
+    ]
     mask, used = propose_mask_detailed(sparse, 50, "auto")
     assert used == "texture", "auto never reached the fallback"
     assert np.count_nonzero(mask) > 0
