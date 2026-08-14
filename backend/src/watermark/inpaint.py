@@ -82,6 +82,15 @@ def inpaint_cv2(rgb: np.ndarray, mask: np.ndarray) -> np.ndarray:
     return cv2.inpaint(rgb, mask, _CV2_RADIUS, cv2.INPAINT_TELEA)
 
 
+# The loaded TorchScript model, keyed by device. A LamaInpainter is created per
+# RUN, so without this the ~200 MB checkpoint is re-read from disk every time
+# anyone presses Start -- seconds of dead time on each tweak-and-rerun, and the
+# weights are identical every time. Keyed by device because the model is moved
+# onto one at load, and a process could be asked for both (a test pinning cpu
+# via WATERMARK_DEVICE beside a real run on mps).
+_models: dict[str, object] = {}
+
+
 class LamaInpainter:
     """Callable like inpaint_cv2; loads the model on the first call."""
 
@@ -93,7 +102,10 @@ class LamaInpainter:
         import torch  # deferred: see module docstring
 
         if self._model is None:
-            self._model = self._load(torch)
+            cached = _models.get(self.device)
+            if cached is None:
+                cached = _models[self.device] = self._load(torch)
+            self._model = cached
 
         # big-lama wants dimensions in multiples of 8; pad symmetrically and
         # crop the result back. Inputs are float [0, 1], mask strictly binary.
@@ -133,7 +145,8 @@ class LamaInpainter:
 
 def get_inpainter(name: str):
     """The inpaint callable for ``name`` — one instance per batch, so LaMa
-    loads once, not once per image."""
+    loads once, not once per image, and the weights are then cached process-wide
+    so a second run does not re-read them either (see _models)."""
     if name == "cv2":
         return inpaint_cv2
     if name == "lama":
