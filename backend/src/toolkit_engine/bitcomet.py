@@ -33,7 +33,8 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 import requests
-from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+from toolkit_engine.aescbc import decrypt_cbc, encrypt_cbc
 
 # BitComet writes its settings here on every change. See read_credentials for
 # why we read this file instead of storing our own copy of the credentials.
@@ -278,8 +279,7 @@ def encrypt(plaintext: str, client_id: str) -> str:
     salt_key, salt_mac, iv = os.urandom(8), os.urandom(8), os.urandom(16)
     key, mac_key = _derive(client_id, salt_key), _derive(client_id, salt_mac)
 
-    encryptor = Cipher(algorithms.AES(key), modes.CBC(iv)).encryptor()
-    ciphertext = encryptor.update(_pkcs7(plaintext.encode())) + encryptor.finalize()
+    ciphertext = encrypt_cbc(key, iv, _pkcs7(plaintext.encode()))
 
     body = b"\x03\x01" + salt_key + salt_mac + iv + ciphertext
     mac = hmac.new(mac_key, body, hashlib.sha256).digest()
@@ -296,9 +296,7 @@ def decrypt(blob: str, client_id: str) -> str:
     if not hmac.compare_digest(expected, mac):
         raise ValueError("HMAC mismatch")
 
-    cipher = Cipher(algorithms.AES(_derive(client_id, salt_key)), modes.CBC(iv))
-    decryptor = cipher.decryptor()
-    padded = decryptor.update(body[HEADER_LEN:]) + decryptor.finalize()
+    padded = decrypt_cbc(_derive(client_id, salt_key), iv, body[HEADER_LEN:])
     return padded[: -padded[-1]].decode()
 
 
