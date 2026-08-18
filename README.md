@@ -30,7 +30,7 @@ the engines, a React single-page UI, and one `make` entrance.
 | 🌐  | **Web Images to PDF**   | Open a page, scroll to load its images, capture them into one PDF.               |
 | 📦  | **File Gatherer**       | Recursively gather files by type and move them into one folder.                  |
 | 🖼️  | **Image to PDF**        | Combine selected images (incl. iPhone HEIC) into a single PDF.                   |
-| 🧽  | **Watermark Remover**   | Detect watermarks, review the mask, inpaint them away.                           |
+| 🧽  | **Watermark Remover**   | Detect watermarks, review or paint the mask, inpaint them away.                  |
 | 📄  | **Doc to PDF**          | Accept tracked changes, strip comments, render to PDF via LibreOffice.           |
 | 📝  | **Doc to Markdown**     | PDFs / Office docs / images → Markdown with MinerU (text, tables, formulas).     |
 | 🧹  | **Cache Purge**         | Recursively find and delete cache / junk files.                                  |
@@ -217,7 +217,7 @@ stored in plaintext because BitComet's login needs the password itself, not a di
 </details>
 
 <details>
-<summary><b>🧽 Watermark Remover</b> — review the mask, never paint it</summary>
+<summary><b>🧽 Watermark Remover</b> — review the mask, paint what detection cannot find</summary>
 
 ```mermaid
 flowchart TD
@@ -230,14 +230,22 @@ flowchart TD
     D3 --> V
     V -- yes --> M["mask, previewed in red<br/>sensitivity slider widens it"]
     V -- no --> K["image skipped — nothing written"]
+    K -. "one-off logo?<br/>paint it by hand" .-> M
     M --> I["dilate → inpaint<br/>LaMa, else cv2 · tiled for big photos"]
     I --> Z["one zip of cleaned PNGs"]
 ```
 
-- **You see every mask before anything changes.** There is no brush: the detector
-  masks the copies of a mark it actually recovered, or reports that it recovered
-  nothing. Hand-painting the second case damaged photographs while leaving the
-  watermark in place, so the image is skipped instead and the page says which.
+- **You see every mask before anything changes.** The detector masks the copies
+  of a mark it actually recovered, or reports that it recovered nothing and the
+  image is skipped — hand-correcting a recovered repeat is a mask over whatever
+  the person could see, so the proposal, not the brush, leads.
+- **A one-off logo is painted, not detected.** A mark that never repeats has no
+  copies to fold, no run to pool and no evidence to verify — no detector route
+  applies, structurally. Unlike a faint tile, though, a person sees all of a
+  large logo, so the review step has a brush and an eraser for exactly that
+  image; the run's destruction guard (`would_destroy_content` in
+  `backend/src/watermark/pipeline.py`) still vetoes any mask — painted ones
+  included — that would take the picture with it.
 - Folding recovers the mark itself rather than judging pixels — the overlay is
   identical in every tile, so it survives the median while the photograph cancels
   out. That makes a mark far too faint to see anywhere on its own legible.

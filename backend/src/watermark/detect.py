@@ -53,12 +53,15 @@ grass, faint tiled text over both), at 60% recall this cut false positives
 from 55.1% of the image to 13.3% — 4.1x fewer.
 
 Over-detection used to be fine by design, because a human corrected the proposal
-with a brush before anything was inpainted. There is no brush now, so this
-detector is no longer the default and only runs when asked for by name: a mask
-nobody is going to correct has to be right, and this one marks thin image detail
-along with the mark. A watermark faint enough to hide inside the scene's own
-texture does not separate at any sensitivity, and the honest answer for those is
-the empty mask ``pattern`` returns, which the caller skips.
+with a brush before anything was inpainted. The brush exists again — it came
+back for the watermark that never repeats, which no detector here can find —
+but a default cannot lean on it: most proposals ship exactly as shown, so a
+mask nobody is going to correct has to be right, and this one marks thin image
+detail along with the mark. That is why this detector runs only when asked for
+by name, or under AUTO's evidence-and-worth gate (see propose_mask_detailed).
+A watermark faint enough to hide inside the scene's own texture does not
+separate at any sensitivity, and the honest answer for those is the empty mask
+``pattern`` returns, which the caller skips.
 """
 
 from __future__ import annotations

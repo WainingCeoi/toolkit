@@ -640,7 +640,8 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; gap: 6
 
 /* --- Watermark Remover ---------------------------------------------------
    The canvas renders at native image resolution and is CSS-scaled to fit its
-   card, so the mask overlay is never resampled to display it. */
+   card; MaskEditor maps pointer coordinates back into image pixels, so the
+   mask overlay is never resampled. */
 .wm-card {
   border: 1px solid var(--edge);
   border-radius: var(--radius-s);
@@ -655,6 +656,8 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; gap: 6
   margin: 10px 0;
   border: 1px solid var(--edge);
   border-radius: var(--radius-s);
+  cursor: crosshair;
+  touch-action: none; /* strokes must not scroll the page */
 }
 .wm-file { justify-content: space-between; padding: 6px 0; }
 .wm-toolbar { margin-bottom: 4px; }

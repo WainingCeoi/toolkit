@@ -3,12 +3,14 @@
 // as each image lands so a run that dies mid-batch still hands over what it
 // got.
 //
-// The mask is reviewed, not edited. There used to be a brush and an eraser, and
-// dropping them is a deliberate narrowing: the detector masks the copies of a
-// mark it actually recovered, or reports that it recovered nothing and the image
-// is skipped. Hand-painting the second case masks whatever the person could see
-// rather than the watermark, and inpainting that damaged photographs while
-// leaving the watermark in place. What is shown is what runs.
+// The mask is reviewed first and painted only where detection cannot go. The
+// brush was dropped once on the reasoning that the detector either recovers a
+// repeating mark precisely or there is nothing a person could usefully paint —
+// which is true of faint tiled marks (nobody sees all six copies) and false of
+// the watermark that does not repeat at all: a single large logo has no copies
+// to fold, so detection is structurally blind to it, yet the person sees all
+// of it. So the proposal still leads, and the brush covers what it cannot
+// reach. What is shown is what runs.
 //
 // Results render from the job SNAPSHOT, not from the batch held in local
 // state: the jobs context keeps snapshots alive across navigation, so leaving
@@ -23,7 +25,7 @@ import Button from '../components/Button'
 import CodeBox from '../components/CodeBox'
 import FileDrop from '../components/FileDrop'
 import JobPanel from '../components/JobPanel'
-import MaskPreview, { type MaskPreviewHandle } from '../components/MaskPreview'
+import MaskEditor, { type MaskEditorHandle } from '../components/MaskEditor'
 import type { WatermarkBatch, WatermarkHealth, WatermarkResult } from '../types/api'
 
 const ACCEPT = '.png,.jpg,.jpeg,.webp'
@@ -42,10 +44,12 @@ export default function WatermarkRemover() {
   const [applied, setApplied] = useState<Record<string, number>>({})
   const [ready, setReady] = useState<Record<string, boolean>>({})
   const [noPattern, setNoPattern] = useState<Record<string, boolean>>({})
+  const [brush, setBrush] = useState(24)
+  const [mode, setMode] = useState<'brush' | 'eraser'>('brush')
   // Nobody picks a detector or an engine: detection runs in auto mode, and the
   // inpainter is LaMa whenever torch is present, cv2 otherwise (see health).
   const [inpainter, setInpainter] = useState<'lama' | 'cv2'>('lama')
-  const previews = useRef<Record<string, MaskPreviewHandle | null>>({})
+  const editors = useRef<Record<string, MaskEditorHandle | null>>({})
 
   // Health lamps load independently of everything else on the page.
   const [health, setHealth] = useState<WatermarkHealth | null>(null)
@@ -72,8 +76,10 @@ export default function WatermarkRemover() {
     setReady((prev) => (prev[id] === isReady ? prev : { ...prev, [id]: isReady }))
   }, [])
 
-  // An all-black proposal means the detector declined; the run will skip that
-  // image rather than inpaint anything, and the review panel should say so.
+  // An all-black proposal means the detector declined; unless the person
+  // paints the mark in by hand, the run will skip that image rather than
+  // inpaint anything, and the review panel should say so. The editor calls
+  // this back with false on the first brush stroke.
   const markEmpty = useCallback((id: string, empty: boolean) => {
     setNoPattern((prev) => (prev[id] === empty ? prev : { ...prev, [id]: empty }))
   }, [])
@@ -85,7 +91,7 @@ export default function WatermarkRemover() {
       const fd = new FormData()
       files.forEach((f) => fd.append('files', f))
       const next = await api.watermarkUpload(fd)
-      previews.current = {}
+      editors.current = {}
       const defaults = Object.fromEntries(
         next.images.map((img) => [img.id, DEFAULT_SENSITIVITY]),
       )
@@ -107,9 +113,17 @@ export default function WatermarkRemover() {
     const masks: Record<string, string> = {}
     const pending: string[] = []
     for (const img of batch.images) {
-      const mask = previews.current[img.id]?.exportMask()
-      // null means the proposal has not landed yet. Sending nothing for that
-      // image would inpaint an empty mask and "succeed" without changing it.
+      // ready is false while a proposal is in flight — including a sensitivity
+      // refetch. The editor's canvas still holds (and would export) the mask
+      // from BEFORE the slider moved, and inpainting that would break "what is
+      // shown is what runs" the moment the new proposal lands.
+      if (ready[img.id] === false) {
+        pending.push(img.name)
+        continue
+      }
+      const mask = editors.current[img.id]?.exportMask()
+      // null means no proposal ever landed. Sending nothing for that image
+      // would inpaint an empty mask and "succeed" without changing it.
       if (mask) masks[img.id] = mask
       else pending.push(img.name)
     }
@@ -124,7 +138,7 @@ export default function WatermarkRemover() {
     setBatch(null)
     setReady({})
     setNoPattern({})
-    previews.current = {}
+    editors.current = {}
   }
 
   // Results are shown in every state, because the worker publishes them per
@@ -142,9 +156,9 @@ export default function WatermarkRemover() {
         <h1>🧽 Watermark Remover</h1>
       </div>
       <p className="page-sub">
-        Auto-detect a repeating watermark, review what will be removed, and
-        inpaint it away — LaMa for quality, cv2 for speed. For images you own or
-        are licensed to edit.
+        Auto-detect a repeating watermark, review what will be removed — or
+        paint a mark detection cannot find — and inpaint it away: LaMa for
+        quality, cv2 for speed. For images you own or are licensed to edit.
       </p>
 
       {health && (
@@ -188,8 +202,9 @@ export default function WatermarkRemover() {
         {!batch && !uploadError && (
           <div className="note info">
             Detection proposes a mask per image automatically — you see
-            exactly what will be removed before anything is changed, and an
-            image with no watermark found is left alone.
+            exactly what will be removed before anything is changed. A
+            one-off logo it cannot find (nothing repeats to detect) can be
+            painted over by hand; an image left unmasked is left alone.
           </div>
         )}
       </div>
@@ -201,8 +216,33 @@ export default function WatermarkRemover() {
             <span>REVIEW MASKS ({batch.images.length})</span>
           </div>
           <div className="row wm-toolbar">
+            <Button
+              size="sm"
+              variant={mode === 'brush' ? 'primary' : 'secondary'}
+              onClick={() => setMode('brush')}
+            >
+              🖌 Brush
+            </Button>
+            <Button
+              size="sm"
+              variant={mode === 'eraser' ? 'primary' : 'secondary'}
+              onClick={() => setMode('eraser')}
+            >
+              ⌫ Eraser
+            </Button>
+            <label className="wm-slider">
+              size {brush}px
+              <input
+                type="range"
+                min={4}
+                max={80}
+                value={brush}
+                onChange={(e) => setBrush(Number(e.target.value))}
+              />
+            </label>
             <span className="wm-hint">
-              red = will be inpainted · sensitivity re-runs detection
+              red = will be inpainted · brush adds, eraser restores ·
+              sensitivity re-runs detection
             </span>
             <Button size="sm" variant="ghost" onClick={startOver}>
               Start over
@@ -217,15 +257,18 @@ export default function WatermarkRemover() {
                   {ready[img.id] === false && 'detecting… · '}
                   {/* Deliberately not "no watermark found": an empty proposal
                       also covers the image whose mark IS there and cannot be
-                      isolated safely. Which of the two it was is said in the
-                      results, where it can be said accurately. */}
-                  {noPattern[img.id] && 'nothing to remove — will be left alone · '}
+                      isolated safely — including the one-off logo detection
+                      is structurally blind to. The brush is the route for
+                      those, so the caption offers it without any found/not-
+                      found claim; it stands down at the first stroke. */}
+                  {noPattern[img.id] &&
+                    'no mask proposed — paint the mark by hand to remove it · '}
                   {img.width}×{img.height}
                 </span>
               </div>
-              <MaskPreview
+              <MaskEditor
                 ref={(handle) => {
-                  previews.current[img.id] = handle
+                  editors.current[img.id] = handle
                 }}
                 imageUrl={watermarkImageUrl(batch.batch_id, img.id)}
                 maskUrl={watermarkMaskUrl(
@@ -235,6 +278,8 @@ export default function WatermarkRemover() {
                 )}
                 width={img.width}
                 height={img.height}
+                brush={brush}
+                mode={mode}
                 onReady={(isReady) => markReady(img.id, isReady)}
                 onEmpty={(empty) => markEmpty(img.id, empty)}
               />
@@ -263,6 +308,12 @@ export default function WatermarkRemover() {
                     }
                   />
                 </label>
+                <Button size="sm" onClick={() => editors.current[img.id]?.undo()}>
+                  Undo
+                </Button>
+                <Button size="sm" onClick={() => editors.current[img.id]?.reset()}>
+                  Reset mask
+                </Button>
               </div>
             </div>
           ))}
@@ -334,14 +385,14 @@ export default function WatermarkRemover() {
                 )}
                 {result.skipped.length > 0 && (
                   <div className="note warn">
-                    Left untouched — no watermark could be found, so nothing
+                    Left untouched — nothing was masked for them, so nothing
                     was inpainted: {result.skipped.join(', ')}
                   </div>
                 )}
                 {(result.protected ?? []).length > 0 && (
                   <div className="note warn">
-                    Left untouched on purpose — a watermark was found, but
-                    removing it would have destroyed the picture under it
+                    Left untouched on purpose — removing the watermark (or the
+                    painted area) would have destroyed the picture under it
                     (text or line art the mark sits on):{' '}
                     {result.protected.join(', ')}
                   </div>
