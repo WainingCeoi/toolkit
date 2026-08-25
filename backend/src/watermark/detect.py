@@ -10,6 +10,12 @@ Two detectors:
   applies to any watermark, including a single corner logo, at the cost of also
   flagging thin image detail: tent seams, wires, railings.
 
+A third route sits between them for batches: ``stacked`` (stacked.py) recovers
+a mark stamped ONCE per image — no repeat anywhere — from what every frame of
+the batch deviates on together. It is never chosen by name; it rides the batch
+marks that ``collect_marks`` gathers and answers only when the pattern routes
+could not (reported as "stacked").
+
 ``pattern`` leads because when it applies it is dramatically more precise, and
 because it now knows when it does not apply. Every mask it proposes is checked
 against the image — a stamped pixel survives only where the photo really does
@@ -53,15 +59,16 @@ grass, faint tiled text over both), at 60% recall this cut false positives
 from 55.1% of the image to 13.3% — 4.1x fewer.
 
 Over-detection used to be fine by design, because a human corrected the proposal
-with a brush before anything was inpainted. The brush exists again — it came
-back for the watermark that never repeats, which no detector here can find —
-but a default cannot lean on it: most proposals ship exactly as shown, so a
-mask nobody is going to correct has to be right, and this one marks thin image
-detail along with the mark. That is why this detector runs only when asked for
-by name, or under AUTO's evidence-and-worth gate (see propose_mask_detailed).
-A watermark faint enough to hide inside the scene's own texture does not
-separate at any sensitivity, and the honest answer for those is the empty mask
-``pattern`` returns, which the caller skips.
+with a brush before anything was inpainted. There is no brush (again — it came
+back once, for the watermark that never repeats, and left when that case found
+a real detector: the batch-stacking route in stacked.py, which recovers a mark
+stamped once per image from the frames' shared deviation). A mask nobody is
+going to correct has to be right, and this one marks thin image detail along
+with the mark — so it runs only when asked for by name, or under AUTO's
+evidence-and-worth gate (see propose_mask_detailed). A watermark faint enough
+to hide inside the scene's own texture does not separate at any sensitivity,
+and the honest answer for those is the empty mask ``pattern`` returns, which
+the caller skips.
 """
 
 from __future__ import annotations
@@ -78,6 +85,7 @@ from .pattern import (
     propose_pattern_mask_shared,
     shareable_marks,
 )
+from .stacked import MIN_STACK, StackedMark, recover_stacked, stamp_stacked
 
 DEFAULT_SENSITIVITY = 50
 
@@ -95,6 +103,12 @@ DEFAULT_DETECTOR = AUTO
 # empty mask. NOT a failure to handle quietly: it means "leave this image
 # alone", and the caller must skip it rather than inpaint anything.
 NONE = "none"
+
+# Reported (never chosen) when the mask came from the batch-stacking route: a
+# mark stamped once per image at the same place, proven by the frames' shared
+# deviation rather than by any repeat within one frame (see stacked.py). Runs
+# under AUTO and PATTERN via the marks collected for the batch.
+STACKED = "stacked"
 
 # Longest image side the filter actually looks at (see module docstring).
 _DETECT_MAX = 1600
@@ -129,7 +143,7 @@ def propose_mask(
     rgb: np.ndarray,
     sensitivity: int = DEFAULT_SENSITIVITY,
     detector: str = DEFAULT_DETECTOR,
-    marks: Sequence[Mark] = (),
+    marks: Sequence[Mark | StackedMark] = (),
 ) -> np.ndarray:
     """Propose a binary watermark mask (H, W) uint8 of {0, 255}."""
     return propose_mask_detailed(rgb, sensitivity, detector, marks)[0]
@@ -138,7 +152,7 @@ def propose_mask(
 def collect_marks(
     load: Callable[[], Iterable[np.ndarray]],
     sensitivity: int = DEFAULT_SENSITIVITY,
-) -> list[Mark]:
+) -> list[Mark | StackedMark]:
     """Marks from a batch that can be reused on the rest of it (see pattern.py).
 
     Run this over the batch before masking any of it, and pass the result to
@@ -147,17 +161,45 @@ def collect_marks(
     sibling's instead of skipped.
 
     ``load`` yields the batch and may be called more than once — the sparse pass
-    needs a second look at the images — so hand over a function that re-reads
-    them, not an iterator that can only be walked once.
+    and the stacked route each need a second look at the images — so hand over
+    a function that re-reads them, not an iterator that can only be walked
+    once.
+
+    The list mixes two kinds of knowledge: per-mark ``Mark`` entries from the
+    pattern routes, and at most one ``StackedMark`` — the overlay stamped once
+    per image that the whole batch proves together (see stacked.py). Both ride
+    the same cache because both cost a full read of the batch and both answer
+    the same question: what does this batch know that one image does not?
     """
-    return shareable_marks(load, sensitivity)
+    # Count frames as they stream through the pattern pass, so the stacked
+    # pass — a further full read of the batch — is only ever paid for when it
+    # could answer at all. A lone image that folded on its own is read once
+    # and exactly once (a pinned invariant; see the pooling test).
+    walked: list[int] = []
+
+    def counting_load():
+        def walk():
+            count = 0
+            for frame in load():
+                count += 1
+                yield frame
+            walked.append(count)
+
+        return walk()
+
+    marks: list[Mark | StackedMark] = shareable_marks(counting_load, sensitivity)
+    if walked and max(walked) >= MIN_STACK:
+        stacked = recover_stacked(load)
+        if stacked is not None:
+            marks = [*marks, stacked]
+    return marks
 
 
 def propose_mask_detailed(
     rgb: np.ndarray,
     sensitivity: int = DEFAULT_SENSITIVITY,
     detector: str = DEFAULT_DETECTOR,
-    marks: Sequence[Mark] = (),
+    marks: Sequence[Mark | StackedMark] = (),
 ) -> tuple[np.ndarray, str]:
     """The mask plus which detector produced it, or NONE and an empty mask.
 
@@ -191,12 +233,21 @@ def propose_mask_detailed(
         )
     if detector == TEXTURE:
         return propose_texture_mask(rgb, sensitivity), TEXTURE
-    if marks:
-        pattern = propose_pattern_mask_shared(rgb, sensitivity, marks)
+    pattern_marks = [m for m in marks if isinstance(m, Mark)]
+    stacked = next((m for m in marks if isinstance(m, StackedMark)), None)
+    if pattern_marks:
+        pattern = propose_pattern_mask_shared(rgb, sensitivity, pattern_marks)
     else:
         pattern = propose_pattern_mask(rgb, sensitivity)
     if pattern is not None:
         return pattern, PATTERN
+    # The batch's stacked overlay, for an image none of the per-frame routes
+    # could answer for. After pattern — where a repeat IS recoverable it masks
+    # the actual copies rather than the batch's working-size consensus.
+    if stacked is not None:
+        mask = stamp_stacked(stacked, rgb.shape[:2], sensitivity)
+        if mask.any():
+            return mask, STACKED
     if detector == AUTO and repeating_evidence(rgb):
         texture = propose_texture_mask(rgb, sensitivity)
         if texture.any() and _worth_removing(rgb, texture):

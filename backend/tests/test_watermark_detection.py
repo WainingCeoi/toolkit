@@ -17,10 +17,12 @@ from watermark_fixtures import (
     SHALLOW_OBLIQUE,
     STEEP_OBLIQUE,
     score,
+    stacked_batch,
     tiled_pair,
 )
 
 from watermark.detect import collect_marks, propose_mask_detailed
+from watermark.stacked import recover_stacked, stamp_stacked
 
 
 def propose(marked, sensitivity=50):
@@ -968,3 +970,95 @@ def test_a_window_facade_is_refused_before_anything_is_inpainted(sensitivity):
     if used == "none":
         return  # refused outright, which is a stronger answer still
     assert would_destroy_content(scene, mask, 3), "a facade would have been inpainted"
+
+
+# =========================================================================
+# The stacked route — a mark stamped once per image, proven by the batch
+# =========================================================================
+#
+# Nothing repeats within any one of these frames, so every single-image route
+# is structurally blind here (no lattice to fold, no run to pool). What the
+# batch shares — the same translucent banner at the same place on different
+# scenes — is exactly what stacking recovers. These tests pin the route's
+# whole contract: it fires through the ordinary batch-marks plumbing, meets
+# the same recall/false-positive bars as the other detectors, and refuses
+# every batch whose "agreement" is not a watermark.
+
+
+def _reloadable(frames):
+    # recover_stacked reads the batch twice (sizes, then fields), so marks
+    # collection needs a loader it can call again — same contract as the
+    # sparse pass documents on collect_marks.
+    return lambda: iter(frames)
+
+
+def test_a_batchwide_banner_is_recovered_from_the_stack():
+    """The cutlery-photo case: one banner, same place, every frame."""
+    frames, truth = stacked_batch(n=5)
+    marks = collect_marks(_reloadable(frames))
+    assert any(not hasattr(m, "template") for m in marks), "no stacked mark"
+    for frame in frames:
+        mask, used = propose_mask_detailed(frame, 50, "auto", marks)
+        assert used == "stacked"
+        recall, false_positives = score(mask, truth)
+        assert recall > 0.25, f"recall {recall:.2f}"
+        assert false_positives < 0.02, f"fp {false_positives:.3f}"
+
+
+def test_a_clean_batch_recovers_no_stacked_mark():
+    """Independent scenes agree on nothing — the stack must stay silent."""
+    frames, _truth = stacked_batch(n=5, watermarked=False)
+    assert recover_stacked(_reloadable(frames)) is None
+    marks = collect_marks(_reloadable(frames))
+    for frame in frames:
+        mask, used = propose_mask_detailed(frame, 50, "auto", marks)
+        assert used == "none"
+        assert not mask.any()
+
+
+def test_near_duplicate_frames_are_refused_not_read_as_one_big_mark():
+    """The same scene five times agrees EVERYWHERE — on the scene.
+
+    A catalogue page of one product re-shot (or in five colourways) is
+    indistinguishable from an overlay by consistency alone: every registered
+    edge deviates identically in every frame. Measured, genuine marked
+    batches reach a median pairwise field correlation of 0.681 while
+    re-shot scenes sit at 0.998-1.000; the guard refuses the latter even
+    when a real banner IS present, because nothing separates the banner
+    from the scene it is glued to.
+    """
+    marked, _ = stacked_batch(n=5, duplicates=True)
+    assert recover_stacked(_reloadable(marked)) is None
+    clean, _ = stacked_batch(n=5, duplicates=True, watermarked=False)
+    assert recover_stacked(_reloadable(clean)) is None
+
+
+def test_a_stack_of_two_proves_nothing():
+    """Variance estimated from two frames is not evidence — refused, not
+    guessed at. Two is also below MIN_STACK, so the route never runs."""
+    frames, _truth = stacked_batch(n=2)
+    assert recover_stacked(_reloadable(frames)) is None
+
+
+def test_stacked_sensitivity_marks_monotonically_more_pixels():
+    """The slider contract, same as the texture detector's: higher
+    sensitivity re-cuts a superset from the shared field."""
+    frames, _truth = stacked_batch(n=5)
+    mark = recover_stacked(_reloadable(frames))
+    assert mark is not None
+    shape = frames[0].shape[:2]
+    previous = 0
+    for sensitivity in (0, 25, 50, 75, 100):
+        count = int((stamp_stacked(mark, shape, sensitivity) > 0).sum())
+        assert count >= previous, f"shrank at sensitivity {sensitivity}"
+        previous = count
+
+
+def test_a_lone_image_gets_no_stacked_mask():
+    """One image has no batch to prove anything with — unchanged behaviour:
+    the pattern routes decline and the image is skipped, not guessed at."""
+    frames, _truth = stacked_batch(n=1)
+    assert recover_stacked(_reloadable(frames)) is None
+    mask, used = propose_mask_detailed(frames[0], 50, "auto", [])
+    assert used == "none"
+    assert not mask.any()

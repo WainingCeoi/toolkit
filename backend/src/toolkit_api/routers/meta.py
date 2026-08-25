@@ -73,9 +73,9 @@ CATEGORIES = [
                 slug="watermark-remover",
                 title="🧽 Watermark Remover",
                 description=(
-                    "Auto-detect watermarks, correct the mask by hand, and "
-                    "inpaint them away — for images you own or are licensed "
-                    "to edit."
+                    "Auto-detect watermarks — tiled, or stamped once per "
+                    "photo across a batch — review the masks, and inpaint "
+                    "them away. For images you own or are licensed to edit."
                 ),
             ),
             ToolOut(

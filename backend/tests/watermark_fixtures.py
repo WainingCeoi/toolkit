@@ -195,3 +195,96 @@ def score(proposed: np.ndarray, truth: np.ndarray) -> tuple[float, float]:
     recall = (hit & wm).sum() / max(wm.sum(), 1)
     false_positives = (hit & clean).sum() / max(clean.sum(), 1)
     return float(recall), float(false_positives)
+
+
+def _studio_scene(w: int, h: int, seed: int) -> np.ndarray:
+    """A studio product shot with the things real photographs have.
+
+    Grain on EVERYTHING (a noiseless synthetic fill lets a stack's variance
+    collapse and promotes coincidence into proof — the exact failure a
+    noiseless first draft of this fixture manufactured), objects anywhere in
+    frame rather than politely centred, per-shot lighting drift, and shading
+    across each object's body instead of poster-flat fills.
+    """
+    rng = np.random.default_rng(seed)
+    img = np.full((h, w, 3), 208, np.float32)
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+    # a slow lighting gradient, different every shot (a real light rig)
+    img += (rng.uniform(-14, 14) * xx / w + rng.uniform(-14, 14) * yy / h)[..., None]
+    for _ in range(rng.integers(2, 4)):
+        cx, cy = rng.integers(0, w), rng.integers(0, h)
+        ax, ay = rng.integers(w // 8, w // 3), rng.integers(h // 12, h // 5)
+        shade = float(rng.integers(120, 245))
+        blob = np.zeros((h, w), np.float32)
+        cv2.ellipse(
+            blob,
+            (int(cx), int(cy)),
+            (int(ax), int(ay)),
+            float(rng.integers(0, 180)),
+            0,
+            360,
+            1.0,
+            -1,
+        )
+        fill = (
+            shade
+            + 26 * ((xx - cx) / max(ax, 1)) * rng.uniform(-1, 1)
+            + 26 * ((yy - cy) / max(ay, 1)) * rng.uniform(-1, 1)
+        )
+        img = img * (1 - blob[..., None]) + fill[..., None] * blob[..., None]
+    img = cv2.GaussianBlur(img, (0, 0), 2)
+    img += rng.normal(0, 2.0, (h, w, 1))  # sensor grain
+    return np.clip(img, 0, 255).astype(np.uint8)
+
+
+def stacked_batch(
+    n=5,
+    size=(700, 520),
+    text="TAIZHOU QIJIA NEW MATERIALS CO",
+    alpha=48,
+    watermarked=True,
+    duplicates=False,
+    seed0=100,
+):
+    """(frames, truth) for a mark stamped ONCE per image across a batch.
+
+    The supplier-batch shape: every frame is a DIFFERENT product scene, but
+    the same translucent banner sits at the same place on all of them —
+    nothing repeats within any one frame, so only the stack can prove it
+    (see watermark/stacked.py). ``duplicates`` reuses one scene for every
+    frame instead: the registered-scene negative a stack must refuse, since
+    there "everything agrees" describes the scene, not a mark. The banner is
+    sized to span ~85% of the frame whatever its shape, so a narrow frame
+    does not silently clip the case away.
+    """
+    w, h = size
+    overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    if watermarked:
+        draw = ImageDraw.Draw(overlay)
+        glyph_px = 26
+        for candidate in range(8, 80):
+            font = ImageFont.load_default(size=candidate)
+            if draw.textlength(text, font=font) > 0.85 * w:
+                break
+            glyph_px = candidate
+        font = ImageFont.load_default(size=glyph_px)
+        draw.text(
+            (int(w * 0.06), int(h * 0.52)),
+            text,
+            font=font,
+            fill=(240, 240, 240, alpha),
+        )
+    ink = np.asarray(overlay)[:, :, 3]
+    truth = (ink >= max(1, round(0.2 * max(1, int(ink.max()))))).astype(np.uint8) * 255
+    frames = [
+        np.asarray(
+            Image.alpha_composite(
+                Image.fromarray(
+                    _studio_scene(w, h, seed0 if duplicates else seed0 + i)
+                ).convert("RGBA"),
+                overlay,
+            ).convert("RGB")
+        )
+        for i in range(n)
+    ]
+    return frames, truth

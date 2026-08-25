@@ -194,8 +194,10 @@ def auto_mask(
     """The proposed mask as a PNG (white = watermark), recomputed per call.
 
     ``X-Watermark-Detector`` names the detector that actually ran — under
-    ``auto`` that is ``pattern``, or ``texture`` for an image that demonstrably
-    carries a repeating mark no pattern could be recovered for, or ``none``.
+    ``auto`` that is ``pattern``, or ``stacked`` for a mark stamped once per
+    image that the whole batch proved together (see watermark/stacked.py), or
+    ``texture`` for an image that demonstrably carries a repeating mark no
+    pattern could be recovered for, or ``none``.
     An empty mask means the image will be left alone, either because nothing
     was found or because what was found could not be isolated into a mask worth
     using; the run says which. Any mask returned here is one the run would

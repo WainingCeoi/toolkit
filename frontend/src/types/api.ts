@@ -408,14 +408,14 @@ export interface WatermarkResult {
   done: string[]
   failed: TupleFailure[]
   /**
-   * Left untouched: nothing ended up masked — no proposal, nothing painted
-   * (or the mask was erased) — so nothing was inpainted.
+   * Left untouched: no mask was proposed for them, so nothing was inpainted.
+   * Covers both "no watermark" and "a once-per-photo mark with too little
+   * company in the batch to recover it".
    */
   skipped: string[]
   /**
-   * Left untouched on purpose: removing the watermark — or whatever area was
-   * masked, painted ones included — would have destroyed the picture under it
-   * (text or line art the mark sits on).
+   * Left untouched on purpose: a watermark WAS found, but removing it would
+   * have destroyed the picture under it (text or line art the mark sits on).
    */
   protected: string[]
   /**
