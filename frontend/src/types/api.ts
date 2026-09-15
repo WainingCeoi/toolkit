@@ -273,6 +273,58 @@ export interface GatherStartPayload {
   custom?: string
 }
 
+/** Photos Library Filter: files and bytes, for the kept/excluded totals. */
+export interface PhotoFilterCount {
+  files: number
+  bytes: number
+}
+
+/** One exclude rule and what it took out of the mirror. */
+export interface PhotoFilterRule {
+  rule: string
+  files: number
+  bytes: number
+}
+
+/**
+ * The report a Photos Library Filter job returns — the same shape for a dry
+ * run (plan + verify, nothing written) and a real run, told apart by
+ * `dry_run`. Mirrors photofilter.summary() plus the router's envelope.
+ */
+export interface PhotoFilterResult {
+  dry_run: boolean
+  source: string
+  dest: string
+  seconds: number
+  kept: PhotoFilterCount
+  excluded: PhotoFilterCount
+  /** Every rule sent, biggest saving first; a rule that matched nothing is still listed. */
+  rules: PhotoFilterRule[]
+  /** Live WAL-mode databases the plan snapshots (VACUUM INTO) instead of copying. */
+  snapshots: string[]
+  copied: number
+  skipped: number
+  snapshotted: number
+  /** Library-relative paths removed from the destination; a directory ends in `/`. */
+  deleted: string[]
+  errors: string[]
+  verify: {
+    /** False when the run stopped before verifying — not the same as verified clean. */
+    ran: boolean
+    assets: number
+    edited: number
+    problems: string[]
+  }
+}
+
+/** Mirrors PhotoFilterIn in backend/src/toolkit_api/routers/photofilter.py. */
+export interface PhotoFilterPayload {
+  source: string
+  dest: string
+  /** Omitted means the backend's shipped defaults; '' means exclude nothing. */
+  rules?: string
+}
+
 export interface PurgeScanResult {
   /** Names this scan when deleting. The server keeps the file list; the client
    *  never gets to say which paths to remove. Single-use and time-limited. */

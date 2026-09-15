@@ -15,6 +15,7 @@ import type {
   JobStarted,
   MagnetConfig,
   MarkdownHealth,
+  PhotoFilterPayload,
   PickFolderResult,
   PurgeScanResult,
   RemuxScanResult,
@@ -240,10 +241,11 @@ export const api = {
   // meta
   tools: () => request<Category[]>('/tools'),
   health: () => request<Health>('/health'),
-  pickFolder: (startDir?: string) =>
+  // `packages` shows bundles (a *.photoslibrary) as selectable folders.
+  pickFolder: (startDir?: string, packages = false) =>
     request<PickFolderResult>('/fs/pick-folder', {
       method: 'POST',
-      body: { start_dir: startDir || null },
+      body: { start_dir: startDir || null, packages },
     }),
 
   // jobs
@@ -284,6 +286,12 @@ export const api = {
     }),
   purgeDelete: (scanId: string) =>
     request<JobStarted>('/purge/delete', { method: 'POST', body: { scan_id: scanId } }),
+
+  // photos library filter — both are jobs; the dry run writes nothing
+  photofilterDryRun: (payload: PhotoFilterPayload) =>
+    request<JobStarted>('/photofilter/dry-run', { method: 'POST', body: payload }),
+  photofilterRun: (payload: PhotoFilterPayload) =>
+    request<JobStarted>('/photofilter/run', { method: 'POST', body: payload }),
 
   // image to pdf (direct download)
   imgToPdf: (formData: FormData) => requestBlob('/img-to-pdf', formData),

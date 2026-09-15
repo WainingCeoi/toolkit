@@ -12,6 +12,8 @@ interface FolderFieldProps {
   onChange: (path: string) => void
   placeholder?: string
   startDir?: string
+  /** Let the chooser select a bundle (*.photoslibrary) as if it were a folder. */
+  packages?: boolean
 }
 
 export default function FolderField({
@@ -20,6 +22,7 @@ export default function FolderField({
   onChange,
   placeholder,
   startDir,
+  packages = false,
 }: FolderFieldProps) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -28,7 +31,7 @@ export default function FolderField({
     setBusy(true)
     setError(null)
     try {
-      const { path } = await api.pickFolder(value || startDir)
+      const { path } = await api.pickFolder(value || startDir, packages)
       if (path) onChange(path)
     } catch (err) {
       // Surface the failure instead of a dead button click (the dialog can't
