@@ -52,6 +52,8 @@ class HealthOut(BaseModel):
 
 class PickFolderIn(BaseModel):
     start_dir: str | None = None
+    # Show bundles (*.photoslibrary) as folders so one can be selected.
+    packages: bool = False
 
 
 class PickFolderOut(BaseModel):

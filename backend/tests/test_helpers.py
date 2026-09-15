@@ -59,6 +59,21 @@ def test_pick_folder_returns_selection_and_embeds_start_dir(monkeypatch, tmp_pat
     assert str(tmp_path) in captured["script"]  # start dir embedded when it exists
 
 
+def test_pick_folder_shows_packages_only_when_asked(monkeypatch, tmp_path):
+    scripts = []
+
+    def fake_run(cmd, **kwargs):
+        scripts.append(cmd[cmd.index("-e") + 1])
+        return subprocess.CompletedProcess(cmd, 0, stdout="/x/A.photoslibrary/\n")
+
+    monkeypatch.setattr(picker.subprocess, "run", fake_run)
+    assert picker.pick_folder(str(tmp_path)) == "/x/A.photoslibrary"
+    assert picker.pick_folder(str(tmp_path), packages=True) == "/x/A.photoslibrary"
+    assert "showing package contents true" not in scripts[0]
+    assert scripts[1].endswith(" showing package contents true)")
+    assert str(tmp_path) in scripts[1]  # the start dir survives alongside it
+
+
 def test_pick_folder_returns_empty_on_cancel(monkeypatch):
     def fake_run(cmd, **kwargs):
         return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="User canceled.")
