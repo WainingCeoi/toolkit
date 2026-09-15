@@ -7,7 +7,7 @@
 ![License](https://img.shields.io/github/license/WainingCeoi/toolkit?style=for-the-badge&logo=gnu&logoColor=white)
 ![Stars](https://img.shields.io/github/stars/WainingCeoi/toolkit?style=for-the-badge&logo=github)
 
-Twelve small media & file utilities in one local app — a FastAPI backend driving
+Thirteen small media & file utilities in one local app — a FastAPI backend driving
 the engines, a React single-page UI, and one `make` entrance.
 
 > **macOS only.** Folder pickers use AppleScript (`osascript`), and several tools
@@ -34,6 +34,7 @@ the engines, a React single-page UI, and one `make` entrance.
 | 📄  | **Doc to PDF**          | Accept tracked changes, strip comments, render to PDF via LibreOffice.           |
 | 📝  | **Doc to Markdown**     | PDFs / Office docs / images → Markdown with MinerU (text, tables, formulas).     |
 | 🧹  | **Cache Purge**         | Recursively find and delete cache / junk files.                                  |
+| 📸  | **Photos Library Filter** | Mirror a Photos library without its caches, safe while Photos is running.     |
 | 📦  | **Dependency Upgrader** | Scan a project's `pyproject.toml` / `package.json`, upgrade and commit each one. |
 
 **🌐 Network**
@@ -290,6 +291,54 @@ is permanent — the preview is the safety net.
 **File Gatherer** — pick source and target, choose categories (Video, Audio, Image,
 Subtitle, Document, Archive) and/or custom globs, then **Scan & Move** in one click.
 Duplicates are auto-numbered (`name_1.ext`); you get a moved/failed summary.
+
+</details>
+
+<details>
+<summary><b>📸 Photos Library Filter</b> — a cache-free mirror Photos can still open</summary>
+
+Point it at the live library and a `*.photoslibrary` destination outside it,
+**Dry run** to see the plan, then untick the dry run and **Mirror library**.
+Re-running only copies what changed. What a run does, in order:
+
+1. **plan** — walk the source and classify every file with the rules (below).
+   Every directory is mirrored; an excluded one stays as an empty skeleton, so
+   the bundle keeps its shape.
+2. **snapshot** — any file with a `<name>-wal` sibling is a live WAL-mode SQLite
+   database (`database/Photos.sqlite`, the analysis databases). It is written
+   with `VACUUM INTO` from a read-only connection, so the copy is complete even
+   while Photos is writing; `-wal` / `-shm` files are never copied.
+3. **copy** — `copyfile(3)` with `COPYFILE_CLONE`: an APFS clone (instant, no
+   extra space on the same volume) that keeps mtime and the
+   `com.apple.assetsd.*` extended attributes Photos stores on originals. An
+   unchanged file is skipped; a favourite flag Photos changed without touching
+   mtime is still picked up.
+4. **delete** — anything in the destination that is not in the plan is removed.
+   The destination must end in `.photoslibrary` and must not overlap the source.
+5. **verify** — the mirrored `Photos.sqlite` is opened read-only and every
+   asset's original, and every edited asset's `resources/renders/<X>/<UUID>.plist`
+   edit recipe, is checked for. Problems are listed in the report.
+
+Rules are rsync-style, one per line; everything not matched is kept:
+
+```
+# unanchored: matches at any depth
+.DS_Store
+# trailing slash: a directory and everything inside it
+database/search/
+# * and ? stay inside one path component
+database/*.lock
+# ** crosses components
+private/**/caches/
+# leading slash: anchored to the library root
+/top-level-only.txt
+```
+
+Never exclude `resources/renders/`: it is not a cache but the edit recipes and
+rendered edits the database marks as present. `resources/derivatives/`
+(thumbnails and previews) is a real cache; if thumbnails show blank after
+restoring a mirror, hold Option+Command while opening Photos and choose Repair
+Library. Nothing is ever written into the source library.
 
 </details>
 
