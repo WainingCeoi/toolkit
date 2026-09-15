@@ -11,12 +11,14 @@ import os
 import shutil
 import sqlite3
 import subprocess
+import threading
 import time
 from contextlib import closing
 from pathlib import Path
 
 import pytest
 
+from toolkit_api.jobs import FINISHED_STATES
 from toolkit_engine import photofilter as pf
 
 RULES = [
@@ -91,6 +93,16 @@ def build_src(tmp):
     touch(src, "database/search/leo.sqlite")
     touch(src, ".DS_Store")
     return src
+
+
+def wait_for_job(client, job_id, timeout=5.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        snap = client.get(f"/api/jobs/{job_id}").json()
+        if snap["state"] in FINISHED_STATES:
+            return snap
+        time.sleep(0.02)
+    raise AssertionError(f"job {job_id} did not finish within {timeout}s")
 
 
 # --- rules ------------------------------------------------------------------
@@ -366,3 +378,172 @@ def test_summary_sizes_the_excluded_files_per_rule(tmp_path):
     assert s["excluded"] == {"files": 4, "bytes": 107}
     assert s["verify"] == {"ran": True, "assets": 2, "edited": 1, "problems": []}
     assert (s["copied"], s["skipped"], s["snapshotted"], s["deleted"]) == (0, 0, 0, [])
+
+
+# --- API --------------------------------------------------------------------
+
+
+def test_photofilter_dry_run_then_run_end_to_end(client, tmp_path):
+    src = build_src(tmp_path)
+    dest = tmp_path / "Dest.photoslibrary"
+    touch(dest, "resources/derivatives/stale.jpeg")
+    body = {"source": str(src), "dest": str(dest), "rules": "\n".join(RULES)}
+
+    resp = client.post("/api/photofilter/dry-run", json=body)
+    assert resp.status_code == 200
+    snap = wait_for_job(client, resp.json()["job_id"])
+    assert snap["state"] == "done"
+    dry = snap["result"]
+    assert dry["dry_run"] is True
+    assert (dry["source"], dry["dest"]) == (str(src.resolve()), str(dest.resolve()))
+    assert dry["kept"] == {"files": 3, "bytes": 18}
+    assert dry["snapshots"] == ["database/Photos.sqlite"]
+    assert dry["verify"]["ran"] and dry["verify"]["problems"] == []
+    assert dry["deleted"] == [] and dry["copied"] == 0
+    assert (dest / "resources/derivatives/stale.jpeg").exists()  # nothing written
+    assert not (dest / "originals").exists()
+
+    resp = client.post("/api/photofilter/run", json=body)
+    assert resp.status_code == 200
+    snap = wait_for_job(client, resp.json()["job_id"])
+    assert snap["state"] == "done"
+    real = snap["result"]
+    assert real["dry_run"] is False
+    assert (real["copied"], real["skipped"], real["snapshotted"]) == (3, 0, 1)
+    assert real["deleted"] == ["resources/derivatives/stale.jpeg"]
+    assert real["errors"] == []
+    assert real["verify"] == {"ran": True, "assets": 2, "edited": 1, "problems": []}
+    assert isinstance(real["seconds"], float)
+    assert (dest / "originals/A/AAAA-1.heic").read_bytes() == b"orig-a"
+    assert (
+        query_one(dest / "database/Photos.sqlite", "SELECT count(*) FROM ZASSET") == 2
+    )
+
+
+def test_photofilter_uses_the_shipped_rules_when_none_are_sent(client, tmp_path):
+    src = build_src(tmp_path)
+    dest = tmp_path / "Dest.photoslibrary"
+
+    resp = client.post(
+        "/api/photofilter/run", json={"source": str(src), "dest": str(dest)}
+    )
+    snap = wait_for_job(client, resp.json()["job_id"])
+
+    assert snap["state"] == "done"
+    rows = {r["rule"]: r["files"] for r in snap["result"]["rules"]}
+    assert set(rows) == {r.pattern for r in pf.compile_rules(pf.DEFAULT_RULES)}
+    assert rows["resources/derivatives/"] == 1
+    assert not (dest / "resources/derivatives/A/AAAA-1_1_105_c.jpeg").exists()
+    assert (dest / "resources/renders/B/BBBB-2.plist").exists()
+
+    # An empty rules string is a choice -- exclude nothing -- not an omission.
+    resp = client.post(
+        "/api/photofilter/run",
+        json={"source": str(src), "dest": str(dest), "rules": ""},
+    )
+    snap = wait_for_job(client, resp.json()["job_id"])
+    assert snap["state"] == "done"
+    assert snap["result"]["rules"] == []
+    assert (dest / "resources/derivatives/A/AAAA-1_1_105_c.jpeg").exists()
+
+
+@pytest.mark.parametrize("endpoint", ["dry-run", "run"])
+def test_photofilter_refuses_unsafe_paths_before_starting(client, tmp_path, endpoint):
+    outer = tmp_path / "Outer.photoslibrary"
+    src = build_src(outer)
+    url = f"/api/photofilter/{endpoint}"
+
+    def post(source, dest):
+        return client.post(url, json={"source": str(source), "dest": str(dest)})
+
+    resp = post("relative/Src.photoslibrary", tmp_path / "Dest.photoslibrary")
+    assert resp.status_code == 400
+    assert "absolute" in resp.json()["detail"]
+
+    resp = post(tmp_path / "missing.photoslibrary", tmp_path / "Dest.photoslibrary")
+    assert resp.status_code == 400
+    assert "not a Photos library" in resp.json()["detail"]
+
+    resp = post(src, tmp_path / "not-a-library")
+    assert resp.status_code == 400
+    assert "*.photoslibrary" in resp.json()["detail"]
+
+    resp = post(src, src / "inner.photoslibrary")
+    assert resp.status_code == 400
+    assert "overlap" in resp.json()["detail"]
+
+    resp = post(src, outer)
+    assert resp.status_code == 400
+    assert "overlap" in resp.json()["detail"]
+
+    # A refused run creates nothing -- not even the destination bundle.
+    assert not (tmp_path / "Dest.photoslibrary").exists()
+    assert not (tmp_path / "not-a-library").exists()
+    assert not (src / "inner.photoslibrary").exists()
+
+
+def test_photofilter_cancel_keeps_the_partial_report(
+    client, app_state, tmp_path, monkeypatch
+):
+    src = build_src(tmp_path)
+    dest = tmp_path / "Dest.photoslibrary"
+    started = threading.Event()
+    release = threading.Event()
+    real_run = pf.run
+
+    def slow_run(source, target, rules, dry_run=False, on_progress=None):
+        def gate(phase, done, total):
+            if phase == "copy" and done == 1:
+                started.set()
+                release.wait(3.0)
+            return on_progress(phase, done, total)
+
+        return real_run(source, target, rules, dry_run, gate)
+
+    monkeypatch.setattr(pf, "run", slow_run)
+
+    resp = client.post(
+        "/api/photofilter/run", json={"source": str(src), "dest": str(dest)}
+    )
+    job_id = resp.json()["job_id"]
+    assert started.wait(3.0)
+    assert app_state.jobs.cancel(job_id)
+    release.set()
+
+    snap = wait_for_job(client, job_id)
+    assert snap["state"] == "cancelled"
+    assert snap["result"]["copied"] == 1
+    assert snap["result"]["verify"]["ran"] is False
+
+
+def test_photofilter_refuses_a_second_writer_on_the_same_destination(
+    client, app_state, tmp_path, monkeypatch
+):
+    src = build_src(tmp_path)
+    dest = tmp_path / "Dest.photoslibrary"
+    started = threading.Event()
+    release = threading.Event()
+
+    def blocking_run(source, target, rules, dry_run=False, on_progress=None):
+        started.set()
+        release.wait(3.0)
+        return pf.Result(plan=pf.Plan())
+
+    monkeypatch.setattr(pf, "run", blocking_run)
+    body = {"source": str(src), "dest": str(dest)}
+
+    first = client.post("/api/photofilter/run", json=body).json()["job_id"]
+    assert started.wait(3.0)
+    second = client.post("/api/photofilter/run", json=body).json()["job_id"]
+    # A dry run reads only, so it is not turned away.
+    dry = client.post("/api/photofilter/dry-run", json=body).json()["job_id"]
+    snap = wait_for_job(client, second)
+    assert snap["state"] == "failed"
+    assert "already writing" in snap["error"]
+    release.set()
+
+    assert wait_for_job(client, first)["state"] == "done"
+    assert wait_for_job(client, dry)["state"] == "done"
+    # The guard is released with the run, so the destination can be used again.
+    third = client.post("/api/photofilter/run", json=body).json()["job_id"]
+    assert wait_for_job(client, third)["state"] == "done"

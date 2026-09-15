@@ -102,6 +102,15 @@ CATEGORIES = [
                 ),
             ),
             ToolOut(
+                slug="photos-library-filter",
+                title="📸 Photos Library Filter",
+                description=(
+                    "Mirror a Photos library without its caches while Photos is "
+                    "running — live database snapshotted, originals cloned, "
+                    "every asset verified."
+                ),
+            ),
+            ToolOut(
                 slug="dep-upgrade",
                 title="📦 Dependency Upgrader",
                 description=(
