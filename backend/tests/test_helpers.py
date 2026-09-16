@@ -72,6 +72,18 @@ def test_pick_folder_shows_packages_only_when_asked(monkeypatch, tmp_path):
     assert str(tmp_path) in scripts[1]
 
 
+def test_pick_folder_gives_up_on_a_dialog_nobody_dismisses(monkeypatch):
+    seen = {}
+
+    def fake_run(cmd, **kwargs):
+        seen["timeout"] = kwargs.get("timeout")
+        raise subprocess.TimeoutExpired(cmd, seen["timeout"])
+
+    monkeypatch.setattr(picker.subprocess, "run", fake_run)
+    assert picker.pick_folder(None) == ""
+    assert seen["timeout"] == picker.DIALOG_TIMEOUT
+
+
 def test_pick_folder_returns_empty_on_cancel(monkeypatch):
     def fake_run(cmd, **kwargs):
         return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="User canceled.")
