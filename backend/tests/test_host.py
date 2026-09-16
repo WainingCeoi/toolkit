@@ -36,6 +36,29 @@ def test_free_port_advances_past_a_bound_port():
         assert busy < chosen <= busy + 4
 
 
+def test_free_port_advances_past_an_overlapping_listener():
+    # `make host` (0.0.0.0) next to a running `make start` (127.0.0.1): SO_REUSEADDR
+    # lets the wildcard bind succeed, so only a connect finds the other server.
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as taken:
+        taken.bind(("127.0.0.1", 0))
+        taken.listen()
+        busy = taken.getsockname()[1]
+        assert host.free_port("0.0.0.0", busy, tries=5) != busy
+
+
+def test_free_port_keeps_a_port_that_only_looks_busy():
+    # A closed connection lingers in TIME_WAIT; that is not a second server.
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
+        server.bind(("127.0.0.1", 0))
+        server.listen()
+        port = server.getsockname()[1]
+        client = socket.create_connection(("127.0.0.1", port))
+        accepted, _ = server.accept()
+    accepted.close()
+    client.close()
+    assert host.free_port("127.0.0.1", port, tries=5) == port
+
+
 def test_free_port_ipv6_host_does_not_crash():
     chosen = host.free_port("::1", 0, tries=1)
     assert isinstance(chosen, int)
