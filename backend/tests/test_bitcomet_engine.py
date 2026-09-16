@@ -541,6 +541,35 @@ def test_probe_gives_up_quickly_on_a_wedged_bitcomet(client):
     assert client.timeout == 10.0
 
 
+def test_a_probe_racing_a_slow_login_keeps_its_own_budget(client):
+    """Waiting for another thread's handshake must not outlast the probe's budget."""
+    logging_in, release = threading.Event(), threading.Event()
+    request = client._session.request
+
+    def wrapped(*args, **kwargs):
+        if threading.current_thread() is not threading.main_thread():
+            logging_in.set()
+            release.wait(5.0)
+        return request(*args, **kwargs)
+
+    client._session.request = wrapped
+    thread = threading.Thread(target=client.task_list)
+    thread.start()
+    try:
+        assert logging_in.wait(5.0)
+        started = time.monotonic()
+        answer = client.probe()
+        elapsed = time.monotonic() - started
+    finally:
+        release.set()
+        thread.join(10.0)
+
+    assert elapsed < PROBE_TIMEOUT + 1.0, (
+        f"probe spent {elapsed:.1f}s on another thread's login"
+    )
+    assert answer is None  # it gave up on the lock, not on a dead BitComet
+
+
 def test_a_probe_cannot_shorten_a_call_running_beside_it(client):
     """One client serves every request thread, so no call may set the timeout."""
     client.task_list()  # log in first, so each call below is a single request

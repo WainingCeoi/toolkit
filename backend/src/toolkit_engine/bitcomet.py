@@ -366,10 +366,19 @@ class BitCometClient:
 
     def _token(self, timeout: float | None = None) -> str:
         """The cached device_token, logging in on first use."""
-        with self._login_lock:
+        if self._device_token is not None:
+            return self._device_token
+        # Bounded: waiting out another thread's handshake must not spend this budget.
+        if not self._login_lock.acquire(
+            timeout=self.timeout if timeout is None else timeout
+        ):
+            raise BitCometError("BitComet did not answer the login in time")
+        try:
             if self._device_token is None:
                 self._device_token = self._login(timeout)
             return self._device_token
+        finally:
+            self._login_lock.release()
 
     def _login(self, timeout: float | None = None) -> str:
         """The two-step handshake: credentials -> invite_token -> device_token."""
