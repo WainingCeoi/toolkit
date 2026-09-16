@@ -24,10 +24,6 @@ class MarkdownHealthOut(BaseModel):
     backend_ready: bool
 
 
-class _CancelledError(Exception):
-    """Raised by the progress callback to stop a cancelled job between items."""
-
-
 @router.get("/health", response_model=MarkdownHealthOut)
 def health() -> MarkdownHealthOut:
     # The base mineru package ships the CLI without torch; the extras add it.
@@ -84,26 +80,20 @@ def convert(
 
     def worker(job):
         def on_progress(pct, text):
-            if job.cancelled:
-                raise _CancelledError
             job.set_message(text)
 
-        try:
-            zip_bytes, done, failed = docmd.convert_batch(
-                named, options, on_progress, mineru_cmd, lambda: job.cancelled
-            )
-        except _CancelledError:
-            return None
+        zip_bytes, done, failed = docmd.convert_batch(
+            named, options, on_progress, mineru_cmd, lambda: job.cancelled
+        )
 
-        failed_by_idx = {idx: error for idx, _name, error in failed}
-        for idx in range(len(named)):
-            if idx in failed_by_idx:
-                job.update_item(idx, pct=100, state="failed", error=failed_by_idx[idx])
-            else:
-                job.update_item(idx, pct=100, state="done")
+        # Only what the engine reported: a cancel leaves the rest of the batch pending.
+        for idx, _name in done:
+            job.update_item(idx, pct=100, state="done")
+        for idx, _name, error in failed:
+            job.update_item(idx, pct=100, state="failed", error=error)
 
         result = {
-            "done": done,
+            "done": [name for _idx, name in done],
             "failed": [(name, error) for _idx, name, error in failed],
         }
         if zip_bytes is not None:

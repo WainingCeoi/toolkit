@@ -16,10 +16,6 @@ from ..uploads import read_uploads
 router = APIRouter(prefix="/doc-to-pdf", tags=["doc-to-pdf"])
 
 
-class _CancelledError(Exception):
-    """Raised by the progress callback to stop a cancelled job between items."""
-
-
 @router.post("", response_model=JobStartedOut)
 def convert(state: StateDep, files: list[UploadFile] | None = None) -> JobStartedOut:
     if not files:
@@ -48,8 +44,6 @@ def convert(state: StateDep, files: list[UploadFile] | None = None) -> JobStarte
 
     def worker(job):
         def on_progress(pct, text):
-            if job.cancelled:
-                raise _CancelledError
             job.set_message(text)
 
         # One shared LibreOffice profile — no overlap; polled so Cancel still lands.
@@ -60,20 +54,17 @@ def convert(state: StateDep, files: list[UploadFile] | None = None) -> JobStarte
             zip_bytes, done, failed = docpdf.convert_batch(
                 named, on_progress, soffice, lambda: job.cancelled
             )
-        except _CancelledError:
-            return None
         finally:
             state.soffice_lock.release()
 
-        failed_by_idx = {idx: error for idx, _name, error in failed}
-        for idx in range(len(named)):
-            if idx in failed_by_idx:
-                job.update_item(idx, pct=100, state="failed", error=failed_by_idx[idx])
-            else:
-                job.update_item(idx, pct=100, state="done")
+        # Only what the engine reported: a cancel leaves the rest of the batch pending.
+        for idx, _arcname in done:
+            job.update_item(idx, pct=100, state="done")
+        for idx, _name, error in failed:
+            job.update_item(idx, pct=100, state="failed", error=error)
 
         result = {
-            "done": done,
+            "done": [arcname for _idx, arcname in done],
             "failed": [(name, error) for _idx, name, error in failed],
         }
         if zip_bytes is not None:

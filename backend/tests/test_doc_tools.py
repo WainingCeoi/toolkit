@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import subprocess
 import sys
+import threading
 import time
 import zipfile
 from pathlib import Path
@@ -494,6 +495,92 @@ def test_docmd_duplicate_names_get_index_correct_states(tool_client, monkeypatch
     snap = wait_for_job(tool_client, resp.json()["job_id"])
     assert snap["state"] == "done"
     assert [item["state"] for item in snap["items"]] == ["failed", "done"]
+
+
+def test_docmd_cancel_publishes_the_files_already_converted(tool_client, monkeypatch):
+    monkeypatch.setattr(docmd, "find_mineru", lambda: ["mineru"])
+    reached_second = threading.Event()
+    cancel_landed = threading.Event()
+
+    def fake_run(cmd, *_args, **_kwargs):
+        in_path = Path(cmd[cmd.index("-p") + 1])
+        if in_path.parent.name == "in_1":
+            reached_second.set()
+            cancel_landed.wait(5)
+            return None  # the child was killed mid-file
+        md_dir = Path(cmd[cmd.index("-o") + 1]) / "a" / "auto"
+        md_dir.mkdir(parents=True)
+        (md_dir / "a.md").write_text("# one")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(docmd, "run_mineru", fake_run)
+
+    resp = tool_client.post(
+        "/api/doc-to-markdown",
+        files=[
+            ("files", ("a.pdf", b"%PDF-1.4 one", "application/pdf")),
+            ("files", ("b.pdf", b"%PDF-1.4 two", "application/pdf")),
+        ],
+        data={"backend": "pipeline"},
+    )
+    assert resp.status_code == 200
+    job_id = resp.json()["job_id"]
+    assert reached_second.wait(5)
+    assert tool_client.post(f"/api/jobs/{job_id}/cancel").status_code == 200
+    cancel_landed.set()
+
+    snap = wait_for_job(tool_client, job_id)
+    assert snap["state"] == "cancelled"
+    assert snap["result"]["done"] == ["a.pdf"]
+    assert snap["result"]["failed"] == []
+    assert [item["state"] for item in snap["items"]] == ["done", "pending"]
+
+    download = tool_client.get(f"/api/artifacts/{snap['result']['artifact_id']}")
+    assert download.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(download.content)) as z:
+        assert z.namelist() == ["a.pdf/a/auto/a.md"]
+
+
+def test_docpdf_cancel_publishes_the_pdfs_already_rendered(
+    tool_client, monkeypatch, tmp_path
+):
+    monkeypatch.setattr(docpdf, "find_soffice", lambda: "/stub/soffice")
+    rendering = threading.Event()
+    cancel_landed = threading.Event()
+
+    def fake_batch_to_pdf(soffice, docx_paths, out_dir, *_args):
+        # soffice is killed mid-batch, with the first file's PDF already on disk.
+        (Path(out_dir) / f"{Path(docx_paths[0]).stem}.pdf").write_bytes(b"%PDF stub")
+        rendering.set()
+        cancel_landed.wait(5)
+        return None
+
+    monkeypatch.setattr(docpdf, "batch_to_pdf", fake_batch_to_pdf)
+
+    src = make_docx(tmp_path / "x.docx").read_bytes()
+    resp = tool_client.post(
+        "/api/doc-to-pdf",
+        files=[
+            ("files", ("a.docx", src, "application/octet-stream")),
+            ("files", ("b.docx", src, "application/octet-stream")),
+        ],
+    )
+    assert resp.status_code == 200
+    job_id = resp.json()["job_id"]
+    assert rendering.wait(5)
+    assert tool_client.post(f"/api/jobs/{job_id}/cancel").status_code == 200
+    cancel_landed.set()
+
+    snap = wait_for_job(tool_client, job_id)
+    assert snap["state"] == "cancelled"
+    assert snap["result"]["done"] == ["a.pdf"]
+    assert snap["result"]["failed"] == [["b.docx", "cancelled"]]
+    assert [item["state"] for item in snap["items"]] == ["done", "failed"]
+
+    download = tool_client.get(f"/api/artifacts/{snap['result']['artifact_id']}")
+    assert download.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(download.content)) as z:
+        assert z.namelist() == ["a.pdf"]
 
 
 def test_docpdf_duplicate_names_get_index_correct_states(

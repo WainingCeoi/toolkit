@@ -206,8 +206,10 @@ def convert_batch(named_files, on_progress, soffice, is_cancelled=None):
         clean_dir.mkdir()
         out_dir.mkdir()
 
-        jobs = []  # (cleaned_path, arcname, original_name)
+        jobs = []  # (index, cleaned_path, arcname, original_name)
         for idx, (name, content) in enumerate(named_files):
+            if is_cancelled is not None and is_cancelled():
+                break
             on_progress(
                 int(idx / total * 50),
                 f"Cleaning {idx + 1}/{total} — {name}…",
@@ -218,23 +220,23 @@ def convert_batch(named_files, on_progress, soffice, is_cancelled=None):
                 src.write_bytes(content)
                 cleaned = clean_dir / f"{idx}_{stem}.docx"
                 clean_docx(src, cleaned)
-                jobs.append((cleaned, f"{stem}.pdf", name))
+                jobs.append((idx, cleaned, f"{stem}.pdf", name))
             except Exception as e:
                 failed.append((idx, name, str(e)))
 
         if jobs:
             on_progress(50, f"Converting {len(jobs)} file(s) with LibreOffice…")
-            # A LibreOffice timeout keeps whatever PDFs it produced; the rest fail.
+            # A LibreOffice timeout or cancel keeps whatever PDFs it made; rest fail.
             try:
                 result = batch_to_pdf(
-                    soffice, [job[0] for job in jobs], out_dir, is_cancelled
+                    soffice, [job[1] for job in jobs], out_dir, is_cancelled
                 )
-                stderr = "" if result is None else result.stderr.strip()
+                stderr = "cancelled" if result is None else result.stderr.strip()
             except subprocess.TimeoutExpired:
                 stderr = "LibreOffice timed out"
             buffer = io.BytesIO()
             with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
-                for i, (cleaned, arcname, name) in enumerate(jobs):
+                for i, (idx, cleaned, arcname, name) in enumerate(jobs):
                     on_progress(
                         50 + int((i + 1) / len(jobs) * 50),
                         f"Bundling {i + 1}/{len(jobs)} — {arcname}…",
@@ -242,10 +244,8 @@ def convert_batch(named_files, on_progress, soffice, is_cancelled=None):
                     produced = out_dir / f"{cleaned.stem}.pdf"
                     if produced.exists():
                         archive.write(produced, arcname)
-                        done.append(arcname)
+                        done.append((idx, arcname))
                     else:
-                        # cleaned stem is "{idx}_{stem}"; recover the input index.
-                        idx = int(cleaned.stem.split("_", 1)[0])
                         failed.append((idx, name, stderr or "no PDF produced"))
             if done:
                 zip_bytes = buffer.getvalue()

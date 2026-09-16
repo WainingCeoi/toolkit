@@ -164,7 +164,7 @@ def convert_batch(named_files, options, on_progress, mineru_cmd, is_cancelled=No
             if find_markdown(out_dir):
                 # Own folder per upload: MinerU names its tree after the stem.
                 zip_tree(out_dir, archive, safe)
-                done.append(name)
+                done.append((idx, name))
             else:
                 reason = (result.stderr or result.stdout or "").strip()
                 failed.append((idx, name, reason[-2000:] or "no Markdown produced"))
