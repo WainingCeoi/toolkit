@@ -258,6 +258,16 @@ def _folder_key(path: str | Path) -> str:
     return str(path).rstrip("/\\") or "/"
 
 
+def _save_folders(body: dict) -> list[str]:
+    """The save folder paths in a new_task/get body, in BitComet's own order."""
+    folders = [
+        str(entry.get("path", "")).strip()
+        for entry in body.get("save_folders", [])
+        if isinstance(entry, dict)
+    ]
+    return [folder for folder in folders if folder]
+
+
 # --- CLIENT ---
 class BitCometClient:
     def __init__(
@@ -422,13 +432,17 @@ class BitCometClient:
     # --- liveness ---------------------------------------------------------
     def probe(self) -> str | None:
         """BitComet's server name if reachable and remote access is on; never raises."""
+        return self.probe_folders()[0]
+
+    def probe_folders(self) -> tuple[str | None, list[str]]:
+        """probe() and save_folders() out of one round trip; never raises."""
         try:
-            self.new_task_config(
+            body = self.new_task_config(
                 timeout=PROBE_TIMEOUT if self.is_local else REMOTE_PROBE_TIMEOUT
             )
         except BitCometError:
-            return None
-        return self._server_name or "BitComet"
+            return None, []
+        return self._server_name or "BitComet", _save_folders(body)
 
     # --- reads ------------------------------------------------------------
     def new_task_config(self, timeout: float | None = None) -> dict:
@@ -449,13 +463,7 @@ class BitCometClient:
 
     def save_folders(self) -> list[str]:
         """The folders this BitComet will accept as a save_folder, in its order."""
-        body = self.new_task_config()
-        folders = [
-            str(entry.get("path", "")).strip()
-            for entry in body.get("save_folders", [])
-            if isinstance(entry, dict)
-        ]
-        return [folder for folder in folders if folder]
+        return _save_folders(self.new_task_config())
 
     def task_list(self) -> list[dict]:
         """Every task BitComet knows about, in one round trip."""

@@ -236,6 +236,14 @@ def test_status_offers_the_active_devices_own_folders(client):
     ]
 
 
+def test_status_asks_the_peer_for_its_config_only_once(client, fake):
+    # The lamp and the folder list come from one body; a remote peer answers slowly.
+    fake.calls.clear()
+    client.get("/api/torrent/status")
+    reads = [p for _m, path, p in fake.calls if path.endswith("new_task/get")]
+    assert len(reads) == 1
+
+
 def test_status_explains_an_unreachable_peer_in_lan_terms(client):
     add(client, "192.168.1.50:19377", label="Basement NAS")
     detail = client.get("/api/torrent/status").json()["detail"]

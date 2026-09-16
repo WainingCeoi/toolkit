@@ -86,14 +86,6 @@ class StatusOut(BaseModel):
     save_folders: list[str] = []
 
 
-def _folders(torrents) -> list[str]:
-    """The active BitComet's save folders, or [] if it cannot be asked."""
-    try:
-        return torrents.client.save_folders()
-    except BitCometError:
-        return []
-
-
 @router.get("/status", response_model=StatusOut)
 def status(state: StateDep) -> dict:
     """Always answers, even with no engine: this is the diagnostic endpoint."""
@@ -114,7 +106,7 @@ def status(state: StateDep) -> dict:
             ),
         }
 
-    server = torrents.client.probe()
+    server, folders = torrents.client.probe_folders()
     detail = None
     if server is None:
         if torrents.client.is_local:
@@ -133,7 +125,7 @@ def status(state: StateDep) -> dict:
         "url": torrents.client.base_url,
         "device": device.public() if device else None,
         "is_local": torrents.client.is_local,
-        "save_folders": _folders(torrents) if server is not None else [],
+        "save_folders": folders,
     }
 
 
