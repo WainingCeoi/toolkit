@@ -133,8 +133,10 @@ def start(req: StartIn, jobs: JobsDep) -> JobStartedOut:
             detail="❌ Select at least one video, audio, or subtitle track.",
         )
 
+    # The map mirrors /subtitles, whose unmatched videos carry a null subtitle.
+    ext_subs = req.external_sub_map.values() if req.use_external_sub else ()
     # Security boundary: ffmpeg fetches URLs itself, so inputs must be local files.
-    for video in [*req.selected, *req.external_sub_map.values()]:
+    for video in [*req.selected, *(sub for sub in ext_subs if sub)]:
         if not video or "://" in video or _SCHEME.match(video):
             raise HTTPException(
                 status_code=400,

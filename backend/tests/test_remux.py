@@ -180,6 +180,48 @@ def test_start_refuses_all_empty_stream_map(tool_client, monkeypatch):
     )
 
 
+def test_start_accepts_a_video_without_an_external_subtitle(
+    tool_client, tmp_path, monkeypatch
+):
+    monkeypatch.setattr("shutil.which", lambda cmd: "/opt/fake/ffmpeg")
+
+    seen: dict[str, str | None] = {}
+
+    def fake_run_remux_task(task, progress_state, lock, ff_registry=None):
+        with lock:
+            progress_state[task["task_id"]] = 100.0
+        title = Path(task["input_video"]).name
+        seen[title] = task["input_subtitle"]
+        return {
+            "task_id": task["task_id"],
+            "title": title,
+            "success": True,
+            "error": None,
+        }
+
+    monkeypatch.setattr(remux, "run_remux_task", fake_run_remux_task)
+
+    matched = tmp_path / "a.mkv"
+    unmatched = tmp_path / "b.mkv"
+    sub = tmp_path / "a.srt"
+    for f in (matched, unmatched, sub):
+        f.write_bytes(b"")
+
+    resp = tool_client.post(
+        "/api/remux/start",
+        json=start_payload(
+            selected=[str(matched), str(unmatched)],
+            use_external_sub=True,
+            external_sub_map={str(matched): str(sub), str(unmatched): None},
+            out_folder=str(tmp_path / "out"),
+        ),
+    )
+    assert resp.status_code == 200
+    snap = wait_for_job(tool_client, resp.json()["job_id"])
+    assert snap["state"] == "done"
+    assert seen == {"a.mkv": str(sub), "b.mkv": None}
+
+
 # --- /api/remux/start happy path (fake per-task worker, no ffmpeg) ----------
 
 
