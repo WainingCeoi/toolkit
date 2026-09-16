@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import sys
+import threading
 import time
 from pathlib import Path
 
@@ -149,6 +151,27 @@ def test_find_manifests_rejects_empty_and_relative(tmp_path):
     assert err and "absolute" in err
     _, err = depsync.find_manifests(str(tmp_path / "nope"))
     assert err and "Not a folder" in err
+
+
+# --- Subprocess streaming ---
+
+
+def test_stream_survives_non_utf8_output(tmp_path):
+    done: list[tuple[bool, str]] = []
+    reader = threading.Thread(
+        target=lambda: done.append(
+            depsync._stream(
+                [sys.executable, "-c", "import os; os.write(1, b'hi\\n\\xff bad\\n')"],
+                str(tmp_path),
+            )
+        ),
+        daemon=True,
+    )
+    reader.start()
+    reader.join(15)
+    assert done, "_stream never returned"
+    ok, log = done[0]
+    assert ok and "hi" in log
 
 
 # --- uv: which floors get bumped ---

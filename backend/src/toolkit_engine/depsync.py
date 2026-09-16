@@ -151,6 +151,7 @@ def _stream(
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
+        errors="replace",  # a native build can emit bytes that are not UTF-8
         bufsize=1,
     )
     lines: list[str] = []
@@ -159,9 +160,12 @@ def _stream(
     # A reader thread keeps the cancel poll on a fixed cadence when output stalls.
     def _reader() -> None:
         assert proc.stdout is not None
-        for line in proc.stdout:
-            q.put(line)
-        q.put(None)  # EOF sentinel
+        try:
+            for line in proc.stdout:
+                q.put(line)
+        finally:
+            proc.stdout.close()
+            q.put(None)  # EOF sentinel, even if the read blew up
 
     threading.Thread(target=_reader, daemon=True).start()
 
@@ -198,6 +202,7 @@ def _lock_refresh(cmd: list[str], folder: str, tool: str) -> tuple[bool, str]:
             cwd=folder,
             capture_output=True,
             text=True,
+            errors="replace",
             timeout=_LOCK_TIMEOUT,
         )
     except subprocess.TimeoutExpired:
@@ -393,6 +398,7 @@ def npm_outdated(folder: str) -> tuple[dict, str | None]:
             cwd=folder,
             capture_output=True,
             text=True,
+            errors="replace",
             timeout=_LOCK_TIMEOUT,
         )
     except subprocess.TimeoutExpired:
