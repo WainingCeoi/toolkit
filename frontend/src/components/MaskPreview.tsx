@@ -1,4 +1,4 @@
-// Canvas mask preview; the mask is kept at native resolution offscreen and exported as-shown.
+// Canvas mask preview; the proposal is exported at native resolution, shown scaled down.
 
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef } from 'react'
 import { maskToOverlay, overlayToMask } from '../mask'
@@ -21,6 +21,9 @@ interface MaskPreviewProps {
   onError?: (failed: boolean) => void
 }
 
+// The canvas is only ever CSS-scaled into a panel, and 20 native-resolution ones exhaust the GPU.
+const MAX_VIEW_SIDE = 1600
+
 const MaskPreview = forwardRef<MaskPreviewHandle, MaskPreviewProps>(
   function MaskPreview(
     { imageUrl, maskUrl, width, height, onReady, onEmpty, onError },
@@ -29,7 +32,7 @@ const MaskPreview = forwardRef<MaskPreviewHandle, MaskPreviewProps>(
     const viewRef = useRef<HTMLCanvasElement>(null)
     const image = useRef<HTMLImageElement | null>(null)
     const overlay = useRef<HTMLCanvasElement | null>(null)
-    const loaded = useRef(false)
+    const exported = useRef<string | null>(null)
     const loadToken = useRef(0)
     // Refs keep inline parent callbacks out of the effect deps.
     const readyCb = useRef(onReady)
@@ -39,99 +42,96 @@ const MaskPreview = forwardRef<MaskPreviewHandle, MaskPreviewProps>(
     const errorCb = useRef(onError)
     errorCb.current = onError
 
+    const scale = Math.min(1, MAX_VIEW_SIDE / Math.max(width, height))
+    const viewW = Math.max(1, Math.round(width * scale))
+    const viewH = Math.max(1, Math.round(height * scale))
+
     const overlayCtx = () => {
       if (!overlay.current) {
         overlay.current = document.createElement('canvas')
-        overlay.current.width = width
-        overlay.current.height = height
+        overlay.current.width = viewW
+        overlay.current.height = viewH
       }
-      return overlay.current.getContext('2d', { willReadFrequently: true })!
+      return overlay.current.getContext('2d')!
     }
 
     const redraw = useCallback(() => {
       const view = viewRef.current
       const ctx = view?.getContext('2d')
       if (!view || !ctx) return
-      ctx.clearRect(0, 0, width, height)
-      if (image.current) ctx.drawImage(image.current, 0, 0)
+      ctx.clearRect(0, 0, viewW, viewH)
+      if (image.current) ctx.drawImage(image.current, 0, 0, viewW, viewH)
       if (overlay.current) {
         ctx.globalAlpha = 0.45
         ctx.drawImage(overlay.current, 0, 0)
         ctx.globalAlpha = 1
       }
-    }, [width, height])
+    }, [viewW, viewH])
 
     useEffect(() => {
       const token = ++loadToken.current
       readyCb.current?.(false)
       errorCb.current?.(false)
       const img = new Image()
-      img.onload = () => {
-        if (token !== loadToken.current) return
-        const probe = document.createElement('canvas')
-        probe.width = width
-        probe.height = height
-        const probeCtx = probe.getContext('2d', { willReadFrequently: true })!
-        probeCtx.drawImage(img, 0, 0)
-        const pixels = probeCtx.getImageData(0, 0, width, height)
-        maskToOverlay(pixels.data)
-        overlayCtx().putImageData(pixels, 0, 0)
-        loaded.current = true
-        readyCb.current?.(true)
-        emptyCb.current?.(
-          !pixels.data.some((_v, i) => i % 4 === 3 && pixels.data[i] > 0),
-        )
-        redraw()
-      }
-      img.onerror = () => {
-        if (token !== loadToken.current) return
-        readyCb.current?.(loaded.current)
-        errorCb.current?.(true)
-      }
       img.src = maskUrl
+      // decode() keeps it off the main thread; drawImage would decode inline instead.
+      img.decode().then(
+        () => {
+          if (token !== loadToken.current) return
+          const probe = document.createElement('canvas')
+          probe.width = width
+          probe.height = height
+          const probeCtx = probe.getContext('2d', { willReadFrequently: true })!
+          probeCtx.drawImage(img, 0, 0)
+          const pixels = probeCtx.getImageData(0, 0, width, height)
+          const marked = maskToOverlay(pixels.data)
+          probeCtx.putImageData(pixels, 0, 0)
+          const ctx = overlayCtx()
+          ctx.clearRect(0, 0, viewW, viewH)
+          ctx.drawImage(probe, 0, 0, viewW, viewH)
+          // Encoded here, not in the Remove handler: a full-resolution PNG costs ~0.3 s.
+          overlayToMask(pixels.data)
+          probeCtx.putImageData(pixels, 0, 0)
+          exported.current = probe.toDataURL('image/png').split(',')[1]
+          readyCb.current?.(true)
+          emptyCb.current?.(!marked)
+          redraw()
+        },
+        () => {
+          if (token !== loadToken.current) return
+          readyCb.current?.(exported.current !== null)
+          errorCb.current?.(true)
+        },
+      )
       return () => {
         // Bumping the live counter is the point, not a stale-ref bug.
         // eslint-disable-next-line react-hooks/exhaustive-deps
         loadToken.current++
       }
       // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [maskUrl, width, height, redraw])
+    }, [maskUrl, width, height, viewW, viewH, redraw])
 
     useEffect(() => {
       let alive = true
       const img = new Image()
-      img.onload = () => {
-        if (!alive) return
-        image.current = img
-        redraw()
-      }
       img.src = imageUrl
+      img.decode().then(
+        () => {
+          if (!alive) return
+          image.current = img
+          redraw()
+        },
+        () => {},
+      )
       return () => {
         alive = false
       }
     }, [imageUrl, redraw])
 
-    useImperativeHandle(
-      ref,
-      () => ({
-        exportMask() {
-          if (!loaded.current) return null
-          const out = document.createElement('canvas')
-          out.width = width
-          out.height = height
-          const ctx = out.getContext('2d', { willReadFrequently: true })!
-          if (overlay.current) ctx.drawImage(overlay.current, 0, 0)
-          const pixels = ctx.getImageData(0, 0, width, height)
-          overlayToMask(pixels.data)
-          ctx.putImageData(pixels, 0, 0)
-          return out.toDataURL('image/png').split(',')[1]
-        },
-      }),
-      [width, height],
-    )
+    useImperativeHandle(ref, () => ({ exportMask: () => exported.current }), [])
 
     return (
-      <canvas ref={viewRef} className="wm-canvas" width={width} height={height} />
+      <canvas ref={viewRef} className="wm-canvas" width={viewW} height={viewH} />
     )
   },
 )
