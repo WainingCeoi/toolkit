@@ -53,15 +53,19 @@ host: build
 build:
 	cd frontend && npm run build
 
+# The resolved port is left in backend/.port so `make frontend` can aim its proxy at it.
 backend:
 	@cd backend; \
 	FREE=$$(PORT=$(PORT) uv run --frozen python -m toolkit_api.host --free-port) || exit $$?; \
 	if [ "$$FREE" != "$(PORT)" ]; then echo "⚠  port $(PORT) was busy → backend on $$FREE"; fi; \
+	echo $$FREE > .port; \
 	echo "backend -> http://127.0.0.1:$$FREE"; \
 	uv run --frozen uvicorn toolkit_api.main:app --reload --port $$FREE
 
 frontend:
-	cd frontend && API_PORT=$(PORT) npm run dev
+	@PROXY=$$(cat backend/.port 2>/dev/null || echo $(PORT)); \
+	echo "frontend -> http://localhost:5173 (/api proxied to 127.0.0.1:$$PROXY)"; \
+	cd frontend && API_PORT=$$PROXY npm run dev
 
 # npm run build alone does not typecheck (Vite strips types); explicit ruff paths override exclude.
 test:
@@ -73,5 +77,5 @@ lint:
 	cd frontend && npm run typecheck && npm run lint
 
 clean:
-	rm -rf frontend/dist
+	rm -rf frontend/dist backend/.port
 	find backend -name __pycache__ -type d -prune -exec rm -rf {} + 2>/dev/null || true
