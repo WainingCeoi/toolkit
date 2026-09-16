@@ -230,32 +230,33 @@ def _peaks(prominence: np.ndarray, count: int) -> list[tuple[float, float]]:
 
 def _fit_lattice(peaks: list[tuple[float, float]]) -> np.ndarray | None:
     """A 2x2 basis whose integer combinations explain the peaks, or None."""
-    best_basis, best_key = None, None
-    for a_index, first in enumerate(peaks):
-        for second in peaks[a_index + 1 :]:
-            basis = np.array(
-                [[first[1], second[1]], [first[0], second[0]]], np.float64
-            )  # columns are the vectors, rows are (x, y)
-            area = abs(np.linalg.det(basis))
-            if area < MIN_PERIOD**2 * 0.25:  # near-collinear or far too small
-                continue
-            inverse = np.linalg.inv(basis)
-            supported = []
-            for peak in peaks:
-                coords = inverse @ np.array([peak[1], peak[0]], np.float64)
-                if np.all(np.abs(coords - np.round(coords)) <= _LATTICE_TOL):
-                    supported.append((np.round(coords), peak))
-            length = np.hypot(*first) + np.hypot(*second)
-            key = (len(supported), -length)  # shorter wins; a doubled vector fits too
-            if len(supported) >= _MIN_SUPPORT and (best_key is None or key > best_key):
-                best_basis, best_key = (basis, supported), key
-
-    if best_basis is None:
+    if len(peaks) < 2:
         return None
-    basis, supported = best_basis
+    points = np.array([(dx, dy) for dy, dx in peaks], np.float64)  # rows are (x, y)
+    # triu_indices walks the pairs in the order the nested loops did, for the tie-break.
+    left, right = np.triu_indices(len(peaks), 1)
+    bases = np.stack([points[left], points[right]], axis=2)  # columns are the vectors
+    usable = np.abs(np.linalg.det(bases)) >= MIN_PERIOD**2 * 0.25  # not near-collinear
+    left, right, bases = left[usable], right[usable], bases[usable]
+    if len(bases) == 0:
+        return None
+
+    coords = np.linalg.inv(bases) @ points.T  # every peak's lattice coords, per pair
+    on = np.all(np.abs(coords - np.round(coords)) <= _LATTICE_TOL, axis=1)
+    support = on.sum(axis=1)
+    enough = np.nonzero(support >= _MIN_SUPPORT)[0]
+    if len(enough) == 0:
+        return None
+    # shorter wins; a doubled vector fits too
+    length = np.hypot(points[left, 1], points[left, 0]) + np.hypot(
+        points[right, 1], points[right, 0]
+    )
+    best = enough[np.lexsort((enough, length[enough], -support[enough]))[0]]
+
+    basis = bases[best]
     # Refit from every supported peak, putting the vectors on a sub-pixel footing.
-    integer_coords = np.array([c for c, _p in supported]).T  # 2 x N
-    observed = np.array([[p[1], p[0]] for _c, p in supported]).T  # 2 x N
+    integer_coords = np.round(coords[best][:, on[best]])  # 2 x N
+    observed = points[on[best]].T  # 2 x N
     gram = integer_coords @ integer_coords.T
     if abs(np.linalg.det(gram)) < 1e-9:
         return basis
