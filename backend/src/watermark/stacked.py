@@ -14,6 +14,9 @@ _WORK = 700
 # Border excluded from seeding: np.roll wraps content across it in the null.
 _MARGIN = 24
 
+# Smallest null roll; the frame must hold one either way round, hence the guard.
+_ROLL_MIN = 40
+
 _SEED_T = 6.0
 _ROLLS = 24
 _SHARE_FLOOR = 0.0002  # of frame pixels
@@ -96,8 +99,8 @@ def recover_stacked(
     if len(sizes) < MIN_STACK:
         return None
     shape = _work_shape(sizes)
-    if shape[0] <= 2 * _MARGIN or shape[1] <= 2 * _MARGIN:
-        return None  # margin would swallow the whole frame
+    if min(shape) <= 2 * _ROLL_MIN:
+        return None  # no room for the margin, nor for a null roll
     fields = [
         _field(
             gray
@@ -125,8 +128,8 @@ def recover_stacked(
                 np.roll(
                     field,
                     (
-                        int(rng.integers(40, shape[0] - 40)),
-                        int(rng.integers(40, shape[1] - 40)),
+                        int(rng.integers(_ROLL_MIN, shape[0] - _ROLL_MIN)),
+                        int(rng.integers(_ROLL_MIN, shape[1] - _ROLL_MIN)),
                     ),
                     (0, 1),
                 )

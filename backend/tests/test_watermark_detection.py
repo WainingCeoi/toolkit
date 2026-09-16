@@ -740,6 +740,13 @@ def test_near_duplicate_frames_are_refused_not_read_as_one_big_mark():
     assert recover_stacked(_reloadable(clean)) is None
 
 
+def test_a_batch_of_banners_too_thin_to_roll_is_refused_not_a_crash():
+    # A working frame under twice the null roll: refuse the batch, never raise.
+    frames, _truth = stacked_batch(n=4, size=(600, 79))
+    assert recover_stacked(_reloadable(frames)) is None
+    assert collect_marks(_reloadable(frames)) == []
+
+
 def test_a_stack_of_two_proves_nothing():
     frames, _truth = stacked_batch(n=2)
     assert recover_stacked(_reloadable(frames)) is None
