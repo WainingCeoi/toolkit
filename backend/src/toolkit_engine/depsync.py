@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import queue
@@ -703,7 +704,6 @@ def _npm_write_with_retry(
 
 def write_manifest(manifest: Manifest) -> dict:
     """Recompute and write one manifest, then re-resolve its lockfile; no commit."""
-    folder = str(manifest.path.parent)
     result = {
         "rel": manifest.rel,
         "kind": manifest.kind,
@@ -714,7 +714,18 @@ def write_manifest(manifest: Manifest) -> dict:
         "changed": [],
         "originals": {},
     }
+    originals: dict[str, str | None] = {}
+    try:
+        return _write_manifest(manifest, result, originals)
+    except Exception as exc:  # noqa: BLE001 — one bad manifest fails on its own
+        with contextlib.suppress(OSError):  # a rollback that cannot write is moot here
+            restore(originals)
+        result["error"] = f"❌ {exc}"
+        return result
 
+
+def _write_manifest(manifest: Manifest, result: dict, originals: dict) -> dict:
+    folder = str(manifest.path.parent)
     if manifest.kind == "uv":
         resolved, err = resolved_versions(folder)
         if err:
@@ -731,10 +742,12 @@ def write_manifest(manifest: Manifest) -> dict:
         return result
 
     lock = Path(folder) / _LOCKS[manifest.kind]
-    originals: dict[str, str | None] = {
-        str(manifest.path): manifest.path.read_text(encoding="utf-8"),
-        str(lock): lock.read_text(encoding="utf-8") if lock.is_file() else None,
-    }
+    originals.update(
+        {
+            str(manifest.path): manifest.path.read_text(encoding="utf-8"),
+            str(lock): lock.read_text(encoding="utf-8") if lock.is_file() else None,
+        }
+    )
 
     if manifest.kind == "uv":
         apply_uv_bumps(manifest.path, bumps)

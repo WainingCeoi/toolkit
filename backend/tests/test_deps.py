@@ -651,6 +651,22 @@ def test_apply_rejects_empty_folder(client):
     assert r.status_code == 400 and r.json()["detail"].startswith("❌")
 
 
+def test_apply_reports_an_unwritable_manifest_and_keeps_going(
+    client, tmp_path, monkeypatch
+):
+    root = _monorepo(tmp_path / "plain")
+    _fake_locks(monkeypatch)
+    (root / "backend" / "pyproject.toml").chmod(0o444)
+
+    r = client.post("/api/deps/apply", json={"folder": str(root), "commit": False})
+
+    assert r.status_code == 200
+    results = {t["rel"]: t for t in r.json()["results"]}
+    assert "Permission denied" in results["backend/pyproject.toml"]["error"]
+    assert results["backend/pyproject.toml"]["written"] == 0
+    assert results["frontend/package.json"]["written"] == 5
+
+
 def test_apply_refuses_non_git_folder_before_writing(client, tmp_path):
     root = _monorepo(tmp_path / "plain")
     original = (root / "backend" / "pyproject.toml").read_text(encoding="utf-8")
