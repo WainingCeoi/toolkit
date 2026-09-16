@@ -809,18 +809,35 @@ def test_apply_falls_back_to_default_message_when_blank(client, tmp_path, monkey
     assert subject == depsync.COMMIT_SUBJECT
 
 
-def test_apply_refuses_a_second_run_on_the_same_folder():
-    from fastapi import HTTPException
+def test_apply_refuses_a_second_run_on_the_same_or_nested_folder():
+    from toolkit_api.routers.depsync import _BusyError, _exclusive_root
 
-    from toolkit_api.routers.depsync import _exclusive_apply
-
-    with _exclusive_apply("/tmp/some-root"):
-        with pytest.raises(HTTPException) as excinfo:
-            with _exclusive_apply("/tmp/some-root"):
+    with _exclusive_root("/tmp/some-root"):
+        with pytest.raises(_BusyError):
+            with _exclusive_root("/tmp/some-root"):
                 pass
-        assert excinfo.value.status_code == 409
-        with _exclusive_apply("/tmp/other-root"):
+        with pytest.raises(_BusyError):  # a subfolder shares the manifests
+            with _exclusive_root("/tmp/some-root/backend"):
+                pass
+        with _exclusive_root("/tmp/other-root"):
             pass
 
-    with _exclusive_apply("/tmp/some-root"):
+    with _exclusive_root("/tmp/some-root"):
         pass
+
+
+def test_scan_and_apply_refuse_to_run_on_the_same_folder(client, tmp_path, monkeypatch):
+    from toolkit_api.routers.depsync import _exclusive_root
+
+    root = _monorepo(tmp_path)
+    _fake_syncs(monkeypatch)
+    with _exclusive_root(str(root.resolve())):
+        started = client.post("/api/deps/scan", json={"folder": str(root)})
+        assert started.status_code == 200
+        snap = _wait(client, started.json()["job_id"])
+        assert snap["state"] == "failed" and "already running" in snap["error"]
+
+        busy = client.post(
+            "/api/deps/apply", json={"folder": str(root), "commit": False}
+        )
+        assert busy.status_code == 409
