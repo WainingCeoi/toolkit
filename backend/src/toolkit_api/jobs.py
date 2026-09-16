@@ -126,27 +126,32 @@ class JobRegistry:
         thread.start()
         self._workers.append(thread)
 
+    def _run_one(self, job: Job, worker: Callable[[Job], dict | None]) -> None:
+        # Honour a cancel from the queue: purge deletes before its own check.
+        if job.cancelled:
+            job._finish(None)
+            return
+        try:
+            result = worker(job)
+        except Exception as exc:  # noqa: BLE001 — surfaced to the client
+            job._fail(str(exc))
+        except BaseException as exc:  # noqa: BLE001 — thread is dying
+            # The thread is dying; the job must not stay 'running' forever.
+            job._fail(f"The worker stopped unexpectedly: {exc!r}")
+            raise
+        else:
+            job._finish(result)
+
     def _serve(self) -> None:
         try:
             while True:
                 item = self._queue.get()
                 if item is None:
                     return
-                job, worker = item
-                # Honour a cancel from the queue: purge deletes before its own check.
-                if job.cancelled:
-                    job._finish(None)
-                    continue
-                try:
-                    result = worker(job)
-                except Exception as exc:  # noqa: BLE001 — surfaced to the client
-                    job._fail(str(exc))
-                except BaseException as exc:  # noqa: BLE001 — thread is dying
-                    # The thread is dying; the job must not stay 'running' forever.
-                    job._fail(f"The worker stopped unexpectedly: {exc!r}")
-                    raise
-                else:
-                    job._finish(result)
+                # Run in a nested frame and drop the tuple, so a finished job's
+                # closure (its upload bytes) is freed before blocking on get().
+                self._run_one(*item)
+                del item
         finally:
             # Give the slot back however this thread ends; the next submit refills it.
             with self._lock:

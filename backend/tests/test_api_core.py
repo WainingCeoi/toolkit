@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import gc
 import shutil
 import threading
 import time
+import weakref
 
 import pytest
 
@@ -293,6 +295,28 @@ def test_pool_recovers_from_a_worker_thread_dying():
     survivor = reg.submit("quick", [], lambda job: {"ok": True})
     _wait_finished(reg, survivor.id)
     assert reg.get(survivor.id).state == "done"
+
+
+def test_idle_worker_releases_the_finished_jobs_closure():
+    class Payload:
+        pass
+
+    reg = JobRegistry(max_workers=1)
+    payload = Payload()
+    alive = weakref.ref(payload)
+
+    def worker(job, payload=payload):  # the uploads a real worker closes over
+        return {"ok": True}
+
+    job = reg.submit("holder", [], worker)
+    _wait_finished(reg, job.id)
+    del worker, payload
+
+    deadline = time.monotonic() + 2.0
+    while alive() is not None and time.monotonic() < deadline:
+        gc.collect()
+        time.sleep(0.01)
+    assert alive() is None, "an idle worker still pins the finished job's payload"
 
 
 def test_worker_pool_is_bounded_by_max_workers():
