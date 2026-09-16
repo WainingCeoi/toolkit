@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import subprocess
+import sys
 import time
 import zipfile
 from pathlib import Path
@@ -69,6 +70,45 @@ def test_build_mineru_cmd_hybrid_uses_effort_not_pipeline_flags():
     assert "-l " not in joined
 
 
+def test_run_mineru_kills_the_child_on_cancel():
+    started = time.monotonic()
+    result = docmd.run_mineru(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        is_cancelled=lambda: True,
+        poll=0.05,
+    )
+    assert result is None
+    assert time.monotonic() - started < 10
+
+
+def test_docmd_convert_batch_stops_at_the_cancelled_file(monkeypatch):
+    calls = []
+
+    def fake_run(cmd, *_args, **_kwargs):
+        calls.append(cmd)
+        return None  # the child was killed mid-file
+
+    monkeypatch.setattr(docmd, "run_mineru", fake_run)
+
+    options = {
+        "backend": "pipeline",
+        "method": "auto",
+        "lang": "ch",
+        "effort": "medium",
+        "formula": True,
+        "table": True,
+    }
+    zip_bytes, done, failed = docmd.convert_batch(
+        [("a.pdf", b"one"), ("b.pdf", b"two")],
+        options,
+        lambda pct, text: None,
+        ["mineru"],
+        lambda: True,
+    )
+    assert len(calls) == 1
+    assert (zip_bytes, done, failed) == (None, [], [])
+
+
 # --- Doc to PDF engine units ---
 DOCUMENT_XML = b"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
@@ -119,6 +159,19 @@ def test_clean_docx_accepts_insertions_drops_deletions_and_trackchanges(tmp_path
     assert docpdf._w("trackChanges") not in {el.tag for el in settings.iter()}
 
 
+def test_batch_to_pdf_kills_soffice_on_cancel(tmp_path):
+    fake_soffice = tmp_path / "soffice"
+    fake_soffice.write_text("#!/bin/sh\nsleep 30\n")
+    fake_soffice.chmod(0o755)
+
+    started = time.monotonic()
+    result = docpdf.batch_to_pdf(
+        str(fake_soffice), [tmp_path / "a.docx"], tmp_path, lambda: True, 0.05
+    )
+    assert result is None
+    assert time.monotonic() - started < 10
+
+
 # --- Doc to PDF router ---
 def test_docpdf_post_without_files_is_400(tool_client):
     resp = tool_client.post("/api/doc-to-pdf")
@@ -152,7 +205,7 @@ def test_docpdf_post_rejects_non_docx(tool_client):
 def test_docpdf_job_bundles_pdfs_into_zip_artifact(tool_client, monkeypatch, tmp_path):
     monkeypatch.setattr(docpdf, "find_soffice", lambda: "/stub/soffice")
 
-    def fake_batch_to_pdf(soffice, docx_paths, out_dir):
+    def fake_batch_to_pdf(soffice, docx_paths, out_dir, *_args):
         for p in docx_paths:
             (Path(out_dir) / f"{Path(p).stem}.pdf").write_bytes(b"%PDF-1.4 stub")
         return subprocess.CompletedProcess([], 0, stdout="", stderr="")
@@ -179,6 +232,28 @@ def test_docpdf_job_bundles_pdfs_into_zip_artifact(tool_client, monkeypatch, tmp
         assert z.namelist() == ["report.pdf"]
 
 
+def test_docpdf_job_cancels_while_the_soffice_lock_is_held(
+    tool_client, app_state, monkeypatch, tmp_path
+):
+    monkeypatch.setattr(docpdf, "find_soffice", lambda: "/stub/soffice")
+    src = make_docx(tmp_path / "a.docx").read_bytes()
+
+    app_state.soffice_lock.acquire()
+    try:
+        resp = tool_client.post(
+            "/api/doc-to-pdf",
+            files={"files": ("a.docx", src, "application/octet-stream")},
+        )
+        assert resp.status_code == 200
+        job_id = resp.json()["job_id"]
+        assert tool_client.post(f"/api/jobs/{job_id}/cancel").status_code == 200
+        snap = wait_for_job(tool_client, job_id)
+    finally:
+        app_state.soffice_lock.release()
+
+    assert snap["state"] == "cancelled"
+
+
 # --- Doc to Markdown router ---
 def test_docmd_post_without_files_is_400(tool_client):
     resp = tool_client.post("/api/doc-to-markdown")
@@ -195,14 +270,14 @@ def test_docmd_health_reports_booleans(tool_client):
 def test_docmd_job_zips_markdown_artifact(tool_client, monkeypatch):
     monkeypatch.setattr(docmd, "find_mineru", lambda: ["mineru"])
 
-    def fake_run(cmd, **kwargs):
+    def fake_run(cmd, *_args, **_kwargs):
         out_dir = Path(cmd[cmd.index("-o") + 1])
         md_dir = out_dir / "notes" / "auto"
         md_dir.mkdir(parents=True)
         (md_dir / "notes.md").write_text("# hi")
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
-    monkeypatch.setattr(docmd.subprocess, "run", fake_run)
+    monkeypatch.setattr(docmd, "run_mineru", fake_run)
 
     resp = tool_client.post(
         "/api/doc-to-markdown",
@@ -239,7 +314,7 @@ def test_docmd_post_rejects_unsupported_type(tool_client):
 def test_docmd_convert_batch_sanitizes_traversal_filename(monkeypatch):
     captured = {}
 
-    def fake_run(cmd, **kwargs):
+    def fake_run(cmd, *_args, **_kwargs):
         in_path = Path(cmd[cmd.index("-p") + 1])
         captured["in_path"] = in_path
         out_dir = Path(cmd[cmd.index("-o") + 1])
@@ -248,7 +323,7 @@ def test_docmd_convert_batch_sanitizes_traversal_filename(monkeypatch):
         (md_dir / "x.md").write_text("# hi")
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
-    monkeypatch.setattr(docmd.subprocess, "run", fake_run)
+    monkeypatch.setattr(docmd, "run_mineru", fake_run)
 
     options = {
         "backend": "pipeline",
@@ -273,7 +348,7 @@ def test_docmd_convert_batch_sanitizes_traversal_filename(monkeypatch):
 def test_docmd_duplicate_names_get_index_correct_states(tool_client, monkeypatch):
     monkeypatch.setattr(docmd, "find_mineru", lambda: ["mineru"])
 
-    def fake_run(cmd, **kwargs):
+    def fake_run(cmd, *_args, **_kwargs):
         in_path = Path(cmd[cmd.index("-p") + 1])
         out_dir = Path(cmd[cmd.index("-o") + 1])
         if in_path.parent.name == "in_1":  # only the second upload produces md
@@ -282,7 +357,7 @@ def test_docmd_duplicate_names_get_index_correct_states(tool_client, monkeypatch
             (md_dir / "a.md").write_text("# hi")
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="boom")
 
-    monkeypatch.setattr(docmd.subprocess, "run", fake_run)
+    monkeypatch.setattr(docmd, "run_mineru", fake_run)
 
     resp = tool_client.post(
         "/api/doc-to-markdown",
@@ -304,7 +379,7 @@ def test_docpdf_duplicate_names_get_index_correct_states(
 ):
     monkeypatch.setattr(docpdf, "find_soffice", lambda: "/stub/soffice")
 
-    def fake_batch_to_pdf(soffice, docx_paths, out_dir):
+    def fake_batch_to_pdf(soffice, docx_paths, out_dir, *_args):
         for p in docx_paths:
             # Cleaned files are named "{idx}_{stem}" — render only index 1.
             if Path(p).stem.startswith("1_"):

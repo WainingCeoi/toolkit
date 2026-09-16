@@ -52,14 +52,19 @@ def convert(state: StateDep, files: list[UploadFile] | None = None) -> JobStarte
                 raise _CancelledError
             job.set_message(text)
 
-        # One shared LibreOffice profile — conversions must not overlap.
-        with state.soffice_lock:
-            try:
-                zip_bytes, done, failed = docpdf.convert_batch(
-                    named, on_progress, soffice
-                )
-            except _CancelledError:
+        # One shared LibreOffice profile — conversions must not overlap. Poll the
+        # lock rather than block on it, so a queued job still answers Cancel.
+        while not state.soffice_lock.acquire(timeout=0.5):
+            if job.cancelled:
                 return None
+        try:
+            zip_bytes, done, failed = docpdf.convert_batch(
+                named, on_progress, soffice, lambda: job.cancelled
+            )
+        except _CancelledError:
+            return None
+        finally:
+            state.soffice_lock.release()
 
         failed_by_idx = {idx: error for idx, _name, error in failed}
         for idx in range(len(named)):

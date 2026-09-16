@@ -4,6 +4,7 @@ import io
 import shutil
 import subprocess
 import tempfile
+import time
 import zipfile
 from pathlib import Path
 
@@ -115,27 +116,53 @@ def clean_docx(src_path, dst_path):
     return dst_path
 
 
-def batch_to_pdf(soffice, docx_paths, out_dir):
+def _terminate(proc):
+    # SIGTERM first: a killed soffice leaves a lock file in the shared profile.
+    proc.terminate()
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+
+
+def batch_to_pdf(soffice, docx_paths, out_dir, is_cancelled=None, poll=0.5):
     """Render many .docx to PDF in a single LibreOffice run (one cold start)."""
     docx_paths = [str(p) for p in docx_paths]
-    return subprocess.run(
-        [
-            soffice,
-            f"-env:UserInstallation=file://{LO_PROFILE}",
-            "--headless",
-            "--convert-to",
-            "pdf",
-            "--outdir",
-            str(out_dir),
-            *docx_paths,
-        ],
-        capture_output=True,
-        text=True,
-        timeout=max(120, 20 * len(docx_paths)),
+    cmd = [
+        soffice,
+        f"-env:UserInstallation=file://{LO_PROFILE}",
+        "--headless",
+        "--convert-to",
+        "pdf",
+        "--outdir",
+        str(out_dir),
+        *docx_paths,
+    ]
+    timeout = max(120, 20 * len(docx_paths))
+    proc = subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
     )
+    deadline = time.monotonic() + timeout
+    # The context manager closes the pipes however this returns.
+    with proc:
+        while True:
+            try:
+                # Retrying communicate() after a timeout keeps the output read so far.
+                stdout, stderr = proc.communicate(timeout=poll)
+            except subprocess.TimeoutExpired:
+                pass
+            else:
+                return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
+            if is_cancelled is not None and is_cancelled():
+                _terminate(proc)
+                return None
+            if time.monotonic() >= deadline:
+                _terminate(proc)
+                raise subprocess.TimeoutExpired(cmd, timeout)
 
 
-def convert_batch(named_files, on_progress, soffice):
+def convert_batch(named_files, on_progress, soffice, is_cancelled=None):
     """Clean and convert (name, bytes) uploads to a zip of PDFs."""
     done, failed, zip_bytes = [], [], None
     total = len(named_files)
@@ -166,8 +193,10 @@ def convert_batch(named_files, on_progress, soffice):
             on_progress(50, f"Converting {len(jobs)} file(s) with LibreOffice…")
             # A LibreOffice timeout keeps whatever PDFs it produced; the rest fail.
             try:
-                result = batch_to_pdf(soffice, [job[0] for job in jobs], out_dir)
-                stderr = result.stderr.strip()
+                result = batch_to_pdf(
+                    soffice, [job[0] for job in jobs], out_dir, is_cancelled
+                )
+                stderr = "" if result is None else result.stderr.strip()
             except subprocess.TimeoutExpired:
                 stderr = "LibreOffice timed out"
             buffer = io.BytesIO()

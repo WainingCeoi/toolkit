@@ -90,7 +90,7 @@ def convert(
 
         try:
             zip_bytes, done, failed = docmd.convert_batch(
-                named, options, on_progress, mineru_cmd
+                named, options, on_progress, mineru_cmd, lambda: job.cancelled
             )
         except _CancelledError:
             return None
