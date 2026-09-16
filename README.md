@@ -297,8 +297,8 @@ Duplicates are auto-numbered (`name_1.ext`); you get a moved/failed summary.
 <summary><b>📸 Photos Library Filter</b> — a cache-free mirror Photos can still open</summary>
 
 Point it at the live library and a `*.photoslibrary` destination outside it,
-**Dry run** to see the plan, then untick the dry run and **Mirror library**.
-Re-running only copies what changed. What a run does, in order:
+**Start dry run** to see the plan, then flip the switch to **Mirror** and run it
+for real. Re-running only copies what changed. What a run does, in order:
 
 1. **plan** — walk the source and classify every file with the rules (below).
    Every directory is mirrored; an excluded one stays as an empty skeleton, so

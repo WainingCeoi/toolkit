@@ -166,6 +166,9 @@ export default function PhotosLibraryFilter() {
   )
 
   const ready = source.trim() !== '' && dest.trim() !== ''
+  const activeRules = rules
+    .split('\n')
+    .filter((line) => line.trim() !== '' && !line.trim().startsWith('#')).length
   const run = () => {
     const payload = { source, dest, rules }
     return start(() => (dryRun ? api.photofilterDryRun(payload) : api.photofilterRun(payload)))
@@ -210,29 +213,55 @@ export default function PhotosLibraryFilter() {
             anything already in it that is not part of the plan is deleted.
           </p>
 
-          <div className="field">
-            <label htmlFor="photofilter-rules">Exclude rules</label>
-            <textarea
-              id="photofilter-rules"
-              className="control"
-              rows={14}
-              value={rules}
-              onChange={(e) => setRules(e.target.value)}
-              spellCheck={false}
-              // One line per rule: a wrapped comment would read as a rule.
-              wrap="off"
-            />
-            <p style={caption}>
-              One rule per line. Trailing / = a directory and everything in it · leading / =
-              anchored to the library root · * and ? stay inside one path component · **
-              crosses components · # starts a comment.
-            </p>
-          </div>
+          <details className="expander">
+            <summary>
+              🧹 Exclude rules · {activeRules} active
+              {rules === DEFAULT_RULES ? '' : ' · edited'}
+            </summary>
+            <div className="body">
+              <textarea
+                aria-label="Exclude rules"
+                className="control"
+                rows={14}
+                value={rules}
+                onChange={(e) => setRules(e.target.value)}
+                spellCheck={false}
+                // One line per rule: a wrapped comment would read as a rule.
+                wrap="off"
+              />
+              <p style={caption}>
+                One rule per line. Trailing / = a directory and everything in it · leading / =
+                anchored to the library root · * and ? stay inside one path component · **
+                crosses components · # starts a comment.
+              </p>
+            </div>
+          </details>
 
-          <label className="check" style={{ margin: '4px 0 8px' }}>
-            <input type="checkbox" checked={dryRun} onChange={(e) => setDryRun(e.target.checked)} />
-            Dry run — plan and verify only, write nothing
-          </label>
+          <div className="segmented" role="group" aria-label="Run mode">
+            <button
+              type="button"
+              className={`seg-opt${dryRun ? ' active' : ''}`}
+              aria-pressed={dryRun}
+              disabled={running}
+              onClick={() => setDryRun(true)}
+            >
+              🔍 Dry run
+            </button>
+            <button
+              type="button"
+              className={`seg-opt danger${dryRun ? '' : ' active'}`}
+              aria-pressed={!dryRun}
+              disabled={running}
+              onClick={() => setDryRun(false)}
+            >
+              📸 Mirror
+            </button>
+          </div>
+          <p style={{ ...caption, margin: '6px 0 10px' }}>
+            {dryRun
+              ? 'Plans and verifies only — nothing is written.'
+              : 'Writes the mirror: copies what changed, deletes what the plan no longer holds.'}
+          </p>
 
           {!dryRun && (
             <label className="check" style={{ margin: '0 0 10px' }}>
@@ -246,20 +275,14 @@ export default function PhotosLibraryFilter() {
             </label>
           )}
 
-          {dryRun ? (
-            <Button variant="primary" onClick={run} loading={running} disabled={!ready || running}>
-              🔍 Dry run
-            </Button>
-          ) : (
-            <Button
-              variant="danger"
-              onClick={run}
-              loading={running}
-              disabled={!ready || !confirm || running}
-            >
-              📸 Mirror library
-            </Button>
-          )}
+          <Button
+            variant={dryRun ? 'primary' : 'danger'}
+            onClick={run}
+            loading={running}
+            disabled={!ready || running || (!dryRun && !confirm)}
+          >
+            {dryRun ? '▶ Start dry run' : '▶ Mirror library'}
+          </Button>
 
           {error && <div className="note error">{error}</div>}
         </div>
