@@ -110,21 +110,24 @@ def parse_torrent(data: bytes) -> TorrentInfo:
     infohash = hashlib.sha1(data[start:end], usedforsecurity=False).hexdigest()
 
     info = meta[b"info"]
-    name = info[b"name"].decode("utf-8", "replace")
+    try:
+        name = info[b"name"].decode("utf-8", "replace")
 
-    if b"files" in info:
-        files = [
-            TorrentFile(
-                index=n,
-                path="/".join(
-                    part.decode("utf-8", "replace") for part in entry[b"path"]
-                ),
-                size=int(entry[b"length"]),
-            )
-            for n, entry in enumerate(info[b"files"], start=1)
-        ]
-    else:
-        files = [TorrentFile(index=1, path=name, size=int(info[b"length"]))]
+        if b"files" in info:
+            files = [
+                TorrentFile(
+                    index=n,
+                    path="/".join(
+                        part.decode("utf-8", "replace") for part in entry[b"path"]
+                    ),
+                    size=int(entry[b"length"]),
+                )
+                for n, entry in enumerate(info[b"files"], start=1)
+            ]
+        else:
+            files = [TorrentFile(index=1, path=name, size=int(info[b"length"]))]
+    except (AttributeError, KeyError, TypeError) as exc:
+        raise ValueError("torrent info dict is malformed") from exc
 
     return TorrentInfo(
         infohash=infohash,

@@ -117,6 +117,22 @@ def test_parse_torrent_rejects_junk():
         parse_torrent(b"this is not a torrent")
 
 
+@pytest.mark.parametrize(
+    "info",
+    [
+        b"not-a-dict",
+        {b"length": 5},  # no name
+        {b"name": b"a"},  # neither files nor length
+        {b"name": b"a", b"files": [{b"length": 1}]},  # a file entry with no path
+        {b"name": 5, b"length": 1},  # a name that is not bytes
+    ],
+)
+def test_parse_torrent_rejects_a_malformed_info_dict(info):
+    # Valid bencode, wrong shape: the router turns ValueError into a 400, not a 500.
+    with pytest.raises(ValueError, match="malformed"):
+        parse_torrent(bencode({b"info": info}))
+
+
 # --- MAGNET ---
 HASH40 = "c9e15763f722f23e98a29decdfae341b98d53056"
 

@@ -169,6 +169,18 @@ def test_resolve_rejects_a_corrupt_torrent_upload(torrent_client):
     assert "torrent" in resp.json()["detail"].lower()
 
 
+def test_resolve_400s_on_a_bencoded_torrent_with_a_broken_info_dict(torrent_client):
+    # Valid bencode, wrong shape: unguarded field access would answer 500.
+    resp = torrent_client.post(
+        "/api/torrent/resolve",
+        files={
+            "file": ("bad.torrent", bencode({b"info": {b"name": b"a"}}), TORRENT_MIME)
+        },
+    )
+    assert resp.status_code == 400
+    assert "Could not read that .torrent" in resp.json()["detail"]
+
+
 def test_resolve_accepts_a_magnet_as_form_data(torrent_client):
     resp = torrent_client.post(
         "/api/torrent/resolve", data={"magnet": f"magnet:?xt=urn:btih:{HASH}"}
