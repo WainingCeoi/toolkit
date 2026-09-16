@@ -10,8 +10,7 @@ import json
 import os
 import uuid
 import xml.etree.ElementTree as ET
-from collections.abc import Iterator
-from contextlib import contextmanager, suppress
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -314,27 +313,27 @@ class BitCometClient:
     def close(self) -> None:
         self._session.close()
 
-    @contextmanager
-    def deadline(self, timeout: float) -> Iterator[None]:
-        """Run a block against a different per-call timeout, then restore it."""
-        previous = self.timeout
-        self.timeout = timeout
-        try:
-            yield
-        finally:
-            self.timeout = previous
-
     # --- transport --------------------------------------------------------
     def _http(
-        self, method: str, path: str, payload: dict | None, token: str | None
+        self,
+        method: str,
+        path: str,
+        payload: dict | None,
+        token: str | None,
+        timeout: float | None = None,
     ) -> requests.Response:
         url = f"{self.base_url}{path}"
         headers = {"Client-Type": CLIENT_TYPE}
         if token:
             headers["Authorization"] = f"Bearer {token}"
         try:
+            # Per call, never stored: one client serves every request thread.
             return self._session.request(
-                method, url, json=payload, headers=headers, timeout=self.timeout
+                method,
+                url,
+                json=payload,
+                headers=headers,
+                timeout=self.timeout if timeout is None else timeout,
             )
         except requests.RequestException as exc:
             raise BitCometError(f"BitComet is not reachable at {url}: {exc}") from exc
@@ -362,13 +361,13 @@ class BitCometClient:
             raise BitCometError(f"BitComet rejected {path}: {detail}")
         return body
 
-    def _token(self) -> str:
+    def _token(self, timeout: float | None = None) -> str:
         """The cached device_token, logging in on first use."""
         if self._device_token is None:
-            self._device_token = self._login()
+            self._device_token = self._login(timeout)
         return self._device_token
 
-    def _login(self) -> str:
+    def _login(self, timeout: float | None = None) -> str:
         """The two-step handshake: credentials -> invite_token -> device_token."""
         invite = self._decode(
             self._http(
@@ -376,6 +375,7 @@ class BitCometClient:
                 "/api/webui/login",
                 login_payload(self.username, self.password),
                 None,
+                timeout,
             ),
             "/api/webui/login",
         )
@@ -395,6 +395,7 @@ class BitCometClient:
                     "platform": PLATFORM,
                 },
                 invite_token,
+                timeout,
             ),
             "/api/device_token/get",
         )
@@ -404,30 +405,35 @@ class BitCometClient:
         self._server_name = granted.get("server_name") or None
         return token
 
-    def _call(self, method: str, path: str, payload: dict | None = None) -> dict:
+    def _call(
+        self,
+        method: str,
+        path: str,
+        payload: dict | None = None,
+        timeout: float | None = None,
+    ) -> dict:
         """One authenticated call, re-authenticating at most once on a 401."""
-        response = self._http(method, path, payload, self._token())
+        response = self._http(method, path, payload, self._token(timeout), timeout)
         if response.status_code == 401:
             self._device_token = None
-            response = self._http(method, path, payload, self._token())
+            response = self._http(method, path, payload, self._token(timeout), timeout)
         return self._decode(response, path)
 
     # --- liveness ---------------------------------------------------------
     def probe(self) -> str | None:
         """BitComet's server name if reachable and remote access is on; never raises."""
         try:
-            with self.deadline(
-                PROBE_TIMEOUT if self.is_local else REMOTE_PROBE_TIMEOUT
-            ):
-                self.new_task_config()
+            self.new_task_config(
+                timeout=PROBE_TIMEOUT if self.is_local else REMOTE_PROBE_TIMEOUT
+            )
         except BitCometError:
             return None
         return self._server_name or "BitComet"
 
     # --- reads ------------------------------------------------------------
-    def new_task_config(self) -> dict:
+    def new_task_config(self, timeout: float | None = None) -> dict:
         """The registered save folders and the .torrent size cap."""
-        body = self._call("GET", "/api/config/new_task/get")
+        body = self._call("GET", "/api/config/new_task/get", timeout=timeout)
         if self._torrent_max_size is None:
             try:
                 self._torrent_max_size = int(body["torrent_max_size"])

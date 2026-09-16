@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import threading
 import time
 import uuid
 
@@ -15,6 +16,7 @@ from toolkit_engine.bitcomet import (
     DESELECTED,
     HEADER_LEN,
     MAC_LEN,
+    PROBE_TIMEOUT,
     BitCometClient,
     BitCometError,
     Credentials,
@@ -500,12 +502,6 @@ def test_the_size_cap_is_asked_for_once_and_remembered(fake, client, save_folder
 
 
 # --- TIMEOUTS ---
-def test_deadline_applies_only_inside_the_block(client):
-    with client.deadline(0.25):
-        assert client.timeout == 0.25
-    assert client.timeout == 10.0
-
-
 def test_probe_gives_up_quickly_on_a_wedged_bitcomet(client):
     client.base_url = "http://10.255.255.1:19377"  # black-holes, never refuses
     started = time.monotonic()
@@ -515,10 +511,30 @@ def test_probe_gives_up_quickly_on_a_wedged_bitcomet(client):
     assert client.timeout == 10.0
 
 
-def test_deadline_restores_the_timeout_even_when_the_block_fails(client):
-    with pytest.raises(BitCometError), client.deadline(0.25):
-        raise BitCometError("boom")
-    assert client.timeout == 10.0
+def test_a_probe_cannot_shorten_a_call_running_beside_it(client):
+    """One client serves every request thread, so no call may set the timeout."""
+    client.task_list()  # log in first, so each call below is a single request
+    probing, release, seen = threading.Event(), threading.Event(), []
+    request = client._session.request
+
+    def wrapped(*args, **kwargs):
+        seen.append(kwargs["timeout"])
+        if threading.current_thread() is not threading.main_thread():
+            probing.set()
+            release.wait(5.0)
+        return request(*args, **kwargs)
+
+    client._session.request = wrapped
+    thread = threading.Thread(target=client.probe)
+    thread.start()
+    try:
+        assert probing.wait(5.0)
+        client.task_list()
+    finally:
+        release.set()
+        thread.join(5.0)
+
+    assert seen == [PROBE_TIMEOUT, 10.0]
 
 
 # --- DEVICE IDENTITY ---
