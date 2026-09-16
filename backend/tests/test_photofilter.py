@@ -314,10 +314,10 @@ def test_copy_failure_is_recorded_and_the_run_carries_on(tmp_path, monkeypatch):
     src, dest = build_src(tmp_path), tmp_path / "Dest.photoslibrary"
     real_copy = pf.copy_file
 
-    def flaky_copy(source, target, st):
+    def flaky_copy(source, target):
         if Path(source).name == "AAAA-1.heic":
             raise OSError(2, "No such file or directory", str(source))
-        return real_copy(source, target, st)
+        return real_copy(source, target)
 
     monkeypatch.setattr(pf, "copy_file", flaky_copy)
 
@@ -350,6 +350,39 @@ def test_stop_request_returns_the_partial_result_unverified(tmp_path):
     assert seen[-1] == ("copy", 1, 3)
     assert (dest / "database").is_dir()  # the skeleton was laid down first
     assert not (dest / "database/Photos.sqlite").exists()
+
+
+def test_skip_needs_the_exact_mtime_not_a_near_one(tmp_path):
+    # scandir-rs reports times as doubles, good to about half a microsecond;
+    # that only decides which copies get a closer look. The decision itself
+    # is an exact stat, so a copy one microsecond off is replaced, not kept.
+    src, dest = build_src(tmp_path), tmp_path / "Dest.photoslibrary"
+    pf.run(src, dest, pf.compile_rules(RULES))
+    copy = dest / "originals/A/AAAA-1.heic"
+    exact = os.stat(src / "originals/A/AAAA-1.heic").st_mtime_ns
+    assert os.stat(copy).st_mtime_ns == exact  # copyfile keeps it to the ns
+
+    for off in (1_000, 1_000_000):
+        os.utime(copy, ns=(exact + off, exact + off))
+        r = pf.run(src, dest, pf.compile_rules(RULES))
+        assert (r.copied, r.skipped) == (1, 2)
+        assert os.stat(copy).st_mtime_ns == exact
+
+
+def test_plan_sizes_every_file_and_orders_parents_first(tmp_path):
+    src = build_src(tmp_path)
+    touch(src, "originals/B/big.heic", b"x" * 4096)
+
+    plan = pf.plan(src, pf.compile_rules(RULES))
+
+    assert plan.stat["originals/B/big.heic"].size == 4096
+    assert plan.stat["resources/derivatives/A/AAAA-1_1_105_c.jpeg"].size == 5
+    st = os.stat(src / "originals/B/big.heic")
+    # Times come back as doubles; within the skip window of the truth.
+    assert abs(plan.stat["originals/B/big.heic"].mtime_ns - st.st_mtime_ns) < 2_000
+    assert plan.dirs.index("originals") < plan.dirs.index("originals/B")
+    assert plan.keep == sorted(plan.keep)
+    assert plan.errors == []
 
 
 def test_summary_sizes_the_excluded_files_per_rule(tmp_path):

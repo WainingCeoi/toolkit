@@ -18,9 +18,11 @@ SRC.photoslibrary -> DEST.photoslibrary, safe to take while Photos is running:
 5. verify   -- DEST's Photos.sqlite is opened read-only and every asset's
                original (and edit recipe, if it was edited) is checked for.
 
-Standard library only; macOS only (copyfile). Nothing here ever writes into
-SRC: it is read, walked and stat'ed, and its database is read through a
-read-only connection.
+The walk is scandir-rs, the parallel Rust scanner Cache Purge already uses
+(an order of magnitude faster than os.walk plus a stat per file on a big
+library); everything else is the standard library. macOS only (copyfile).
+Nothing here ever writes into SRC: it is scanned, and its database is read
+through a read-only connection.
 """
 
 from __future__ import annotations
@@ -34,6 +36,9 @@ import sqlite3
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import NamedTuple
+
+from scandir_rs import Scandir
 
 # The shipped rules. Everything not listed is kept. Never exclude
 # resources/renders/: it is not a cache -- it holds the edit recipes
@@ -119,13 +124,26 @@ def first_match(rules: list[Rule], relpath: str, is_dir: bool = False) -> str | 
 # ---------------------------------------------------------------- plan
 
 
+class FileStat(NamedTuple):
+    """What the plan keeps of a source file: enough to size it and to tell
+    next run whether its copy still looks current."""
+
+    size: int
+    mtime_ns: int
+
+
 @dataclass
 class Plan:
     dirs: list[str] = field(default_factory=list)
     keep: list[str] = field(default_factory=list)
     snapshot: list[str] = field(default_factory=list)
     excluded: dict[str, str] = field(default_factory=dict)  # relpath -> rule
-    stat: dict[str, os.stat_result] = field(default_factory=dict)
+    stat: dict[str, FileStat] = field(default_factory=dict)
+    errors: list[str] = field(default_factory=list)
+
+
+def _ns(seconds: float) -> int:
+    return round(seconds * 1e9)
 
 
 def _join(rel_root: str, name: str) -> str:
@@ -133,25 +151,28 @@ def _join(rel_root: str, name: str) -> str:
 
 
 def plan(src: Path | str, rules: list[Rule]) -> Plan:
-    p = Plan()
-    for root, dnames, fnames in os.walk(src):
-        dnames.sort()
-        rel_root = os.path.relpath(root, src)
-        if rel_root == "." or not first_match(rules, rel_root, is_dir=True):
+    entries, errors = Scandir(str(src)).collect()
+    p = Plan(errors=[f"scan failed: {error}" for error in errors])
+    entries.sort(key=lambda entry: entry.path)  # parents before children
+    files = {entry.path for entry in entries if not entry.is_dir}
+    for entry in entries:
+        rel = entry.path
+        if entry.is_dir:
             # An excluded dir stays as an empty skeleton; its subdirs do not.
-            p.dirs += [_join(rel_root, d) for d in dnames]
-        for f in sorted(fnames):
-            if f.endswith(("-wal", "-shm")):
-                continue  # folded into the snapshot of the database next to it
-            rel = _join(rel_root, f)
-            p.stat[rel] = os.stat(os.path.join(root, f))
-            rule = first_match(rules, rel)
-            if rule:
-                p.excluded[rel] = rule
-            elif os.path.exists(os.path.join(root, f + "-wal")):
-                p.snapshot.append(rel)
-            else:
-                p.keep.append(rel)
+            parent = rel.rpartition("/")[0]
+            if not parent or not first_match(rules, parent, is_dir=True):
+                p.dirs.append(rel)
+            continue
+        if rel.endswith(("-wal", "-shm")):
+            continue  # folded into the snapshot of the database next to it
+        p.stat[rel] = FileStat(entry.st_size, _ns(entry.mtime))
+        rule = first_match(rules, rel)
+        if rule:
+            p.excluded[rel] = rule
+        elif rel + "-wal" in files:
+            p.snapshot.append(rel)
+        else:
+            p.keep.append(rel)
     return p
 
 
@@ -196,15 +217,15 @@ def _copyfile():
     return fn
 
 
-def copy_file(src: Path | str, dest: Path | str, st: os.stat_result) -> None:
+def copy_file(src: Path | str, dest: Path | str) -> None:
+    """Clone (or copy) one file. COPYFILE_STAT carries the exact mtime across,
+    which is what lets the next run recognise the copy and skip it."""
     if os.path.lexists(dest):
         os.remove(dest)
     flags = COPYFILE_CLONE | COPYFILE_ALL
     if _copyfile()(os.fsencode(src), os.fsencode(dest), None, flags) != 0:
         err = ctypes.get_errno()
         raise OSError(err, os.strerror(err), str(src))
-    # Exact mtime, so the next run can recognise the copy and skip it.
-    os.utime(dest, ns=(st.st_atime_ns, st.st_mtime_ns))
 
 
 def verify(
@@ -271,6 +292,13 @@ def check_paths(src: Path | str, dest: Path | str) -> tuple[Path, Path]:
 # it is not known up front (deleting walks DEST as it goes).
 Progress = Callable[[str, int, int], bool]
 
+# The scanner hands back times as doubles, which at today's epoch resolve to
+# about half a microsecond. That is plenty to tell a changed file from an
+# unchanged one -- a real change moves mtime by milliseconds -- so a copy
+# whose mtime is within this window of the scanner's reading is looked at
+# more closely, and everything else is copied without a second thought.
+_TIME_WINDOW_NS = 2_000
+
 
 def run(
     src: Path | str,
@@ -293,7 +321,7 @@ def run(
 
     stop("plan")
     p = plan(src, rules)
-    r = Result(plan=p)
+    r = Result(plan=p, errors=list(p.errors))
     db = "database/Photos.sqlite"
     if dry_run:
         planned = set(p.keep) | set(p.snapshot)
@@ -312,21 +340,29 @@ def run(
         st, target = p.stat[rel], dest / rel
         try:
             ds = os.stat(target)
-            # Same size and mtime, and the source inode untouched since the copy
-            # was written: Photos rewrites xattrs such as assetsd.favorite
-            # without changing mtime, and that bumps ctime, so mtime alone
-            # would keep a stale favourite flag forever.
             if (
-                ds.st_size == st.st_size
-                and ds.st_mtime_ns == st.st_mtime_ns
-                and st.st_ctime_ns <= ds.st_ctime_ns
+                ds.st_size == st.size
+                and abs(ds.st_mtime_ns - st.mtime_ns) <= _TIME_WINDOW_NS
             ):
-                r.skipped += 1
-                continue
+                # Looks unchanged. The scanner's double can spot a change but
+                # not prove there was none, and its "ctime" is the birth time,
+                # so one stat of the source settles both: the exact mtime, and
+                # whether the inode was touched since the copy was written.
+                # Photos rewrites xattrs such as assetsd.favorite without
+                # changing mtime, and that bumps ctime -- mtime alone would
+                # keep a stale favourite flag forever. Only a file that would
+                # otherwise be skipped pays for this stat.
+                ss = os.stat(src / rel)
+                if (
+                    ss.st_mtime_ns == ds.st_mtime_ns
+                    and ss.st_ctime_ns <= ds.st_ctime_ns
+                ):
+                    r.skipped += 1
+                    continue
         except FileNotFoundError:
             pass
         try:
-            copy_file(src / rel, target, st)
+            copy_file(src / rel, target)
         except OSError as e:
             r.errors.append(f"copy failed for {rel}: {e}")
         else:
@@ -382,7 +418,7 @@ def summary(result: Result, rules: list[Rule]) -> dict:
     p = result.plan
 
     def size(rels: Iterable[str]) -> int:
-        return sum(p.stat[rel].st_size for rel in rels)
+        return sum(p.stat[rel].size for rel in rels)
 
     by_rule: dict[str, list[str]] = {r.pattern: [] for r in rules}
     for rel, pattern in p.excluded.items():
