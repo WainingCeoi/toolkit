@@ -6,6 +6,7 @@ import base64
 import io
 import subprocess
 import sys
+import threading
 import time
 import zipfile
 
@@ -454,6 +455,26 @@ def test_a_pinned_batch_survives_its_own_expiry(tmp_path):
         store.create([("b.png", png_bytes(), 64, 48)])  # sweeps on create
         assert batch["images"][0]["path"].is_file()
     assert store.get(batch["id"]) is None
+
+
+def test_concurrent_callers_collect_the_batch_marks_once(tmp_path):
+    store = WatermarkBatches(tmp_path / "wm")
+    batch = store.create([("a.png", png_bytes(), 64, 48)])
+    entered = threading.Event()
+    calls = []
+
+    def collect(paths):
+        calls.append(len(paths))
+        entered.set()
+        time.sleep(0.1)
+        return ["mark"]
+
+    first = threading.Thread(target=store.marks, args=(batch["id"], collect))
+    first.start()
+    assert entered.wait(2.0)
+    assert store.marks(batch["id"], collect) == ["mark"]
+    first.join(2.0)
+    assert calls == [1], "the second caller recomputed the whole batch"
 
 
 def test_startup_clears_leftovers_from_a_previous_process(tmp_path):

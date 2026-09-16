@@ -60,6 +60,7 @@ class WatermarkBatches:
             "used": time.monotonic(),
             "pins": 0,
             "images": entries,
+            "marks_lock": threading.Lock(),
         }
         with self._lock:
             self._sweep()
@@ -89,10 +90,11 @@ class WatermarkBatches:
         batch = self.get(batch_id)
         if batch is None:
             return []
-        # Outside the lock: collection takes seconds, and a double compute is harmless.
-        if batch.get("marks") is None:
-            marks = collect([entry["path"] for entry in batch["images"]])
-            batch["marks"] = marks
+        # The batch's own lock, not self._lock: collection takes seconds, and the
+        # page opens one concurrent /mask request per image.
+        with batch["marks_lock"]:
+            if batch.get("marks") is None:
+                batch["marks"] = collect([entry["path"] for entry in batch["images"]])
         return batch["marks"]
 
     @contextmanager
