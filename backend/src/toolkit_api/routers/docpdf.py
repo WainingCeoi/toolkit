@@ -52,8 +52,7 @@ def convert(state: StateDep, files: list[UploadFile] | None = None) -> JobStarte
                 raise _CancelledError
             job.set_message(text)
 
-        # One shared LibreOffice profile — conversions must not overlap. Poll the
-        # lock rather than block on it, so a queued job still answers Cancel.
+        # One shared LibreOffice profile — no overlap; polled so Cancel still lands.
         while not state.soffice_lock.acquire(timeout=0.5):
             if job.cancelled:
                 return None
