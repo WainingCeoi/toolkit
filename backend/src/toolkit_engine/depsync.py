@@ -609,11 +609,16 @@ def commit_paths(
         text=True,
     )
     if commit.returncode != 0:
-        return (
-            None,
-            [],
-            f"❌ git commit failed: {commit.stderr.strip() or commit.stdout.strip()}",
+        # git add staged them; a rejected commit must not leave them in the index.
+        subprocess.run(
+            ["git", "-C", repo_root, "reset", "-q", "--", *rels], capture_output=True
         )
+        detail = (
+            commit.stderr.strip()
+            or commit.stdout.strip()
+            or "a git hook rejected the commit"
+        )
+        return None, [], f"❌ git commit failed: {detail}"
     sha = subprocess.run(
         ["git", "-C", repo_root, "rev-parse", "--short", "HEAD"],
         capture_output=True,

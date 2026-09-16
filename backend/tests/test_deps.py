@@ -453,6 +453,22 @@ def test_commit_paths_includes_untracked_lock_and_skips_unrelated(tmp_path):
 
 
 @requires_git
+def test_commit_paths_unstages_when_a_hook_rejects_the_commit(tmp_path):
+    repo = _init_repo(tmp_path / "repo")
+    hook = repo / ".git" / "hooks" / "pre-commit"
+    hook.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    hook.chmod(0o755)
+    path = repo / "pyproject.toml"
+    depsync.apply_uv_bumps(path, depsync.compute_uv_bumps(path, RESOLVED))
+
+    sha, rels, err = depsync.commit_paths(str(repo), depsync.COMMIT_SUBJECT, [path])
+
+    assert sha is None and rels == []
+    assert err and "a git hook rejected the commit" in err
+    assert _git(repo, "diff", "--cached", "--name-only").stdout == ""
+
+
+@requires_git
 def test_commit_paths_nothing_to_commit(tmp_path):
     repo = _init_repo(tmp_path / "repo")
     sha, rels, err = depsync.commit_paths(
