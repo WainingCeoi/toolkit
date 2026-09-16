@@ -163,12 +163,10 @@ def _pitch(profile: np.ndarray) -> int | None:
     return best
 
 
-def _rect_period(hp: np.ndarray, texture: np.ndarray) -> tuple[int, int] | None:
+def _rect_period(ac: np.ndarray | None) -> tuple[int, int] | None:
     """The (vertical, horizontal) period the overlay repeats on, or None."""
-    quiet = (texture < np.percentile(texture, _QUIET_PCT)).astype(np.float32)
-    if quiet.mean() < 0.05:
+    if ac is None:  # no quiet share, so the caller had no autocorrelation to give
         return None
-    ac = _masked_autocorrelation(hp, quiet)
     cy, cx = ac.shape[0] // 2, ac.shape[1] // 2
     vertical = ac[cy:, cx - AXIS_TOLERANCE : cx + AXIS_TOLERANCE + 1].mean(axis=1)
     horizontal = ac[cy - AXIS_TOLERANCE : cy + AXIS_TOLERANCE + 1, cx:].mean(axis=0)
@@ -205,21 +203,21 @@ def _peaks(prominence: np.ndarray, count: int) -> list[tuple[float, float]]:
     """The strongest autocorrelation offsets, as (dy, dx) in the half-plane."""
     height, width = prominence.shape
     cy, cx = height // 2, width // 2
-    work = prominence.copy()
-    yy, xx = np.mgrid[0:height, 0:width]
-    work[(yy - cy) ** 2 + (xx - cx) ** 2 < MIN_PERIOD**2] = -np.inf
-    work[:cy, :] = -np.inf  # autocorrelation is symmetric; one half is enough
-    # Past the usable reach the estimate is zero, and that cliff would win as a peak.
+    # The AC is symmetric, and past the usable reach it is zero -- a cliff that would
+    # win as a peak. Only this window can hold one, so crop to it and search there.
     reach_y, reach_x = int(height * _MAX_LAG_SHARE), int(width * _MAX_LAG_SHARE)
-    work[cy + reach_y :, :] = -np.inf
-    work[:, : cx - reach_x] = -np.inf
-    work[:, cx + reach_x :] = -np.inf
+    left = max(0, cx - reach_x)
+    work = prominence[cy : cy + reach_y, left : cx + reach_x].copy()
+    if work.size == 0:
+        return []
+    yy, xx = np.mgrid[0 : work.shape[0], left - cx : left - cx + work.shape[1]]
+    work[yy * yy + xx * xx < MIN_PERIOD**2] = -np.inf
     found = []
     for _ in range(count):
         idx = np.unravel_index(int(np.argmax(work)), work.shape)
         if not np.isfinite(work[idx]) or work[idx] <= 0:
             break
-        found.append((float(idx[0] - cy), float(idx[1] - cx)))
+        found.append((float(idx[0]), float(left + idx[1] - cx)))
         y0, x0 = idx
         radius = max(8, MIN_PERIOD // 2)
         work[
@@ -516,11 +514,11 @@ def recover_mark(rgb: np.ndarray) -> Mark | None:
     texture = _local_texture(gray)
 
     # Rectify onto the overlay's own grid first; downstream works in rows and columns.
-    basis = None
+    basis, ac = None, None
     quiet = (texture < np.percentile(texture, _QUIET_PCT)).astype(np.float32)
     if quiet.mean() >= 0.05:
-        ac = _masked_autocorrelation(hp, quiet).astype(np.float32)
-        basis = _fit_rectifying_lattice(ac)
+        ac = _masked_autocorrelation(hp, quiet)
+        basis = _fit_rectifying_lattice(ac.astype(np.float32))
     rectify = _rectify(hp, basis)
 
     cover = None
@@ -537,10 +535,10 @@ def recover_mark(rgb: np.ndarray) -> Mark | None:
             texture, forward, (out_w, out_h), flags=cv2.INTER_LINEAR
         )
     else:
-        # No usable lattice: fall back to a plain row/column pitch. The basis is
-        # dropped, since nothing downstream was rectified with it.
+        # No usable lattice: take the row/column pitch off that same AC (hp is unwarped
+        # here). The basis is dropped; nothing downstream was rectified with it.
         basis = None
-        period = _rect_period(hp, texture)
+        period = _rect_period(ac)
         if period is None:
             return None
         py, px = period
