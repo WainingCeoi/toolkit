@@ -45,14 +45,13 @@ def whitened(gray: np.ndarray, background: int = _MATCH_BG) -> np.ndarray:
     return res / (np.sqrt(energy) + 1.0)
 
 
-def _score_field(field: np.ndarray, patch: np.ndarray, pad: int) -> np.ndarray:
-    """Correlation of ``patch`` over a zero-padded ``field``."""
-    padded = cv2.copyMakeBorder(field, pad, pad, pad, pad, cv2.BORDER_CONSTANT, value=0)
+def _score_field(padded: np.ndarray, patch: np.ndarray, substance: np.ndarray):
+    """Correlation of ``patch`` over the zero-padded field, given its window std."""
     score = cv2.matchTemplate(padded, patch, cv2.TM_CCOEFF_NORMED)
     # TM_CCOEFF_NORMED returns 1.0 over a flat window (0/0), so those are zeroed.
     floor = _MIN_WINDOW_STD_SHARE * float(patch.std())
-    substance = _window_std(padded, patch.shape)[: score.shape[0], : score.shape[1]]
-    return np.where(substance >= floor, score, 0.0).astype(np.float32)
+    gate = substance[: score.shape[0], : score.shape[1]]
+    return np.where(gate >= floor, score, 0.0).astype(np.float32)
 
 
 def _positions(seed: int, period: int, span: int, extent: int) -> list[int]:
@@ -296,6 +295,15 @@ def propose_tiled_mask(rgb, sensitivity, trace=None):
     extent = (2 * _ANCHOR_HALF_H, 2 * _ANCHOR_HALF_W)
     pad = max(extent)
 
+    padded = cv2.copyMakeBorder(field, pad, pad, pad, pad, cv2.BORDER_CONSTANT, value=0)
+    # The padded field never changes, so its window std depends only on the patch shape.
+    stds: dict[tuple[int, int], np.ndarray] = {}
+
+    def substance(shape: tuple[int, int]) -> np.ndarray:
+        if shape not in stds:
+            stds[shape] = _window_std(padded, shape)
+        return stds[shape]
+
     seen, reports = set(), []
     # Both: on a smooth gradient the mark is the only texture, so it is never "quiet".
     for cy, cx in list(_anchor_candidates(gray)) + _tiled_anchors(field, *extent):
@@ -307,7 +315,7 @@ def propose_tiled_mask(rgb, sensitivity, trace=None):
         patch = field[top : top + extent[0], left : left + extent[1]]
         if patch.std() < 1e-3:
             continue
-        score = _score_field(field, patch, pad)
+        score = _score_field(padded, patch, substance(patch.shape))
         found = _scan(score, pad, top, left, span[0], span[1], *extent)
         if found is not None:
             reports.append(found)
@@ -329,7 +337,7 @@ def propose_tiled_mask(rgb, sensitivity, trace=None):
     seed = winner["seed"]
 
     patch = field[seed[0] : seed[0] + extent[0], seed[1] : seed[1] + extent[1]]
-    score = _score_field(field, patch, pad)
+    score = _score_field(padded, patch, substance(patch.shape))
     rows, cols, vals = _cells(score, pad, seed, (py, px), span, extent)
     if trace is not None:
         probe = np.abs(vals) >= _CELL_LIVE
