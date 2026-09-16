@@ -85,6 +85,21 @@ def test_trojan_renders_to_all_three_targets():
     assert filename
 
 
+def test_endpoint_with_non_numeric_port_warns_instead_of_becoming_the_host():
+    parsed = core.parse_preferred_endpoints("1.2.3.4:8o80, 1.2.3.4:, 9.9.9.9")
+    assert [e["host"] for e in parsed["endpoints"]] == ["9.9.9.9"]
+    assert len(parsed["warnings"]) == 2
+    assert "Invalid port: 8o80" in parsed["warnings"][0]
+
+
+def test_endpoint_keeps_bare_and_bracketed_ipv6():
+    parsed = core.parse_preferred_endpoints("2001:db8::1, [2001:db8::2]:8443")
+    assert [(e["host"], e["port"]) for e in parsed["endpoints"]] == [
+        ("2001:db8::1", None),
+        ("2001:db8::2", 8443),
+    ]
+
+
 def test_expand_nodes_crosses_every_node_with_every_endpoint():
     nodes = core.parse_node_links("\n".join([_vmess_link(), _vmess_link(ps="b")]))[
         "nodes"

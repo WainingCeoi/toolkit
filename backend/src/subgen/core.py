@@ -287,8 +287,9 @@ def _split_host_and_port(value: str) -> tuple[str, int | None]:
         return value, None  # bare IPv6
     if ":" in value:
         host, _, port = value.partition(":")
-        if port.isdigit():
-            return host, _normalize_port(port)
+        if not port.isdigit():
+            raise ValueError(f"Invalid port: {port}")
+        return host, _normalize_port(port)
     return value, None
 
 
