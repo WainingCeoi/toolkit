@@ -11,18 +11,40 @@ from PIL import Image, ImageOps
 MAX_PIXELS = 256_000_000
 
 
-def load_rgb(data: bytes) -> np.ndarray:
-    """Decode to EXIF-upright RGB (H, W, 3) uint8; browsers rotate, OpenCV does not."""
+def _upright(data: bytes) -> Image.Image:
     image = Image.open(io.BytesIO(data))
     w, h = image.size
     if w * h > MAX_PIXELS:
         raise ValueError(f"Image is too large to process ({w}×{h} pixels).")
-    upright = ImageOps.exif_transpose(image)
-    return np.asarray(upright.convert("RGB"))
+    return ImageOps.exif_transpose(image)
+
+
+def load_rgb(data: bytes) -> np.ndarray:
+    """Decode to EXIF-upright RGB (H, W, 3) uint8; browsers rotate, OpenCV does not."""
+    return np.asarray(_upright(data).convert("RGB"))
+
+
+def load_rgba(data: bytes) -> tuple[np.ndarray, np.ndarray | None]:
+    """load_rgb, plus the alpha plane when the source really has transparency."""
+    upright = _upright(data)
+    alpha = None
+    if upright.mode in ("RGBA", "LA", "PA") or "transparency" in upright.info:
+        plane = np.asarray(upright.convert("RGBA"))[:, :, 3]
+        # An all-opaque plane is not worth carrying: the output stays RGB.
+        if plane.min() < 255:
+            alpha = plane
+    return np.asarray(upright.convert("RGB")), alpha
+
+
+def with_alpha(rgb: np.ndarray, alpha: np.ndarray | None) -> np.ndarray:
+    """``rgb`` wearing ``alpha`` again, or untouched when there was none."""
+    if alpha is None:
+        return rgb
+    return np.dstack([rgb, alpha])
 
 
 def encode_png(rgb: np.ndarray) -> bytes:
-    """Encode an (H, W, 3) RGB or (H, W) grayscale array as PNG bytes."""
+    """Encode an (H, W, 3|4) RGB(A) or (H, W) grayscale array as PNG bytes."""
     buffer = io.BytesIO()
     Image.fromarray(rgb).save(buffer, format="PNG")
     return buffer.getvalue()

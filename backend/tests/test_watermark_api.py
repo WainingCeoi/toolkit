@@ -236,6 +236,36 @@ def test_the_cv2_run_writes_the_same_pixels_as_a_plain_removal(client):
     assert np.array_equal(cleaned, expected)
 
 
+def test_a_transparent_upload_keeps_its_transparency(client):
+    rgba = np.full((60, 80, 4), 255, np.uint8)
+    rgba[:, :, :3] = 128
+    rgba[20:36, 30:50, :3] = 160
+    rgba[0:10, 0:10, 3] = 0  # a cut-out corner, as a logo or sticker has
+    buffer = io.BytesIO()
+    Image.fromarray(rgba).save(buffer, format="PNG")
+
+    batch = upload(client, ("logo.png", buffer.getvalue())).json()
+    image = batch["images"][0]
+    working = client.get(f"/api/watermark/{batch['batch_id']}/{image['id']}/image")
+    assert np.asarray(Image.open(io.BytesIO(working.content)))[0:10, 0:10, 3].max() == 0
+
+    resp = client.post(
+        "/api/watermark/run",
+        json={
+            "batch_id": batch["batch_id"],
+            "inpainter": "cv2",
+            "masks": {image["id"]: mask_b64(80, 60, box=(30, 20, 50, 36))},
+        },
+    )
+    snap = wait_for_job(client, resp.json()["job_id"])
+    assert snap["result"]["done"] == ["logo.png"]
+    download = client.get(f"/api/artifacts/{snap['result']['artifact_id']}")
+    with zipfile.ZipFile(io.BytesIO(download.content)) as archive:
+        cleaned = Image.open(io.BytesIO(archive.read("logo.png")))
+    assert cleaned.mode == "RGBA"
+    assert np.asarray(cleaned)[0:10, 0:10, 3].max() == 0
+
+
 def test_run_processes_only_images_that_got_a_mask(client):
     batch = upload(
         client, ("a.png", png_bytes((20, 10))), ("b.png", png_bytes((20, 10)))

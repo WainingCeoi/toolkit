@@ -17,7 +17,7 @@ from .detect import (
     collect_marks,
     repeating_evidence,
 )
-from .imgio import encode_png, load_rgb
+from .imgio import encode_png, load_rgb, load_rgba, with_alpha
 from .inpaint import get_inpainter, inpaint_cv2
 
 # Only the formats the whole pipeline, browser canvas included, is exercised on.
@@ -182,7 +182,7 @@ def clean_folder(
         zip(files, _unique_names(files), strict=True)
     ):
         try:
-            rgb = load_rgb(path.read_bytes())
+            rgb, alpha = load_rgba(path.read_bytes())
             mask, _used, evidence = _propose_with_evidence(
                 rgb, sensitivity, detector, marks
             )
@@ -209,7 +209,7 @@ def clean_folder(
                 if inpaint is inpaint_cv2
                 else remove_watermark(rgb, mask, inpaint, dilate_px)
             )
-            (dst / out_name).write_bytes(encode_png(out))
+            (dst / out_name).write_bytes(encode_png(with_alpha(out, alpha)))
             cleaned.append(out_name)
         except Exception as e:  # noqa: BLE001 — reported per file, batch goes on
             failed.append((path.name, str(e)))

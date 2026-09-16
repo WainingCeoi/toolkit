@@ -118,13 +118,14 @@ def create_batch(
     staged = []
     for name, content in zip(dedupe_filenames(names), read_uploads(files), strict=True):
         try:
-            rgb = imgio.load_rgb(content)
+            rgb, alpha = imgio.load_rgba(content)
         except Exception as e:  # Pillow's decode errors are many and unhelpful
             raise HTTPException(
                 status_code=400, detail=f"❌ Could not read {name}: {e}"
             ) from e
         height, width = rgb.shape[:2]
-        staged.append((name, imgio.encode_png(rgb), width, height))
+        working = imgio.encode_png(imgio.with_alpha(rgb, alpha))
+        staged.append((name, working, width, height))
 
     batch = watermarks.create(staged)
     return WatermarkBatchOut(
@@ -317,7 +318,7 @@ def run(req: WatermarkRunIn, state: StateDep, watermarks: WatermarksDep):
                         f"Inpainting {idx + 1}/{len(selected)} — {entry['name']}…"
                     )
                     try:
-                        rgb = imgio.load_rgb(entry["path"].read_bytes())
+                        rgb, alpha = imgio.load_rgba(entry["path"].read_bytes())
                         mask = imgio.load_mask(masks[entry["id"]], rgb.shape[:2])
                         if not mask.any():
                             # Not written back: an unchanged copy is not a result.
@@ -347,7 +348,9 @@ def run(req: WatermarkRunIn, state: StateDep, watermarks: WatermarksDep):
                             )
                         )
                         spooled = spool / f"{idx}_{out_name}"
-                        spooled.write_bytes(imgio.encode_png(out))
+                        spooled.write_bytes(
+                            imgio.encode_png(imgio.with_alpha(out, alpha))
+                        )
                     except CancelledError:
                         break
                     except Exception as e:  # noqa: BLE001 — per-file, batch goes on

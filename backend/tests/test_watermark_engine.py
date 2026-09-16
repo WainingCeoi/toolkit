@@ -323,6 +323,38 @@ def test_a_mask_of_the_wrong_size_is_refused_not_resized():
         imgio.load_mask(imgio.encode_png(mask), (30, 40))
 
 
+def test_transparency_is_kept_beside_the_rgb_it_decodes_to():
+    import io
+
+    image = Image.new("RGBA", (8, 6), (200, 30, 40, 255))
+    image.putpixel((1, 1), (0, 0, 0, 0))
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    rgb, alpha = imgio.load_rgba(buffer.getvalue())
+    assert rgb.shape == (6, 8, 3)
+    assert alpha is not None and alpha[1, 1] == 0
+    assert np.array_equal(rgb, imgio.load_rgb(buffer.getvalue()))
+
+    opaque = io.BytesIO()
+    Image.new("RGBA", (8, 6), (200, 30, 40, 255)).save(opaque, format="PNG")
+    assert imgio.load_rgba(opaque.getvalue())[1] is None
+
+
+def test_a_transparent_image_comes_out_of_the_cli_still_transparent(tmp_path):
+    src = tmp_path / "in"
+    src.mkdir()
+    _clean, marked, _true = synthetic_pair(size=(120, 90))
+    rgba = np.dstack([marked, np.full(marked.shape[:2], 255, np.uint8)])
+    rgba[0:10, 0:10, 3] = 0
+    Image.fromarray(rgba).save(src / "logo.png")
+    out = tmp_path / "out"
+    args = ["clean", str(src), str(out), "--inpainter", "cv2", "--detector", "texture"]
+    assert main(args) == 0
+    with Image.open(out / "logo.png") as cleaned:
+        assert cleaned.mode == "RGBA"
+        assert np.asarray(cleaned)[0:10, 0:10, 3].max() == 0
+
+
 def test_exif_rotation_is_normalized_at_decode():
     # 0x0112 is Orientation; 6 means rotate 90 CW to display.
     import io
