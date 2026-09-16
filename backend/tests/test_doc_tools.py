@@ -226,6 +226,27 @@ def test_flatten_revisions_merges_deleted_marks_and_drops_deleted_rows():
     assert len(list(root.iter(docpdf._w("tr")))) == 1
 
 
+MOVED_PARAGRAPH_XML = f"""<w:document xmlns:w="{docpdf.W}"><w:body>
+  <w:p>
+    <w:pPr><w:rPr><w:moveFrom w:id="1"/></w:rPr></w:pPr>
+    <w:moveFrom w:id="2"><w:r><w:t>moved away</w:t></w:r></w:moveFrom>
+  </w:p>
+  <w:p><w:r><w:t>next</w:t></w:r></w:p>
+</w:body></w:document>""".encode()
+
+
+def test_flatten_revisions_merges_move_source_paragraph_marks():
+    # Word marks a moved-out paragraph mark with w:moveFrom, not w:del.
+    root = etree.fromstring(MOVED_PARAGRAPH_XML)
+    docpdf._flatten_revisions(root)
+
+    paragraphs = [
+        "".join(t.text or "" for t in p.iter(docpdf._w("t")))
+        for p in root.iter(docpdf._w("p"))
+    ]
+    assert paragraphs == ["next"]
+
+
 def test_batch_to_pdf_kills_soffice_on_cancel(tmp_path):
     fake_soffice = tmp_path / "soffice"
     fake_soffice.write_text("#!/bin/sh\nsleep 30\n")

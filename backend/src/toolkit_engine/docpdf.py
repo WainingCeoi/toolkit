@@ -53,9 +53,11 @@ def find_soffice():
 
 
 def _mark_deleted(para):
-    """True when the paragraph's own mark is a tracked deletion."""
+    """True when the paragraph's own mark is a tracked deletion or move-out."""
     rpr = para.find(_w("pPr") + "/" + _w("rPr"))
-    return rpr is not None and rpr.find(_w("del")) is not None
+    return rpr is not None and (
+        rpr.find(_w("del")) is not None or rpr.find(_w("moveFrom")) is not None
+    )
 
 
 def _merge_into_next(para):
