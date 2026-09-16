@@ -365,6 +365,34 @@ def test_an_empty_mask_on_a_visible_repeat_is_protected(client, monkeypatch):
     assert snap["result"]["skipped"] == []
 
 
+def test_the_spool_is_staged_inside_the_batch_directory(client, app_state, monkeypatch):
+    from toolkit_api.routers import watermark as router
+    from watermark.inpaint import inpaint_cv2
+
+    batch = upload(client, ("a.png", png_bytes((20, 10)))).json()
+    image = batch["images"][0]
+    batch_dir = app_state.watermarks.get(batch["batch_id"])["dir"]
+    seen = []
+
+    def spying_inpaint(rgb, mask):
+        seen.append([p.name for p in batch_dir.iterdir() if p.is_dir()])
+        return inpaint_cv2(rgb, mask)
+
+    monkeypatch.setattr(router, "get_inpainter", lambda name: spying_inpaint)
+    resp = client.post(
+        "/api/watermark/run",
+        json={
+            "batch_id": batch["batch_id"],
+            "inpainter": "cv2",
+            "masks": {image["id"]: mask_b64(20, 10, box=(0, 0, 5, 5))},
+        },
+    )
+    wait_for_job(client, resp.json()["job_id"])
+    # In the batch dir the store already sweeps, not a temp dir nothing cleans.
+    assert seen and seen[0], "the spool was staged outside the batch directory"
+    assert [p for p in batch_dir.iterdir() if p.is_dir()] == []
+
+
 def test_cancelling_stops_partway_through_a_big_image(client, app_state, monkeypatch):
     from toolkit_api.routers import watermark as router
     from watermark.inpaint import inpaint_cv2

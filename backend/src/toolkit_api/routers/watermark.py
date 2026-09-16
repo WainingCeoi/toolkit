@@ -266,7 +266,8 @@ def run(req: WatermarkRunIn, state: StateDep, watermarks: WatermarksDep):
         cleaned: list[tuple[str, Path]] = []
         zip_id: str | None = None
         # Spooled to disk: outputs held in RAM would stack on LaMa's inpainting peak.
-        spool = Path(tempfile.mkdtemp(prefix="toolkit_watermark_"))
+        # Inside the batch dir, which the store sweeps even after a kill mid-run.
+        spool = Path(tempfile.mkdtemp(prefix="spool_", dir=batch["dir"]))
 
         def bundle(dest: Path) -> None:
             """Rebuild the zip of everything cleaned so far."""
