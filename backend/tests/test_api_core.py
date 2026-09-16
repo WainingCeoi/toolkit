@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import gc
+import importlib
+import os
 import shutil
 import threading
 import time
@@ -249,6 +251,26 @@ def test_disabled_tools_are_not_mounted_at_all(app_state, monkeypatch):
         assert disabled_client.post("/api/purge/scan", json={}).status_code == 404
         assert disabled_client.post("/api/purge/delete", json={}).status_code == 404
         assert disabled_client.post("/api/remux/scan", json={}).status_code != 404
+
+
+def test_disabling_subscription_also_unmounts_the_public_sub_route(
+    app_state, monkeypatch
+):
+    monkeypatch.setenv("TOOLKIT_DISABLED_TOOLS", "subscription")
+    app = create_app(state=app_state)
+    assert "/sub/{sub_id}" not in app.openapi()["paths"]
+
+
+def test_a_blank_sub_db_path_still_lands_under_backend_data(monkeypatch):
+    from toolkit_api import main
+
+    monkeypatch.setenv("SUB_DB_PATH", "")  # an uncommented `SUB_DB_PATH=` in .env
+    try:
+        importlib.reload(main)
+        assert os.environ["SUB_DB_PATH"] == str(main.BACKEND_DIR / "data" / "sub.db")
+    finally:
+        monkeypatch.undo()
+        importlib.reload(main)
 
 
 def test_cancelling_a_queued_job_stops_it_ever_running():

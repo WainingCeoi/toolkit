@@ -37,8 +37,9 @@ BACKEND_DIR = Path(__file__).resolve().parents[2]
 # Shell values win; .env only fills gaps.
 load_dotenv(BACKEND_DIR / ".env")
 
-# subgen.config defaults to <repo>/data; keep runtime data under backend/data.
-os.environ.setdefault("SUB_DB_PATH", str(BACKEND_DIR / "data" / "sub.db"))
+# subgen.config defaults to <repo>/data; a blank `SUB_DB_PATH=` in .env must not win.
+if not os.environ.get("SUB_DB_PATH"):
+    os.environ["SUB_DB_PATH"] = str(BACKEND_DIR / "data" / "sub.db")
 
 # Vite dev origins.
 _DEFAULT_ORIGINS = "http://localhost:5173,http://127.0.0.1:5173"
@@ -105,7 +106,8 @@ def create_app(state: AppState | None = None) -> FastAPI:
         if slug not in disabled:
             app.include_router(api_router, prefix="/api")
     # Public /sub/{id} for proxy clients; gated by SUB_ACCESS_TOKEN in the router.
-    app.include_router(subs.public_router)
+    if "subscription" not in disabled:
+        app.include_router(subs.public_router)
 
     # The built frontend, mounted last so it only catches unmatched paths.
     if not provided:
