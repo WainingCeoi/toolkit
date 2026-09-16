@@ -127,6 +127,7 @@ def run_remux_batch(tasks: list[dict], max_workers: int, job) -> list[dict]:
     progress_state = {t["task_id"]: 0.0 for t in tasks}
     ff_registry: dict = {}  # task_id -> live FfmpegProgress (for cancel-kill)
     lock = threading.Lock()
+    killed: set = set()
 
     for i in range(len(tasks)):
         job.update_item(i, state="running")
@@ -142,10 +143,11 @@ def run_remux_batch(tasks: list[dict], max_workers: int, job) -> list[dict]:
                 for f in futures:
                     f.cancel()
                 with lock:
-                    live = list(ff_registry.values())
-                for ff in live:
+                    live = list(ff_registry.items())
+                for task_id, ff in live:
                     try:
                         ff.quit()
+                        killed.add(task_id)
                     except Exception:
                         pass  # already exited between snapshot and kill
             with lock:
@@ -159,9 +161,14 @@ def run_remux_batch(tasks: list[dict], max_workers: int, job) -> list[dict]:
     results_by_id = {r["task_id"]: r for r in results}
     for i, t in enumerate(tasks):
         res = results_by_id.get(t["task_id"])
-        if res is None:  # cancelled before it started
-            continue
-        if res["success"]:
+        if res is not None and not res["success"] and t["task_id"] in killed:
+            # SIGKILL surfaces inside ffmpeg_progress_yield as an AttributeError.
+            res["cancelled"] = True
+            res["error"] = "Cancelled"
+            Path(t["output_video"]).unlink(missing_ok=True)
+        if res is None or res.get("cancelled"):  # never started, or killed mid-file
+            job.update_item(i, pct=0, state="pending")
+        elif res["success"]:
             job.update_item(i, pct=100, state="done")
         else:
             job.update_item(i, pct=0, state="failed", error=res["error"])

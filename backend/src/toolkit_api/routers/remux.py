@@ -200,10 +200,12 @@ def start(req: StartIn, jobs: JobsDep) -> JobStartedOut:
 
     def worker(job):
         results = run_remux_batch(tasks, max_workers, job)
-        successful = [r for r in results if r["success"]]
-        failed = [r for r in results if not r["success"]]
+        # A task killed on cancel neither succeeded nor failed; leave it uncounted.
+        finished = [r for r in results if not r.get("cancelled")]
+        successful = [r for r in finished if r["success"]]
+        failed = [r for r in finished if not r["success"]]
         return {
-            "total": len(results),
+            "total": len(finished),
             "successful": len(successful),
             "failed": [{"title": r["title"], "error": r["error"]} for r in failed],
             "out_folder": str(out_path),

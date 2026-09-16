@@ -332,3 +332,59 @@ def test_start_cancel_keeps_partial_report(
     assert snap["result"]["total"] == 1
     assert snap["result"]["successful"] == 1
     assert snap["result"]["out_folder"] == str(out_dir)
+
+
+def test_start_cancel_reports_killed_tasks_as_cancelled(
+    tool_client, app_state, tmp_path, monkeypatch
+):
+    monkeypatch.setattr("shutil.which", lambda cmd: "/opt/fake/ffmpeg")
+
+    started = threading.Event()
+    quit_called = threading.Event()
+
+    class FakeFfmpeg:
+        def quit(self):
+            quit_called.set()
+
+    def fake_run_remux_task(task, progress_state, lock, ff_registry=None):
+        title = Path(task["input_video"]).name
+        Path(task["output_video"]).write_bytes(b"half a file")
+        with lock:
+            ff_registry[task["task_id"]] = FakeFfmpeg()
+        started.set()
+        quit_called.wait(3.0)
+        with lock:
+            ff_registry.pop(task["task_id"], None)
+        # What ffmpeg_progress_yield raises once quit() has nulled its handle.
+        return {
+            "task_id": task["task_id"],
+            "title": title,
+            "success": False,
+            "error": "'NoneType' object has no attribute 'poll'",
+        }
+
+    monkeypatch.setattr(remux, "run_remux_task", fake_run_remux_task)
+
+    for name in ("a.mkv", "b.mkv"):
+        (tmp_path / name).write_bytes(b"")  # start only accepts real local files
+    out_dir = tmp_path / "out"
+    resp = tool_client.post(
+        "/api/remux/start",
+        json=start_payload(
+            selected=[str(tmp_path / "a.mkv"), str(tmp_path / "b.mkv")],
+            out_folder=str(out_dir),
+            max_workers=1,
+        ),
+    )
+    assert resp.status_code == 200
+    job_id = resp.json()["job_id"]
+    assert started.wait(3.0)
+    assert app_state.jobs.cancel(job_id)
+
+    snap = wait_for_job(tool_client, job_id)
+    assert snap["state"] == "cancelled"
+    assert snap["result"]["failed"] == []
+    assert snap["result"]["total"] == 0
+    # The killed task and the one that never started both fall back to pending.
+    assert [item["state"] for item in snap["items"]] == ["pending", "pending"]
+    assert not (out_dir / "a.mkv").exists()
