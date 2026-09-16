@@ -21,13 +21,7 @@ CREATE TABLE IF NOT EXISTS subscriptions (
 
 
 class Store:
-    """SQLite-backed storage; opens a fresh connection per call (thread-safe).
-
-    ``:memory:`` is supported for hermetic use: a private per-connection memory
-    DB would lose the schema between the per-call connections, so it maps to a
-    process-unique shared-cache in-memory DB kept alive by one held connection
-    for the Store's lifetime.
-    """
+    """SQLite store, one connection per call; ``:memory:`` is a shared-cache DB."""
 
     def __init__(self, path) -> None:
         self.path = str(path)
@@ -78,13 +72,7 @@ class Store:
         node_count,
         created_at,
     ) -> str:
-        """Insert the subscription and return the id that is actually stored.
-
-        source_hash is UNIQUE, so two concurrent identical generates race here.
-        INSERT OR IGNORE lets the loser's row drop silently; re-SELECTing by
-        source_hash returns the winner's id, so the caller never hands back a
-        freshly-minted id that was never persisted (a later 404).
-        """
+        """Insert and return the id actually stored (the winner's, under a race)."""
         with closing(self._connect()) as conn:
             conn.execute(
                 "INSERT OR IGNORE INTO subscriptions "

@@ -1,9 +1,3 @@
-// Web Images to PDF — drive one live Chrome session, capture into a PDF.
-// The flow IS the page: 01 open the URL, 02 scroll the real Chrome window,
-// 03 capture. All endpoints are synchronous (no job stream); a 3s status
-// poll keeps the page honest about the single browser session, even if the
-// page was reloaded or Chrome was closed by hand.
-
 import { useEffect, useRef, useState } from 'react'
 import { api, artifactUrl } from '../api'
 import Button from '../components/Button'
@@ -17,15 +11,10 @@ export default function WebImagesToPdf() {
   const [capturing, setCapturing] = useState(false)
   const [result, setResult] = useState<WebPdfCapture | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const busy = useRef(false) // pause the poll while a request is in flight
+  const busy = useRef(false)
   const active = useToolActive()
 
-  // Independent status region: poll every 3s while the tab is VISIBLE so a
-  // session opened before a reload (or closed out-of-band) is reflected here.
-  // Gated on the tab, not the mount: keep-alive keeps this page mounted in
-  // the background, and an open-ended poll from a hidden tab would hit the
-  // backend forever. Re-activating runs tick() immediately, so the status is
-  // fresh the moment the user returns.
+  // Polls only while the tab is visible: keep-alive keeps hidden pages mounted.
   useEffect(() => {
     if (!active) return
     let alive = true
@@ -55,7 +44,7 @@ export default function WebImagesToPdf() {
       await api.webpdfOpen(url.trim())
       setOpen(true)
     } catch (err) {
-      setError((err as Error).message) // 409 already open / 502 could not open
+      setError((err as Error).message)
     } finally {
       setOpening(false)
       busy.current = false
@@ -71,7 +60,7 @@ export default function WebImagesToPdf() {
       setResult(res)
       setOpen(false) // a successful capture also closes the browser
     } catch (err) {
-      // 400 "no images" leaves the browser open for a retry; 409/502 too.
+      // Errors leave the browser open for a retry.
       setError((err as Error).message)
     } finally {
       setCapturing(false)

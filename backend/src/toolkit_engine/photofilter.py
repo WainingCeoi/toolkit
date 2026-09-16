@@ -1,29 +1,4 @@
-"""Photos Library Filter engine: mirror a macOS Photos library minus its caches.
-
-SRC.photoslibrary -> DEST.photoslibrary, safe to take while Photos is running:
-
-1. plan     -- walk SRC and classify every file with rsync-style rules (see
-               compile_rules). Every directory is mirrored; an excluded
-               directory stays as an empty skeleton so the bundle keeps its
-               shape and Photos can still open the mirror.
-2. snapshot -- any file with a "<name>-wal" sibling is a live WAL-mode SQLite
-               database (database/Photos.sqlite, the analysis databases). It is
-               written with VACUUM INTO from a read-only connection, so the copy
-               is complete even mid-write; -wal/-shm files are never copied.
-3. copy     -- copyfile(3) with COPYFILE_CLONE: an APFS clone (instant, no
-               extra space on the same volume) that keeps mtime and the
-               com.apple.assetsd.* extended attributes Photos stores on
-               originals. Unchanged files are skipped.
-4. delete   -- anything in DEST that is not in the plan is removed.
-5. verify   -- DEST's Photos.sqlite is opened read-only and every asset's
-               original (and edit recipe, if it was edited) is checked for.
-
-The walk is scandir-rs, the parallel Rust scanner Cache Purge already uses
-(an order of magnitude faster than os.walk plus a stat per file on a big
-library); everything else is the standard library. macOS only (copyfile).
-Nothing here ever writes into SRC: it is scanned, and its database is read
-through a read-only connection.
-"""
+"""Photos Library Filter engine: mirror a macOS Photos library minus its caches."""
 
 from __future__ import annotations
 
@@ -40,9 +15,6 @@ from typing import NamedTuple
 
 from scandir_rs import Scandir
 
-# The shipped rules. Everything not listed is kept. Never exclude
-# resources/renders/: it is not a cache -- it holds the edit recipes
-# (UUID.plist) and rendered edits that the database expects to be present.
 DEFAULT_RULES = """\
 # Photos Library Filter rules (rsync-style)
 # Everything not listed here is kept. Do NOT exclude resources/renders/: it holds
@@ -79,13 +51,7 @@ class Rule:
 
 
 def compile_rules(lines: str | Iterable[str]) -> list[Rule]:
-    """Parse an rsync-style rules file (a string, or its lines).
-
-    Blank lines and '#' comments are ignored; a trailing '/' matches
-    directories (and everything inside); a leading '/' anchors to the library
-    root, otherwise the pattern matches whole path components at any depth;
-    '*' and '?' stay inside one component, '**' crosses components.
-    """
+    """Parse an rsync-style rules file (a string, or its lines)."""
     if isinstance(lines, str):
         lines = lines.splitlines()
     rules = []
@@ -125,9 +91,6 @@ def first_match(rules: list[Rule], relpath: str, is_dir: bool = False) -> str | 
 
 
 class FileStat(NamedTuple):
-    """What the plan keeps of a source file: enough to size it and to tell
-    next run whether its copy still looks current."""
-
     size: int
     mtime_ns: int
 
@@ -184,13 +147,7 @@ def _uri(path: Path | str, query: str) -> str:
 
 
 def snapshot_sqlite(src: Path | str, dest: Path | str) -> None:
-    """Consistent copy of a (possibly live, WAL-mode) SQLite database.
-
-    VACUUM INTO reads through the WAL, so rows committed but not yet
-    checkpointed land in the copy -- the thing a raw file copy without -wal
-    loses. Written to a .tmp sibling first, so a failure never leaves a
-    half-written database under the real name.
-    """
+    """Consistent copy of a live WAL-mode SQLite db (VACUUM INTO reads the WAL)."""
     tmp = str(dest) + ".tmp"
     if os.path.exists(tmp):
         os.remove(tmp)
@@ -208,8 +165,7 @@ COPYFILE_CLONE = 1 << 24  # APFS clone when possible, else a plain copy
 
 @functools.cache
 def _copyfile():
-    # Resolved on first use, not at import: the symbol only exists on macOS,
-    # and an import-time lookup would take the whole API down elsewhere.
+    # Resolved lazily: the symbol exists only on macOS and must not break import.
     libc = ctypes.CDLL(None, use_errno=True)
     fn = libc.copyfile
     fn.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_void_p, ctypes.c_uint32]
@@ -218,8 +174,7 @@ def _copyfile():
 
 
 def copy_file(src: Path | str, dest: Path | str) -> None:
-    """Clone (or copy) one file. COPYFILE_STAT carries the exact mtime across,
-    which is what lets the next run recognise the copy and skip it."""
+    """Clone (or copy) one file, mtime and xattrs included."""
     if os.path.lexists(dest):
         os.remove(dest)
     flags = COPYFILE_CLONE | COPYFILE_ALL
@@ -231,12 +186,7 @@ def copy_file(src: Path | str, dest: Path | str) -> None:
 def verify(
     db_path: Path | str, exists: Callable[[str], bool]
 ) -> tuple[list[str], int, int]:
-    """Check that every asset's original (and edit recipe, if edited) exists.
-
-    Returns (problems, asset count, edited count). `exists` answers for a
-    library-relative path, so the same check runs against DEST on disk and
-    against a plan that was never written.
-    """
+    """Check that every asset's original (and edit recipe, if edited) exists."""
     problems, n_assets, n_edited = [], 0, 0
     conn = sqlite3.connect(_uri(db_path, "mode=ro"), uri=True, timeout=30)
     try:
@@ -266,8 +216,7 @@ class Result:
     snapshotted: int = 0
     deleted: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
-    # False until the verify step ran -- a run stopped early has not been
-    # checked, which is not the same as having been checked and found clean.
+    # False until verify ran; a run stopped early was never checked.
     verified: bool = False
     problems: list[str] = field(default_factory=list)
     assets: int = 0
@@ -288,15 +237,10 @@ def check_paths(src: Path | str, dest: Path | str) -> tuple[Path, Path]:
     return src, dest
 
 
-# (phase, done, total) -> True to stop as soon as it is safe. total is 0 when
-# it is not known up front (deleting walks DEST as it goes).
+# (phase, done, total) -> True to stop; total is 0 when unknown up front.
 Progress = Callable[[str, int, int], bool]
 
-# The scanner hands back times as doubles, which at today's epoch resolve to
-# about half a microsecond. That is plenty to tell a changed file from an
-# unchanged one -- a real change moves mtime by milliseconds -- so a copy
-# whose mtime is within this window of the scanner's reading is looked at
-# more closely, and everything else is copied without a second thought.
+# Scanner mtimes are doubles (about 0.5 us of precision); wider gaps are real changes.
 _TIME_WINDOW_NS = 2_000
 
 
@@ -307,13 +251,7 @@ def run(
     dry_run: bool = False,
     on_progress: Progress | None = None,
 ) -> Result:
-    """Mirror SRC into DEST (or, dry_run, plan and verify without writing).
-
-    A stop requested through `on_progress` returns the partial Result with
-    `verified` False. A file that fails to copy is recorded in `errors` and
-    the run carries on -- a photo deleted in Photos mid-run must not abandon
-    the other hundred thousand -- and verify then reports it as missing.
-    """
+    """Mirror SRC into DEST (or, dry_run, plan and verify without writing)."""
     src, dest = check_paths(src, dest)
 
     def stop(phase: str, done: int = 0, total: int = 0) -> bool:
@@ -344,14 +282,8 @@ def run(
                 ds.st_size == st.size
                 and abs(ds.st_mtime_ns - st.mtime_ns) <= _TIME_WINDOW_NS
             ):
-                # Looks unchanged. The scanner's double can spot a change but
-                # not prove there was none, and its "ctime" is the birth time,
-                # so one stat of the source settles both: the exact mtime, and
-                # whether the inode was touched since the copy was written.
-                # Photos rewrites xattrs such as assetsd.favorite without
-                # changing mtime, and that bumps ctime -- mtime alone would
-                # keep a stale favourite flag forever. Only a file that would
-                # otherwise be skipped pays for this stat.
+                # Stat SRC: an xattr-only edit (a favourite) bumps ctime, not mtime.
+                # The scanner's "ctime" is the birth time, so it cannot be used here.
                 ss = os.stat(src / rel)
                 if (
                     ss.st_mtime_ns == ds.st_mtime_ns
@@ -368,8 +300,7 @@ def run(
         else:
             r.copied += 1
 
-    # Always re-snapshotted: a database is one file, and comparing its mtime
-    # against the WAL's would only save the seconds VACUUM INTO takes.
+    # Always re-snapshotted; comparing mtimes would only save the VACUUM's seconds.
     for i, rel in enumerate(p.snapshot):
         if stop("snapshot", i, len(p.snapshot)):
             return r
@@ -409,12 +340,7 @@ def run(
 
 
 def summary(result: Result, rules: list[Rule]) -> dict:
-    """The run as JSON-safe data: sizes per rule, counts, the verify outcome.
-
-    Every rule is listed, including one that matched nothing -- a rule that
-    saves no bytes is worth seeing -- ordered by bytes saved, ties (the zeros)
-    in file order.
-    """
+    """The run as JSON-safe data: sizes per rule, counts, the verify outcome."""
     p = result.plan
 
     def size(rels: Iterable[str]) -> int:

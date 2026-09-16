@@ -1,18 +1,10 @@
-// The <JobsProvider> component, alone in its own module.
-//
-// It exports exactly one thing, and that thing is a component, which is what
-// Fast Refresh requires to hot-swap a module instead of reloading it. The
-// context, hooks, and types it builds on live in ./jobs.
+// Component-only module: Fast Refresh needs it to export nothing but a component.
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { ApiError, api, followJob } from './api'
 import { JobsContext, type AnyJob, type TrackedJob } from './jobs'
 import { readSessionArray, writeSession } from './sessionStore'
 
-// Tracked job ids survive a reload alongside the open-tab list. Job tracking
-// is otherwise in-memory only, so refreshing mid-run used to orphan the job
-// outright: no dock chip, a tab that closed without protest, and a Start
-// button that happily launched a duplicate while the first one kept working.
 const TRACKED_KEY = 'toolkit.trackedJobs'
 
 interface StoredJob {
@@ -30,19 +22,13 @@ function restorableJobs(): StoredJob[] {
   )
 }
 
-// Defensive shape: an evicted-job SSE frame carries only { state }, so fill the
-// fields the dock and panels read (items/message/result/error) before storing.
-//
-// The assertion is load-bearing and cannot be avoided: the input is whatever
-// came off the wire, and no generic spread can prove to the checker that the
-// filled object satisfies the state-discriminated union. This is the boundary
-// where the wire shape is trusted; everything downstream is checked.
+// An evicted-job SSE frame carries only { state }; fill the fields the dock reads.
 function normalizeSnapshot(snapshot: Partial<AnyJob>): AnyJob {
   return { items: [], message: '', result: null, error: null, ...snapshot } as AnyJob
 }
 
 export function JobsProvider({ children }: { children: ReactNode }) {
-  const [jobs, setJobs] = useState<Record<string, TrackedJob>>({}) // id -> {snapshot, toolPath}
+  const [jobs, setJobs] = useState<Record<string, TrackedJob>>({})
   const followed = useRef<Set<string>>(new Set())
 
   const track = useCallback((jobId: string, toolPath: string): Promise<AnyJob | null> => {
@@ -54,9 +40,6 @@ export function JobsProvider({ children }: { children: ReactNode }) {
         [jobId]: { snapshot: normalizeSnapshot(snapshot), toolPath },
       }))
     return followJob<unknown>(jobId, update).catch((err: Error) => {
-      // A genuine failure (not a transient blip — followJob polls through
-      // those): mark it failed and drop it from `followed` so it can be
-      // re-tracked later.
       followed.current.delete(jobId)
       setJobs((prev) => {
         const cur = prev[jobId]
@@ -68,8 +51,6 @@ export function JobsProvider({ children }: { children: ReactNode }) {
     })
   }, [])
 
-  // Ids that must no longer be held in storage: dismissed by the user, or
-  // found to be gone when we tried to re-attach.
   const retired = useRef<Set<string>>(new Set())
 
   const dismiss = useCallback((jobId: string) => {
@@ -82,11 +63,7 @@ export function JobsProvider({ children }: { children: ReactNode }) {
     })
   }, [])
 
-  // Re-attach to whatever was being tracked before the reload. Probed first
-  // rather than tracked blind: the registry keeps only the most recent jobs,
-  // and re-following an evicted one would raise a "failed" chip for work that
-  // actually finished. A job still in the registry comes back whole — live
-  // progress if it is running, its result and download if it already finished.
+  // Probe before tracking: following an evicted job would raise a spurious "failed" chip.
   const restorable = useRef<StoredJob[] | null>(null)
   restorable.current ??= restorableJobs()
   useEffect(() => {
@@ -98,11 +75,7 @@ export function JobsProvider({ children }: { children: ReactNode }) {
           if (!cancelled) void track(id, toolPath).catch(() => {})
         })
         .catch((err: unknown) => {
-          // Only a 404 means the job is genuinely gone. A network blip or a
-          // 502 from the dev proxy while the backend restarts says nothing
-          // about the job, and retiring on those threw away the id — leaving
-          // exactly the orphaned run this restore pass exists to prevent.
-          // The id stays in storage, so the next reload tries again.
+          // Only a 404 retires the id; any other failure leaves it for the next reload.
           if (err instanceof ApiError && err.status === 404) retired.current.add(id)
         })
     }
@@ -111,9 +84,7 @@ export function JobsProvider({ children }: { children: ReactNode }) {
     }
   }, [track])
 
-  // A stored id is kept until it is either tracked or retired, so the first
-  // commit — when `jobs` is still empty — cannot erase the list the restore
-  // pass above is only just working through.
+  // Keep untracked, unretired ids: the first commit runs before the restore pass lands.
   useEffect(() => {
     const live = Object.entries(jobs).map(([id, { toolPath }]) => ({ id, toolPath }))
     const liveIds = new Set(live.map((entry) => entry.id))

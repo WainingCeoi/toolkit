@@ -1,20 +1,4 @@
-"""On-disk staging for Watermark Remover batches, with TTL cleanup.
-
-A batch is the working set between "upload" and "run": the normalized PNG
-copies that the canvas editor, the mask endpoint and the inpainting job all
-read. Files live under data/watermark/<batch_id>/ next to an in-memory index
-(single-user local app; nothing here needs to survive a restart).
-
-Two rules keep the folder honest without ever costing a user their data:
-
-- Expiry is measured from LAST USE, not from creation, and a batch is pinned
-  for the duration of a run. A correction session can take as long as it
-  takes, and a long LaMa run cannot have its own inputs deleted underneath it.
-- Only directories this class could itself have created are ever deleted:
-  the root is derived from SUB_DB_PATH, which the user can point anywhere, so
-  a blanket rmtree of it could take a real folder with it. Batch ids are
-  12 hex characters and nothing else here is swept.
-"""
+"""On-disk staging for Watermark Remover batches, with TTL cleanup."""
 
 from __future__ import annotations
 
@@ -29,8 +13,7 @@ from pathlib import Path
 
 BATCH_TTL_SECONDS = 6 * 60 * 60
 
-# What create() names a batch directory — and so the only thing this class is
-# ever willing to delete.
+# Only directories matching this are ever deleted; root may be a user folder.
 _BATCH_ID = re.compile(r"^[0-9a-f]{12}$")
 
 
@@ -41,8 +24,7 @@ class WatermarkBatches:
         self._batches: dict[str, dict] = {}
         self._lock = threading.Lock()
         self.root.mkdir(parents=True, exist_ok=True)
-        # Anything batch-shaped on disk now belongs to a previous process,
-        # whose index died with it — no one can reach these files again.
+        # Leftovers from a previous process; their index died with it.
         for leftover in self._own_dirs():
             shutil.rmtree(leftover, ignore_errors=True)
 
@@ -89,8 +71,7 @@ class WatermarkBatches:
             self._sweep()
             batch = self._batches.get(batch_id)
             if batch is not None:
-                # Expiry is measured from last use: a batch someone is still
-                # working with is not idle, however long the session runs.
+                # Expiry counts from last use.
                 batch["used"] = time.monotonic()
             return batch
 
@@ -104,25 +85,11 @@ class WatermarkBatches:
         return None
 
     def marks(self, batch_id: str, collect: Callable[[list[Path]], list]) -> list:
-        """The batch's shareable watermark marks, computed once and remembered.
-
-        A mask request for one image needs what the whole batch knows, since a
-        mark recovered on any image can mask the others (see watermark.pattern).
-        Collecting it reads every image in the batch, so it happens on the first
-        mask request and is then cached for the batch's life — the page asks for
-        every image's mask, and doing this per request would read the batch once
-        per image.
-
-        ``collect`` is passed in rather than imported: this module stages files
-        and knows nothing about detection.
-        """
+        """The batch's watermark marks, collected once then cached."""
         batch = self.get(batch_id)
         if batch is None:
             return []
-        # Deliberately outside the lock: collection is seconds of CPU, and
-        # holding the store's lock through it would stall every other request.
-        # Two concurrent first-requests can therefore both compute; they agree
-        # on the answer, and one simply overwrites the other.
+        # Outside the lock: collection takes seconds, and a double compute is harmless.
         if batch.get("marks") is None:
             marks = collect([entry["path"] for entry in batch["images"]])
             batch["marks"] = marks
@@ -130,12 +97,7 @@ class WatermarkBatches:
 
     @contextmanager
     def pin(self, batch_id: str):
-        """Hold a batch on disk for the length of a run.
-
-        The inpainting job reads each image lazily on a worker thread, so
-        without this a batch could expire — and be swept by any concurrent
-        request — between two images of its own run.
-        """
+        """Hold a batch on disk for the length of a run so a sweep cannot take it."""
         with self._lock:
             batch = self._batches.get(batch_id)
             if batch is not None:

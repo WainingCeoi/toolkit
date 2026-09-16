@@ -1,14 +1,9 @@
-// The bench: tool drawers grouped by category + a dependency health strip
-// that loads independently of everything else.
-
 import { useEffect, useState, type CSSProperties } from 'react'
 import { Link } from 'react-router'
 import { api } from './api'
 import { CATEGORY_ACCENT } from './tools'
 import type { Category, Health } from './types/api'
 
-// Keyed by the boolean fields on Health, so renaming one server-side breaks
-// here rather than silently rendering every lamp as "not found".
 const LAMPS: [key: keyof Omit<Health, 'ok'>, label: string][] = [
   ['ffmpeg', 'ffmpeg'],
   ['soffice', 'LibreOffice'],
@@ -60,8 +55,7 @@ export default function Home() {
                 key={tool.slug}
                 to={`/tools/${tool.slug}`}
                 className="drawer"
-                // CSSProperties has no index signature for custom properties,
-                // so a CSS variable has to be asserted through.
+                // CSSProperties has no index signature for custom properties, hence the cast.
                 style={{ '--accent': CATEGORY_ACCENT[cat.name] } as CSSProperties}
               >
                 <div className="t">{tool.title}</div>

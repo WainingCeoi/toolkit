@@ -1,8 +1,4 @@
-"""Doc to PDF: clean Word docs (accept changes, drop comments), export to PDF.
-
-The conversion runs as a job. LibreOffice conversions share one user profile,
-so workers serialize on state.soffice_lock — they must not run concurrently.
-"""
+"""Doc to PDF: clean Word docs (accept changes, drop comments), export to PDF."""
 
 from __future__ import annotations
 
@@ -46,9 +42,7 @@ def convert(state: StateDep, files: list[UploadFile] | None = None) -> JobStarte
             ),
         )
 
-    # Uploads are request-scoped — read every file (size-capped) before
-    # returning. Disambiguate duplicate basenames so two same-named uploads
-    # don't collide to one entry in the result zip (dropping one PDF).
+    # Uploads are request-scoped: read them all before returning.
     unique_names = dedupe_filenames([upload.filename for upload in files])
     named = list(zip(unique_names, read_uploads(files), strict=True))
 
@@ -67,8 +61,6 @@ def convert(state: StateDep, files: list[UploadFile] | None = None) -> JobStarte
             except _CancelledError:
                 return None
 
-        # Key per-item state by input index — two uploads with the same name
-        # must not cross-contaminate each other's success/failure state.
         failed_by_idx = {idx: error for idx, _name, error in failed}
         for idx in range(len(named)):
             if idx in failed_by_idx:

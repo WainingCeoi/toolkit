@@ -1,6 +1,3 @@
-// Image to PDF: combine uploaded images (PNG/JPG/HEIC) into a single PDF,
-// returned as a direct download — no job, one synchronous request.
-
 import { useState } from 'react'
 import { api, saveBlob } from '../api'
 import FileDrop from '../components/FileDrop'

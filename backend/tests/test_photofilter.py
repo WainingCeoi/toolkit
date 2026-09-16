@@ -1,9 +1,4 @@
-"""Photos Library Filter: the engine against a synthetic library, then the API.
-
-The library is a handful of files in tmp_path with a real WAL-mode SQLite
-database, so every step -- rules, plan, VACUUM INTO snapshot, copyfile clone,
-skip, delete, verify -- runs for real on this Mac's APFS.
-"""
+"""Photos Library Filter: engine against a synthetic library, then the API."""
 
 from __future__ import annotations
 
@@ -48,11 +43,7 @@ def make_photos_db(path, assets):
             assets,
         )
         c.commit()
-    # A live library always has these next to its database: Apple's SQLite
-    # keeps -wal/-shm after the last connection closes, and Photos holds them
-    # open besides. The upstream SQLite bundled with uv's Python deletes them
-    # at close, so they are laid down explicitly -- the -wal sibling is what
-    # tells the planner to snapshot instead of copy.
+    # SQLite drops -wal/-shm at close; the -wal sibling makes the planner snapshot.
     for sidecar in ("-wal", "-shm"):
         Path(str(path) + sidecar).touch()
 
@@ -115,15 +106,15 @@ def test_rules_match_rsync_subset():
         return pf.first_match(rules, p)
 
     assert m("database/search/leo.sqlite") == "database/search/"
-    assert m("database/searchx") is None  # dir rule needs the dir
+    assert m("database/searchx") is None
     assert m("database/Photos.sqlite.lock") == "database/*.lock"
-    assert m("database/sub/x.lock") is None  # * stays in one component
+    assert m("database/sub/x.lock") is None
     assert m("private/a/caches/g/x.db") == "private/**/caches/"
     assert m("private/a/b/caches/x") == "private/**/caches/"
-    assert m("a/b/.DS_Store") == ".DS_Store"  # unanchored, any depth
+    assert m("a/b/.DS_Store") == ".DS_Store"
     assert m("a/.DS_Store_x") is None
     assert m("top.txt") == "/top.txt"
-    assert m("a/top.txt") is None  # leading / anchors
+    assert m("a/top.txt") is None
     assert m("originals/0/a.heic") is None
 
 
@@ -140,7 +131,6 @@ def test_default_rules_drop_caches_and_keep_originals_and_renders():
     assert pf.first_match(rules, "database/Photos.sqlite.lock")
     assert pf.first_match(rules, "private/com.apple.x/caches/graph/x.db")
     assert pf.first_match(rules, "originals/A/.DS_Store")
-    # Never excluded: the edit recipes, the originals, the database itself.
     assert pf.first_match(rules, "resources/renders/B/BBBB-2.plist") is None
     assert pf.first_match(rules, "originals/A/AAAA-1.heic") is None
     assert pf.first_match(rules, "database/Photos.sqlite") is None
@@ -170,8 +160,7 @@ def test_plan_classifies_files(tmp_path):
         "database/search/Spotlight/idx": "database/search/",
         "resources/derivatives/x.jpeg": "resources/derivatives/",
     }
-    # An excluded directory is still mirrored (as an empty skeleton); a
-    # directory inside one is not.
+    # An excluded dir is still mirrored as an empty skeleton; dirs inside are not.
     assert sorted(plan.dirs) == [
         "database",
         "database/search",
@@ -191,7 +180,7 @@ def test_snapshot_includes_unflushed_wal(tmp_path):
         writer.executemany("INSERT INTO t VALUES (?)", [(1,), (2,), (3,)])
         writer.commit()  # committed, but only in the WAL
         main_only = tmp_path / "main_only.sqlite"
-        shutil.copyfile(src, main_only)  # what a raw copy without -wal ships
+        shutil.copyfile(src, main_only)
         assert not query_one(
             main_only,
             "SELECT count(*) FROM sqlite_master WHERE name='t'",
@@ -231,7 +220,7 @@ def test_run_copies_snapshots_skips_and_deletes(tmp_path):
         "abc"
     )
     assert (dest / "resources/renders/B/BBBB-2.plist").exists()
-    assert (dest / "resources/derivatives").is_dir()  # skeleton kept, contents not
+    assert (dest / "resources/derivatives").is_dir()
     assert list((dest / "resources/derivatives").iterdir()) == []
     assert not (dest / "database/search/leo.sqlite").exists()
     assert not (dest / ".DS_Store").exists()
@@ -258,8 +247,6 @@ def test_xattr_change_without_mtime_change_is_recopied(tmp_path):
     pf.run(src, dest, pf.compile_rules(RULES))
     time.sleep(0.01)
     f = src / "originals/B/BBBB-2.heic"
-    # Photos does exactly this when you favourite a photo: the xattr changes,
-    # mtime does not, ctime does.
     xattr_set(f, "com.apple.assetsd.favorite", "1")
 
     r = pf.run(src, dest, pf.compile_rules(RULES))
@@ -299,14 +286,13 @@ def test_refuses_overlapping_or_unsafe_dest(tmp_path):
     with pytest.raises(pf.PhotoFilterError, match="overlap"):
         pf.run(src, src / "inner.photoslibrary", [])
     with pytest.raises(pf.PhotoFilterError, match="overlap"):
-        pf.run(src, outer, [])  # DEST above SRC would delete SRC
+        pf.run(src, outer, [])
     with pytest.raises(pf.PhotoFilterError, match="overlap"):
         pf.run(src, src, [])
     with pytest.raises(pf.PhotoFilterError, match=r"\*\.photoslibrary"):
         pf.run(src, tmp_path / "not-a-library", [])
     with pytest.raises(pf.PhotoFilterError, match="not a Photos library"):
         pf.run(tmp_path / "missing.photoslibrary", tmp_path / "Dest.photoslibrary", [])
-    # Nothing was created by any of the refused runs.
     assert sorted(p.name for p in tmp_path.iterdir()) == ["Outer.photoslibrary"]
 
 
@@ -348,19 +334,17 @@ def test_stop_request_returns_the_partial_result_unverified(tmp_path):
     assert not r.verified and r.problems == []
     assert seen[0] == ("plan", 0, 0)
     assert seen[-1] == ("copy", 1, 3)
-    assert (dest / "database").is_dir()  # the skeleton was laid down first
+    assert (dest / "database").is_dir()
     assert not (dest / "database/Photos.sqlite").exists()
 
 
 def test_skip_needs_the_exact_mtime_not_a_near_one(tmp_path):
-    # scandir-rs reports times as doubles, good to about half a microsecond;
-    # that only decides which copies get a closer look. The decision itself
-    # is an exact stat, so a copy one microsecond off is replaced, not kept.
+    # scandir-rs mtimes are doubles (~0.5us); the skip decision uses an exact stat.
     src, dest = build_src(tmp_path), tmp_path / "Dest.photoslibrary"
     pf.run(src, dest, pf.compile_rules(RULES))
     copy = dest / "originals/A/AAAA-1.heic"
     exact = os.stat(src / "originals/A/AAAA-1.heic").st_mtime_ns
-    assert os.stat(copy).st_mtime_ns == exact  # copyfile keeps it to the ns
+    assert os.stat(copy).st_mtime_ns == exact
 
     for off in (1_000, 1_000_000):
         os.utime(copy, ns=(exact + off, exact + off))
@@ -394,12 +378,9 @@ def test_summary_sizes_the_excluded_files_per_rule(tmp_path):
         pf.run(src, tmp_path / "Dest.photoslibrary", rules, dry_run=True), rules
     )
 
-    # keep: 2 originals (6 B each) + the recipe (6 B); the database is a
-    # snapshot, not a kept file.
+    # 2 originals + the recipe, 6 B each; the database is a snapshot, not kept.
     assert s["kept"] == {"files": 3, "bytes": 18}
     assert s["snapshots"] == ["database/Photos.sqlite"]
-    # Biggest saving first; rules that matched nothing still listed, in file
-    # order, so a rule that does nothing is visible rather than absent.
     assert s["rules"] == [
         {"rule": "resources/derivatives/", "files": 2, "bytes": 105},
         {"rule": ".DS_Store", "files": 1, "bytes": 1},
@@ -433,7 +414,7 @@ def test_photofilter_dry_run_then_run_end_to_end(client, tmp_path):
     assert dry["snapshots"] == ["database/Photos.sqlite"]
     assert dry["verify"]["ran"] and dry["verify"]["problems"] == []
     assert dry["deleted"] == [] and dry["copied"] == 0
-    assert (dest / "resources/derivatives/stale.jpeg").exists()  # nothing written
+    assert (dest / "resources/derivatives/stale.jpeg").exists()
     assert not (dest / "originals").exists()
 
     resp = client.post("/api/photofilter/run", json=body)
@@ -509,7 +490,6 @@ def test_photofilter_refuses_unsafe_paths_before_starting(client, tmp_path, endp
     assert resp.status_code == 400
     assert "overlap" in resp.json()["detail"]
 
-    # A refused run creates nothing -- not even the destination bundle.
     assert not (tmp_path / "Dest.photoslibrary").exists()
     assert not (tmp_path / "not-a-library").exists()
     assert not (src / "inner.photoslibrary").exists()
@@ -577,6 +557,5 @@ def test_photofilter_refuses_a_second_writer_on_the_same_destination(
 
     assert wait_for_job(client, first)["state"] == "done"
     assert wait_for_job(client, dry)["state"] == "done"
-    # The guard is released with the run, so the destination can be used again.
     third = client.post("/api/photofilter/run", json=body).json()["job_id"]
     assert wait_for_job(client, third)["state"] == "done"

@@ -1,6 +1,3 @@
-// Doc to PDF: clean Word docs (accept tracked changes, strip comments), then
-// render them to PDF with LibreOffice and bundle the results as one zip.
-
 import { useEffect, useState } from 'react'
 import { api, artifactUrl } from '../api'
 import { useToolJob } from '../jobs'
@@ -12,8 +9,6 @@ import type { DocConvertResult } from '../types/api'
 
 export default function DocToPdf() {
   const [files, setFiles] = useState<File[]>([])
-  // Proactive dependency check, loaded independently (the old page warned on
-  // load if LibreOffice was missing). soffice status lives on /api/health.
   const [soffice, setSoffice] = useState<boolean | null>(null)
   const { start, snapshot, running, error } = useToolJob<DocConvertResult>('/tools/doc-to-pdf')
 

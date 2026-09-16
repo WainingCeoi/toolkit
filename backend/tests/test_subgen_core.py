@@ -1,4 +1,4 @@
-"""subgen.core node parsing + render targets (the previously-untested core)."""
+"""subgen.core node parsing, render targets, and the store."""
 
 from __future__ import annotations
 
@@ -69,7 +69,7 @@ def test_vless_reality_renders_reality_opts_in_clash():
     nodes = core.parse_node_links(link)["nodes"]
     proxy = yaml.safe_load(core.render_clash_subscription(nodes))["proxies"][0]
     assert proxy["reality-opts"] == {"public-key": "PUBKEY", "short-id": "ab12"}
-    # reality nodes must not carry skip-cert-verify (they authenticate by key).
+    # reality nodes authenticate by key, so no skip-cert-verify.
     assert "skip-cert-verify" not in proxy
 
 
@@ -92,7 +92,7 @@ def test_expand_nodes_crosses_every_node_with_every_endpoint():
     eps = core.parse_preferred_endpoints("1.1.1.1#EP1, 2.2.2.2#EP2")["endpoints"]
     expanded = core.expand_nodes(nodes, eps, {"name_prefix": ""})
     assert len(expanded["nodes"]) == 4  # 2 nodes x 2 endpoints
-    assert len({n["name"] for n in expanded["nodes"]}) == 4  # unique names
+    assert len({n["name"] for n in expanded["nodes"]}) == 4
 
 
 # --- store -------------------------------------------------------------------
@@ -130,4 +130,4 @@ def test_save_subscription_returns_existing_id_on_hash_conflict(memory_store):
     first = memory_store.save_subscription(id="first", **common)
     second = memory_store.save_subscription(id="second", **common)
     assert first == "first"
-    assert second == "first"  # the loser gets the winner's stored id
+    assert second == "first"

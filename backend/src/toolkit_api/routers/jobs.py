@@ -26,8 +26,7 @@ def job_status(job_id: str, jobs: JobsDep) -> dict:
 
 @router.get("/jobs/{job_id}/events")
 async def job_events(job_id: str, jobs: JobsDep) -> EventSourceResponse:
-    """SSE progress stream: `progress` frames until the job finishes, then a
-    terminal `done` frame carrying the final snapshot."""
+    """SSE stream: `progress` frames until the job finishes, then one `done` frame."""
     if jobs.get(job_id) is None:
         raise HTTPException(status_code=404, detail="Unknown job id.")
 
@@ -35,7 +34,7 @@ async def job_events(job_id: str, jobs: JobsDep) -> EventSourceResponse:
         last = None
         while True:
             job = jobs.get(job_id)
-            if job is None:  # evicted mid-stream — tell the client to stop
+            if job is None:  # evicted mid-stream
                 yield {
                     "event": "done",
                     "data": json.dumps(
@@ -53,8 +52,6 @@ async def job_events(job_id: str, jobs: JobsDep) -> EventSourceResponse:
             if snap["state"] in FINISHED_STATES:
                 yield {"event": "done", "data": payload}
                 return
-            # Only push a frame when something actually changed — a quiet job no
-            # longer re-sends an identical snapshot every 0.3 s.
             if payload != last:
                 yield {"event": "progress", "data": payload}
                 last = payload

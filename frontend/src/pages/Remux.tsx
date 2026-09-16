@@ -1,6 +1,3 @@
-// Remux Processor — scan a folder for videos, configure tracks, optionally
-// attach external subtitles, then run a parallel lossless ffmpeg remux job.
-
 import { useEffect, useMemo, useState, type CSSProperties } from 'react'
 import { api } from '../api'
 import { useToolJob } from '../jobs'
@@ -18,15 +15,14 @@ const baseName = (p: string): string => p.split('/').pop() ?? p
 
 const hintStyle: CSSProperties = { fontSize: 11.5, color: 'var(--faint)', marginTop: 4 }
 
-// Module-level so the "external subtitles off" render keeps a stable identity
-// and doesn't retrigger anything downstream that depends on `matches`.
+// Module-level so `matches` keeps a stable identity while external subtitles are off.
 const EMPTY_MATCHES: SubtitleMatch[] = []
 
 export default function Remux() {
   // 01 — source folder + video selection
   const [folder, setFolder] = useState('')
   const [videos, setVideos] = useState<RemuxVideo[]>([]) // natural-sorted server-side
-  const [selected, setSelected] = useState<string[]>([]) // paths
+  const [selected, setSelected] = useState<string[]>([])
   const [scanned, setScanned] = useState(false)
   const [scanning, setScanning] = useState(false)
   const [scanError, setScanError] = useState<string | null>(null)
@@ -46,9 +42,7 @@ export default function Remux() {
   const [subFolder, setSubFolder] = useState('')
   const [fetched, setFetched] = useState<SubtitleMatch[]>([])
   const [fetchError, setFetchError] = useState<string | null>(null)
-  // The inputs `fetched` was actually fetched for. Readiness is then a
-  // comparison against the current inputs (below) rather than a flag an effect
-  // has to keep in sync — so it cannot report ready for a stale match set.
+  // The subKey `fetched` was fetched for; readiness is derived from it, never a synced flag.
   const [loadedFor, setLoadedFor] = useState<string | null>(null)
 
   // 04 — output & run
@@ -71,7 +65,6 @@ export default function Remux() {
       const { videos: found } = await api.remuxScan(folder)
       setVideos(found)
       setScanned(true)
-      // Keep only selections that still exist in the rescanned list.
       setSelected((prev) => prev.filter((p) => found.some((v) => v.path === p)))
     } catch (err) {
       setVideos([])
@@ -89,9 +82,6 @@ export default function Remux() {
     )
   }
 
-  // Identity of the inputs a match set would be fetched for; null when external
-  // subtitles are off and there is nothing to fetch. Empty subtitle folder falls
-  // back to the source folder (old page rule).
   const subKey = useMemo(
     () =>
       useExternalSub
@@ -100,15 +90,11 @@ export default function Remux() {
     [useExternalSub, subFolder, folder, selectedPaths],
   )
 
-  // All three are derived, never written back from an effect: with external
-  // subtitles off there is nothing to match, and readiness is just "the loaded
-  // set belongs to the current inputs". matchesReady gates Start so a run can't
-  // fire with a stale/empty map while the debounced fetch below is in flight.
+  // Derived, never set from an effect; matchesReady gates Start while a fetch is in flight.
   const matches = useExternalSub ? fetched : EMPTY_MATCHES
   const subError = useExternalSub ? fetchError : null
   const matchesReady = subKey === null || loadedFor === subKey
 
-  // Auto-preview subtitle matches whenever the folder or selection changes.
   useEffect(() => {
     if (subKey === null) return undefined
     let stale = false
@@ -126,8 +112,7 @@ export default function Remux() {
         setFetched([])
         setFetchError((err as Error).message)
       } finally {
-        // Marks these inputs resolved either way — a failed lookup is still an
-        // answer, and Start must not stay blocked on it forever.
+        // A failed lookup still resolves subKey, or Start would stay blocked.
         if (!stale) setLoadedFor(subKey)
       }
     }, 300)
@@ -143,7 +128,6 @@ export default function Remux() {
       include_video: includeVideo,
       video_index: parseInt(videoIdx, 10) || 0,
       multi_audio: multiAudio,
-      // Multi mode sends the raw comma text (empty = no audio); single mode one index.
       audio_value: multiAudio ? audioMulti : String(parseInt(audioIdx, 10) || 0),
       include_subtitle: includeSubtitle,
       subtitle_index: parseInt(subIdx, 10) || 0,
@@ -158,7 +142,7 @@ export default function Remux() {
     start(() => api.remuxStart(payload))
   }
 
-  // A cancelled run returns the tasks that already finished — render them too.
+  // A cancelled run still reports the tasks that finished.
   const result =
     snapshot && (snapshot.state === 'done' || snapshot.state === 'cancelled')
       ? snapshot.result

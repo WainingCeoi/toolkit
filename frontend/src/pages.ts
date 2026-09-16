@@ -1,6 +1,4 @@
-// Lazy tool-page registry, keyed by slug. It lives outside main.tsx because
-// the router no longer owns page mounting: Layout renders every OPEN tool
-// (hidden when inactive) so in-progress form state survives switching tools.
+// Lazy tool-page registry, keyed by slug.
 
 import { lazy } from 'react'
 

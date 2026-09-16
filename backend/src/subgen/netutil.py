@@ -43,12 +43,7 @@ def build_source_hash(
 
 
 def get_local_hostname() -> str:
-    """Return the host's ``.local`` (mDNS / Bonjour) name, e.g. ``Weining.local``.
-
-    macOS resolves ``<name>.local`` across the LAN no matter what IP the router
-    hands out, so it makes a more stable subscription host than the raw address.
-    Returns ``""`` when no usable name is found.
-    """
+    """The host's ``.local`` (mDNS) name, or ``""`` when none is usable."""
     try:
         name = socket.gethostname().strip().rstrip(".")
     except OSError:

@@ -20,34 +20,18 @@ from .detect import (
 from .imgio import encode_png, load_rgb
 from .inpaint import get_inpainter
 
-# What the tool accepts (bare suffixes, lowercase). Deliberately narrower than
-# toolkit_engine's IMAGE_EXTENSIONS: these are the formats the whole pipeline
-# is exercised against, browser canvas included.
+# Only the formats the whole pipeline, browser canvas included, is exercised on.
 IMAGE_TYPES = ("png", "jpg", "jpeg", "webp")
 
-# The mask is grown a few px before inpainting: a proposal that hugs the
-# watermark too tightly leaves a one-pixel ghost outline behind.
+# A mask hugging the watermark too tightly leaves a one-pixel ghost outline.
 DEFAULT_DILATE_PX = 3
 
-# Inpainting runs in tiles of at most this many pixels a side, with the
-# surrounding CONTEXT_PX of real image as context. LaMa's memory grows with the
-# frame it is handed -- measured on CPU: 0.8 MP peaked at 12 GB and 3.1 MP at
-# 25 GB, so a 36 MP phone photo (8064x4536) needs well over 100 GB and takes
-# the process down before it ever returns. A tile keeps peak memory flat no
-# matter how large the image is, and skipping tiles with nothing masked makes
-# the cost track the watermark's area rather than the photo's.
-#
-# 640 is measured, not guessed: on a 12 MP frame, 640/96 peaked at 12.3 GB in
-# 56s where 1024/128 took 29.9 GB in 54s -- 2.4x the memory to save 2 seconds.
-# Smaller is not automatically better either; 512/96 was 14.0 GB in 63s, since
-# more tiles means paying the model's fixed cost more often.
+# LaMa's peak memory grows with the frame handed to it; tiles keep it flat.
+# 640/96 is tuned: larger tiles cost far more memory, smaller ones more time.
 TILE_PX = 640
 CONTEXT_PX = 96
 
-# Above this much rewriting, removal costs more than the watermark is worth and
-# the image is left alone instead (see would_destroy_content). Set between two
-# measured populations rather than tuned: documents scored 97-150 and
-# photographs 40-79, so this sits clear of both.
+# Rewriting above this is refused; the value sits between documents and photographs.
 MAX_DESTRUCTION = 88.0
 
 
@@ -63,9 +47,8 @@ def _inpaint_tiled(
         for left in range(0, width, TILE_PX):
             bottom, right = min(top + TILE_PX, height), min(left + TILE_PX, width)
             if not mask[top:bottom, left:right].any():
-                continue  # nothing to fill here
-            # Widen the frame handed to the inpainter so pixels at the tile
-            # edge are filled from real surroundings, not from the cut.
+                continue
+            # Context so tile-edge pixels are filled from real surroundings.
             ctop, cleft = max(0, top - CONTEXT_PX), max(0, left - CONTEXT_PX)
             cbottom = min(height, bottom + CONTEXT_PX)
             cright = min(width, right + CONTEXT_PX)
@@ -86,13 +69,7 @@ def remove_watermark(
     inpaint: Callable[[np.ndarray, np.ndarray], np.ndarray],
     dilate_px: int = DEFAULT_DILATE_PX,
 ) -> np.ndarray:
-    """Inpaint ``mask`` out of ``rgb`` and return the cleaned copy.
-
-    Only masked pixels are ever written. LaMa reconstructs the whole frame it
-    is given, so without this it would subtly rewrite untouched parts of the
-    photo; compositing keeps the guarantee that what you did not mark is
-    bit-identical to what you uploaded.
-    """
+    """Inpaint ``mask`` out of ``rgb``; only masked pixels are ever written."""
     if dilate_px > 0:
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * dilate_px + 1,) * 2)
         mask = cv2.dilate(mask, kernel)
@@ -102,18 +79,8 @@ def remove_watermark(
 
 
 def destruction(rgb: np.ndarray, mask: np.ndarray, dilate_px: int) -> float:
-    """How violently removing ``mask`` rewrites the image, in grey levels.
-
-    The 90th percentile of the change over the pixels that change at all. It is
-    a direct measure of how much of the picture the fill has to invent: over the
-    smooth surfaces a watermark usually sits on there is little to invent and the
-    number is small, while over body text the fill replaces black strokes with
-    background and the number is large.
-
-    Probed with the cv2 inpainter whatever the caller will actually use, so the
-    reading means the same thing from run to run -- it is a property of what lies
-    under the mask, not of the inpainter's quality.
-    """
+    """How violently removing ``mask`` rewrites the image, in grey levels."""
+    # Always probed with cv2 so the reading is comparable across inpainters.
     probe = remove_watermark(rgb, mask, get_inpainter("cv2"), dilate_px)
     moved = np.abs(rgb.astype(np.int16) - probe.astype(np.int16)).max(axis=2)
     changed = moved > 2
@@ -123,22 +90,7 @@ def destruction(rgb: np.ndarray, mask: np.ndarray, dilate_px: int) -> float:
 
 
 def would_destroy_content(rgb: np.ndarray, mask: np.ndarray, dilate_px: int) -> bool:
-    """Whether removing this mask would cost more than the watermark is worth.
-
-    A watermark tiled across a DOCUMENT is the case this exists for. The mark is
-    genuinely there and the mask is genuinely on it, but the strokes underneath
-    carry the meaning, and inpainting discards whatever a mask covers -- on a
-    real product spec sheet it turned "Projected area (m2)" into "Projected a m2".
-    No sensitivity setting escapes it: at 0 the damage falls but so does the
-    removal, leaving residual mark correlation at 0.412 against 0.441 untouched.
-
-    Measured over five documents (one real, four synthetic) and eight
-    photographs, this separates them with room to spare: documents scored 97-150
-    and photographs 40-79. Two cheaper signals were tried and rejected -- an
-    amplitude bound carries no information whatsoever (72.0% of true mark pixels
-    fall under 3x the template amplitude, against 72.4% of clean pixels), and
-    frame flatness flags the 3-D renders this tool is meant to clean.
-    """
+    """Whether removing this mask would cost more than the watermark is worth."""
     return destruction(rgb, mask, dilate_px) > MAX_DESTRUCTION
 
 
@@ -152,12 +104,7 @@ def list_images(folder: Path) -> list[Path]:
 
 
 def _unique_names(paths: list[Path]) -> list[str]:
-    """Output names for ``paths``, disambiguating collisions.
-
-    Every output is a PNG, so "photo.jpg" and "photo.png" both want
-    "photo.png" — one would silently overwrite the other and still be counted
-    as cleaned. The second becomes "photo (2).png", as elsewhere in the app.
-    """
+    """PNG output names for ``paths``, disambiguating stem collisions."""
     names: list[str] = []
     taken: set[str] = set()
     for path in paths:
@@ -189,41 +136,19 @@ def clean_folder(
     detector: str = DEFAULT_DETECTOR,
     on_progress: Callable[[int, int], bool] | None = None,
 ) -> tuple[list[str], list[str], list[str], list[tuple[str, str]]]:
-    """Headless batch: auto-mask and inpaint every image in ``in_dir``.
-
-    Cleaned images are written to ``out_dir`` as PNGs (same stem — inpainted
-    pixels re-encoded as JPEG would pick up fresh artifacts around the fill).
-    Returns (cleaned names, skipped names, protected names, failed (name, error)
-    pairs); a bad file never aborts the batch.
-
-    An image is SKIPPED when no watermark could be found -- copying it out
-    unchanged would pass a no-op off as a result. It is PROTECTED when a
-    watermark was found but the image is deliberately left alone anyway: either
-    removing the proposed mask would destroy the picture underneath (see
-    would_destroy_content), or a repeating mark is demonstrably present and no
-    route could isolate a mask for it at all (see repeating_evidence). Both
-    outcomes leave the file untouched, and they are reported separately from
-    SKIPPED because they mean opposite things about the image.
-
-    `on_progress(done, total)` is called after each file; returning True stops
-    the run early (cancellation).
-    """
+    """Auto-mask and inpaint every image in ``in_dir`` into ``out_dir`` as PNGs."""
     src = Path(in_dir).expanduser()
     dst = Path(out_dir).expanduser()
     if not src.is_dir():
         raise ValueError(f"Input folder not found: {src}")
-    # Writing into the input folder would overwrite images this run has not
-    # read yet, so the later ones would be cleaned twice.
+    # Same folder would overwrite images this run has not read yet.
     if dst.exists() and dst.resolve() == src.resolve():
         raise ValueError("Output folder must be different from the input folder.")
     inpaint = get_inpainter(inpainter)
     files = list_images(src)
     dst.mkdir(parents=True, exist_ok=True)
 
-    # Learn the batch's marks before masking any of it, so an image that cannot
-    # recover its own can still be masked from a sibling's. Images are read one
-    # at a time and only the marks are kept; the pass costs detection twice over,
-    # which is seconds against inpainting's minutes.
+    # Batch marks first, so an image that cannot recover its own can borrow one.
     marks = []
     if detector in (PATTERN, AUTO):
         marks = collect_marks(lambda: _read_each(files), sensitivity)
@@ -239,17 +164,10 @@ def clean_folder(
             rgb = load_rgb(path.read_bytes())
             mask = propose_mask(rgb, sensitivity, detector, marks)
             if not mask.any():
-                # Nothing maskable -- but "no watermark found" and "a watermark
-                # is visible and cannot be removed safely" are opposite
-                # messages, and both end here. When the image demonstrably
-                # carries a repeating mark that no route could isolate, it is
-                # PROTECTED: deliberately left alone, not overlooked. Words
-                # only -- nothing is inpainted either way.
+                # A mark is demonstrably there but could not be isolated: protected.
                 if detector in (PATTERN, AUTO) and repeating_evidence(rgb):
                     protected.append(path.name)
                 else:
-                    # Copying the image out unchanged would pass a no-op off
-                    # as a result.
                     skipped.append(path.name)
                 if on_progress is not None and on_progress(idx + 1, len(files)):
                     break

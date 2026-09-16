@@ -1,10 +1,4 @@
-"""Dependency Upgrader: discovery, uv + npm bump rules, rewrites, git, and API.
-
-Pure engine parts run with fake resolved maps / npm-outdated dicts — no uv or
-npm anywhere. Git tests use a real throwaway repo; API tests monkeypatch the
-sync/outdated calls so scan never shells out, but let the real manifest-parse +
-bump computation run against temp files.
-"""
+"""Dependency Upgrader: discovery, uv + npm bump rules, rewrites, git, and API."""
 
 from __future__ import annotations
 
@@ -21,9 +15,7 @@ requires_git = pytest.mark.skipif(
     shutil.which("git") is None, reason="git not installed"
 )
 
-# --------------------------------------------------------------------------- #
-# Samples                                                                      #
-# --------------------------------------------------------------------------- #
+# --- Samples ---
 
 SAMPLE_PYPROJECT = """\
 [project]
@@ -121,16 +113,13 @@ def _npm_project(root, package=PACKAGE_JSON):
     return root
 
 
-# --------------------------------------------------------------------------- #
-# Discovery                                                                    #
-# --------------------------------------------------------------------------- #
+# --- Discovery ---
 
 
 def test_find_manifests_walks_subfolders_and_skips_heavy_dirs(tmp_path):
-    _uv_project(tmp_path)  # root pyproject
+    _uv_project(tmp_path)
     _uv_project(tmp_path / "backend")
     _npm_project(tmp_path / "frontend")
-    # Noise that must be skipped:
     _npm_project(tmp_path / "node_modules" / "dep")  # dependency store
     _uv_project(tmp_path / ".venv")  # hidden dir
     _npm_project(tmp_path / "build")  # build output
@@ -162,9 +151,7 @@ def test_find_manifests_rejects_empty_and_relative(tmp_path):
     assert err and "Not a folder" in err
 
 
-# --------------------------------------------------------------------------- #
-# uv: which floors get bumped                                                  #
-# --------------------------------------------------------------------------- #
+# --- uv: which floors get bumped ---
 
 
 def test_uv_bumps_only_lagging_ge_floors(tmp_path):
@@ -219,9 +206,7 @@ def test_resolved_versions_drops_forked_packages(tmp_path):
     assert err is None and "foo" not in resolved and resolved["bar"] == "3.0"
 
 
-# --------------------------------------------------------------------------- #
-# uv: rewrite safety                                                           #
-# --------------------------------------------------------------------------- #
+# --- uv: rewrite safety ---
 
 
 def test_apply_uv_bumps_rewrites_versions_and_preserves_the_rest(tmp_path):
@@ -229,10 +214,10 @@ def test_apply_uv_bumps_rewrites_versions_and_preserves_the_rest(tmp_path):
     depsync.apply_uv_bumps(path, depsync.compute_uv_bumps(path, RESOLVED))
     text = path.read_text(encoding="utf-8")
     assert '"fastapi>=0.115.0"' in text
-    assert '"mineru[core]>=6.14.2"' in text  # extras preserved
+    assert '"mineru[core]>=6.14.2"' in text
     assert '"pytest>=8.3.0"' in text
-    assert "# web layer" in text  # comment preserved
-    assert '"pinned==1.2.3"' in text and '"compat~=2.0"' in text  # untouched
+    assert "# web layer" in text
+    assert '"pinned==1.2.3"' in text and '"compat~=2.0"' in text
 
 
 def test_apply_uv_bumps_never_touches_comments_or_unscanned_tables(tmp_path):
@@ -252,9 +237,9 @@ def test_apply_uv_bumps_never_touches_comments_or_unscanned_tables(tmp_path):
     assert [b.table for b in bumps] == ["project.dependencies"]
     depsync.apply_uv_bumps(path, bumps)
     out = path.read_text(encoding="utf-8")
-    assert '    "hatchling>=1.25.0",\n]' in out  # dep bumped
-    assert 'requires = [\n    "hatchling>=1.0.0",' in out  # build-system untouched
-    assert '# keep "hatchling>=1.0.0" in sync' in out  # comment untouched
+    assert '    "hatchling>=1.25.0",\n]' in out
+    assert 'requires = [\n    "hatchling>=1.0.0",' in out
+    assert '# keep "hatchling>=1.0.0" in sync' in out
 
 
 def test_apply_uv_bumps_rewrites_both_tables_across_quote_styles(tmp_path):
@@ -281,9 +266,7 @@ def test_apply_uv_bumps_raises_when_string_missing(tmp_path):
         depsync.apply_uv_bumps(path, [ghost])
 
 
-# --------------------------------------------------------------------------- #
-# npm: bump rules                                                              #
-# --------------------------------------------------------------------------- #
+# --- npm: bump rules ---
 
 
 def test_npm_bumps_to_latest_preserving_operator(tmp_path):
@@ -292,7 +275,7 @@ def test_npm_bumps_to_latest_preserving_operator(tmp_path):
     assert set(by_name) == {"react", "exact-dep", "tilde-dep", "floor-dep", "eslint"}
     assert by_name["react"].new == "^19.1.0" and by_name["react"].major is True
     assert by_name["tilde-dep"].new == "~2.9.0"
-    assert by_name["exact-dep"].new == "1.4.2"  # exact stays exact
+    assert by_name["exact-dep"].new == "1.4.2"
     assert by_name["floor-dep"].new == ">=3.5.0"
     assert (
         by_name["eslint"].table == "devDependencies" and by_name["eslint"].major is True
@@ -302,14 +285,14 @@ def test_npm_bumps_to_latest_preserving_operator(tmp_path):
 def test_npm_bumps_skip_complex_ranges_and_non_declared(tmp_path):
     path = _npm_project(tmp_path) / "package.json"
     names = {b.name for b in depsync.compute_npm_bumps(path, LATEST)}
-    assert "wild" not in names  # "1.x"
-    assert "workspace-dep" not in names  # "workspace:*"
-    assert "not-declared" not in names  # not in package.json
+    assert "wild" not in names
+    assert "workspace-dep" not in names
+    assert "not-declared" not in names
 
 
 def test_npm_bumps_skip_when_not_actually_newer(tmp_path):
     path = _npm_project(tmp_path) / "package.json"
-    same = {"react": "18.2.0"}  # equal to declared floor base
+    same = {"react": "18.2.0"}
     assert depsync.compute_npm_bumps(path, same) == []
 
 
@@ -321,8 +304,8 @@ def test_apply_npm_bumps_rewrites_ranges_and_leaves_others(tmp_path):
     assert '"tilde-dep": "~2.9.0"' in text
     assert '"exact-dep": "1.4.2"' in text
     assert '"eslint": "^10.7.0"' in text
-    assert '"wild": "1.x"' in text  # complex range untouched
-    assert '"workspace-dep": "workspace:*"' in text  # untouched
+    assert '"wild": "1.x"' in text
+    assert '"workspace-dep": "workspace:*"' in text
 
 
 def test_apply_npm_bumps_tolerates_spacing(tmp_path):
@@ -334,14 +317,12 @@ def test_apply_npm_bumps_tolerates_spacing(tmp_path):
     assert '"react":"^19.1.0"' in path.read_text(encoding="utf-8")
 
 
-# --------------------------------------------------------------------------- #
-# git: combined, path-limited commit                                          #
-# --------------------------------------------------------------------------- #
+# --- git: combined, path-limited commit ---
 
 
 def test_commit_subject_is_a_plain_conventional_subject():
     assert depsync.COMMIT_SUBJECT == "chore(deps): update dependencies"
-    assert "\n" not in depsync.COMMIT_SUBJECT  # a subject only, never a body
+    assert "\n" not in depsync.COMMIT_SUBJECT
 
 
 def _git(repo, *args):
@@ -377,7 +358,7 @@ def test_git_root_finds_the_repo(tmp_path):
 
 @requires_git
 def test_commit_paths_includes_untracked_lock_and_skips_unrelated(tmp_path):
-    repo = _init_repo(tmp_path / "repo", track_lock=False)  # uv.lock untracked
+    repo = _init_repo(tmp_path / "repo", track_lock=False)
     path = repo / "pyproject.toml"
     depsync.apply_uv_bumps(path, depsync.compute_uv_bumps(path, RESOLVED))
     (repo / "other.txt").write_text("wip\n", encoding="utf-8")
@@ -387,7 +368,7 @@ def test_commit_paths_includes_untracked_lock_and_skips_unrelated(tmp_path):
         str(repo), depsync.COMMIT_SUBJECT, [path, repo / "uv.lock"]
     )
     assert err is None and sha
-    assert sorted(rels) == ["pyproject.toml", "uv.lock"]  # untracked lock included
+    assert sorted(rels) == ["pyproject.toml", "uv.lock"]
     files = sorted(
         _git(repo, "show", "--name-only", "--format=", "HEAD").stdout.split()
     )
@@ -404,17 +385,11 @@ def test_commit_paths_nothing_to_commit(tmp_path):
     assert sha is None and rels == [] and err and "Nothing to commit" in err
 
 
-# --------------------------------------------------------------------------- #
-# write_manifest + npm peer-conflict recovery                                 #
-# --------------------------------------------------------------------------- #
+# --- write_manifest + npm peer-conflict recovery ---
 
 
 def _fake_locks(monkeypatch, uv_ok=True):
-    """Stub both lockfile resolvers — the real ones shell out and hit the network.
-
-    The uv stub rewrites uv.lock the way a real ``uv lock`` does, so a test can
-    prove the *refreshed* lock is what reaches the commit.
-    """
+    """Stub the lockfile resolvers; the uv stub marks uv.lock with "# relocked"."""
 
     def fake_uv_lock(folder):
         if not uv_ok:
@@ -441,9 +416,6 @@ def test_write_manifest_uv_writes_without_committing(tmp_path, monkeypatch):
 
 
 def test_write_manifest_uv_relocks_after_raising_the_floors(tmp_path, monkeypatch):
-    """uv.lock records the declared specifiers under [package.metadata]
-    requires-dist, so rewriting pyproject.toml without re-locking leaves a lock
-    that disagrees with the manifest it ships beside."""
     root = _uv_project(tmp_path / "proj")
     _fake_locks(monkeypatch)
     manifest = depsync.Manifest(root / "pyproject.toml", "uv", "pyproject.toml")
@@ -452,12 +424,10 @@ def test_write_manifest_uv_relocks_after_raising_the_floors(tmp_path, monkeypatc
 
     assert result["error"] is None
     lock_text = (root / "uv.lock").read_text(encoding="utf-8")
-    assert "# relocked" in lock_text  # re-resolved, not just carried along
+    assert "# relocked" in lock_text
 
 
 def test_write_manifest_uv_relocks_after_writing_not_before(tmp_path, monkeypatch):
-    """Order matters: re-locking before the rewrite would regenerate the lock
-    from the old floors and change nothing."""
     root = _uv_project(tmp_path / "proj")
     seen = {}
 
@@ -469,7 +439,7 @@ def test_write_manifest_uv_relocks_after_writing_not_before(tmp_path, monkeypatc
     manifest = depsync.Manifest(root / "pyproject.toml", "uv", "pyproject.toml")
     depsync.write_manifest(manifest)
 
-    assert '"fastapi>=0.115.0"' in seen["pyproject"]  # already bumped when re-locked
+    assert '"fastapi>=0.115.0"' in seen["pyproject"]
 
 
 def test_write_manifest_uv_rolls_back_when_relock_fails(tmp_path, monkeypatch):
@@ -483,7 +453,6 @@ def test_write_manifest_uv_rolls_back_when_relock_fails(tmp_path, monkeypatch):
 
     assert result["error"] and "uv lock failed" in result["error"]
     assert result["written"] == 0 and result["changed"] == []
-    # Neither file may be left half-upgraded.
     assert (root / "pyproject.toml").read_text(encoding="utf-8") == original
     assert (root / "uv.lock").read_text(encoding="utf-8") == original_lock
 
@@ -497,7 +466,7 @@ def test_write_manifest_npm_skips_peer_conflicts_and_keeps_the_rest(
 
     def fake_refresh(folder):
         calls["n"] += 1
-        if calls["n"] == 1:  # npm ERESOLVE naming eslint as the conflict
+        if calls["n"] == 1:
             return False, (
                 "npm error Could not resolve dependency:\n"
                 'npm error dev eslint@"^10.7.0" from the root project\n'
@@ -513,8 +482,8 @@ def test_write_manifest_npm_skips_peer_conflicts_and_keeps_the_rest(
     assert [s["name"] for s in result["skipped"]] == ["eslint"]
     assert "eslint" not in {b["name"] for b in result["bumps"]}
     text = (root / "package.json").read_text(encoding="utf-8")
-    assert '"react": "^19.1.0"' in text  # everything else still upgraded
-    assert '"eslint": "^9.15.0"' in text  # the conflicting one left alone
+    assert '"react": "^19.1.0"' in text
+    assert '"eslint": "^9.15.0"' in text
 
 
 def test_write_manifest_npm_rolls_back_when_no_culprit_is_named(tmp_path, monkeypatch):
@@ -530,9 +499,7 @@ def test_write_manifest_npm_rolls_back_when_no_culprit_is_named(tmp_path, monkey
     assert (root / "package.json").read_text(encoding="utf-8") == original
 
 
-# --------------------------------------------------------------------------- #
-# API: scan (syncs monkeypatched) + apply                                     #
-# --------------------------------------------------------------------------- #
+# --- API: scan (syncs monkeypatched) + apply ---
 
 
 def _wait(client, job_id, timeout=5.0):
@@ -614,7 +581,7 @@ def test_apply_makes_one_combined_commit(client, tmp_path, monkeypatch):
     assert r.status_code == 200
     body = r.json()
     assert body["written_total"] == 8
-    assert len(body["commits"]) == 1  # ONE combined commit, not one per manifest
+    assert len(body["commits"]) == 1
     assert sorted(body["commits"][0]["files"]) == [
         "backend/pyproject.toml",
         "backend/uv.lock",
@@ -639,13 +606,6 @@ def _committed_monorepo(root):
 
 @requires_git
 def test_apply_commits_the_relocked_uv_lock(client, tmp_path, monkeypatch):
-    """The reported bug: pyproject.toml lands in the commit and uv.lock does not.
-
-    It happens whenever the scan's ``uv sync -U`` changed no resolved version —
-    the lock is then byte-identical, ``git add`` stages nothing for it, and the
-    commit carries the manifest alone with a lock that still names the old
-    floors. Re-locking during apply is what puts it back in the commit.
-    """
     repo = _committed_monorepo(tmp_path / "repo")
     _fake_locks(monkeypatch)
 
@@ -655,10 +615,9 @@ def test_apply_commits_the_relocked_uv_lock(client, tmp_path, monkeypatch):
     changed = _git(repo, "show", "--name-only", "--format=", "HEAD").stdout.split()
     assert "backend/uv.lock" in changed
     assert "backend/pyproject.toml" in changed
-    # And the lock is genuinely part of the diff, not merely staged unchanged.
     diff = _git(repo, "show", "HEAD", "--", "backend/uv.lock").stdout
     assert "+# relocked" in diff
-    assert _git(repo, "status", "--porcelain").stdout == ""  # nothing left behind
+    assert _git(repo, "status", "--porcelain").stdout == ""
 
 
 @requires_git
@@ -686,10 +645,6 @@ def test_apply_falls_back_to_default_message_when_blank(client, tmp_path, monkey
 
 
 def test_apply_refuses_a_second_run_on_the_same_folder():
-    # Two applies over one tree each capture their own `originals`, so a
-    # rollback in the loser can restore stale manifests over the winner's
-    # writes. The long, feedback-free request is exactly what invites the
-    # second click, so the second is refused rather than serialised.
     from fastapi import HTTPException
 
     from toolkit_api.routers.depsync import _exclusive_apply
@@ -699,10 +654,8 @@ def test_apply_refuses_a_second_run_on_the_same_folder():
             with _exclusive_apply("/tmp/some-root"):
                 pass
         assert excinfo.value.status_code == 409
-        # A different folder is unaffected.
         with _exclusive_apply("/tmp/other-root"):
             pass
 
-    # Released on the way out, so a later apply is allowed again.
     with _exclusive_apply("/tmp/some-root"):
         pass

@@ -1,27 +1,4 @@
-"""Server launcher — serve the built UI + API from ONE process.
-
-Every ``make`` target that starts the backend comes through here, so that
-auto-advancing past a busy port is one behaviour in one place rather than
-something ``make host`` happens to have and the others do not.
-
-``make host`` binds ``0.0.0.0`` so every device on the same Wi-Fi can reach the
-app at ``http://<this-machine>.local:<port>``. It reads this host's own
-mDNS/Bonjour name from the OS (never hardcoded) and prints a loud security
-notice, because 0.0.0.0 exposes the app to everyone on the network — and this
-app has no authentication while its tools move and delete files on this Mac.
-
-``make start`` runs the same launcher with ``HOST=127.0.0.1``, so it stays on
-loopback and prints no LAN warning. ``make dev`` cannot run the launcher (it
-needs Vite alongside uvicorn --reload), so it asks for the port up front with
-``--free-port`` instead; see _print_free_port.
-
-``PORT`` sets the base port; the launcher serves on the first free port at or
-above it.
-
-Single worker on purpose: the job registry, the live browser session, and the
-LibreOffice profile lock are in-process state — multiple workers would break
-them.
-"""
+"""Server launcher: serve the built UI and API from one process on a free port."""
 
 from __future__ import annotations
 
@@ -52,12 +29,7 @@ def _run(cmd: list[str]) -> str | None:
 
 
 def mdns_name() -> str | None:
-    """This host's mDNS name (e.g. ``my-mac.local``), read from the OS.
-
-    macOS: the Bonjour ``LocalHostName`` (``scutil --get LocalHostName``),
-    lowercased with ``.local`` appended; falls back to ``hostname -s``.
-    Returns None if no name can be resolved.
-    """
+    """This host's mDNS name (``my-mac.local``) from the OS, or None."""
     if sys.platform == "darwin":
         candidates = [["scutil", "--get", "LocalHostName"], ["hostname", "-s"]]
     else:
@@ -90,7 +62,6 @@ def _route_hint_ip() -> str | None:
     """The egress interface's IPv4 for public traffic (no packets are sent)."""
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        # Connecting a UDP socket only selects the egress interface.
         sock.connect(("8.8.8.8", 80))
         return sock.getsockname()[0]
     except OSError:
@@ -100,12 +71,7 @@ def _route_hint_ip() -> str | None:
 
 
 def lan_ip() -> str | None:
-    """Best-effort primary LAN IPv4 that peers on the Wi-Fi would actually use.
-
-    Prefers a real private-LAN interface address (so a VPN's egress address
-    doesn't hide the Wi-Fi IP), falling back to the public-egress routing
-    hint. Returns None if nothing usable.
-    """
+    """Best-effort LAN IPv4, preferring a private interface over the VPN egress."""
     candidates: list[str] = []
     if sys.platform == "darwin":
         for iface in ("en0", "en1", "en2"):  # Wi-Fi / Ethernet on most Macs
@@ -127,8 +93,7 @@ def lan_ip() -> str | None:
 
 def free_port(host: str, base: int, tries: int = PORT_TRIES) -> int:
     """First port >= ``base`` that actually binds on ``host`` (real bind test)."""
-    # Bind with the family the host actually resolves to — an AF_INET-only probe
-    # aborts for an IPv6 host like ::1 (which _LOOPBACK explicitly supports).
+    # Resolve the family first; an AF_INET-only probe fails for ::1.
     try:
         family = socket.getaddrinfo(host, base, type=socket.SOCK_STREAM)[0][0]
     except OSError:
@@ -194,15 +159,7 @@ def _base_port() -> int:
 
 
 def _print_free_port() -> None:
-    """Print the first bindable port and exit, for ``make dev``.
-
-    dev cannot go through main(): it runs uvicorn --reload and Vite side by
-    side, and Vite fixes its ``/api`` proxy target when it boots. So the port
-    has to be chosen BEFORE either starts and handed to both, rather than
-    discovered inside the server process where Vite would never learn it.
-
-    Loopback, because that is the only thing dev ever binds.
-    """
+    """Print the port for ``make dev``; Vite fixes its proxy target at boot."""
     print(free_port("127.0.0.1", _base_port()))
 
 
@@ -216,9 +173,8 @@ def main() -> None:
     ip = None if local_only else lan_ip()
     _print_banner(host, port, base, name, ip)
 
-    # Import here so the banner (and any port error) prints before the heavy
-    # app import builds the shared state. workers=1 / no reload: one process,
-    # as this app requires.
+    # Imported after the banner so a port error prints before the heavy app import.
+    # workers=1 always: job registry, browser session and soffice lock are in-process.
     import uvicorn
 
     uvicorn.run(APP, host=host, port=port, workers=1, log_level="info")

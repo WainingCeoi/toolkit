@@ -19,8 +19,6 @@ describe('api helpers', () => {
 
     const [url, opts] = fetchMock.mock.calls[0]
     expect(url).toBe('/api/torrent/resolve')
-    // The endpoint accepts a magnet OR an upload, so it is multipart on both
-    // paths; sending JSON here would 422.
     expect(opts.body).toBeInstanceOf(FormData)
     expect((opts.body as FormData).get('magnet')).toBe('magnet:?xt=urn:btih:abc')
     expect((opts.body as FormData).get('save_dir')).toBe('~/Movies')
@@ -40,8 +38,7 @@ describe('api helpers', () => {
 
     const [url, opts] = fetchMock.mock.calls[0]
     expect(url).toBe('/api/torrent')
-    // No save_dir: BitComet fixes a task's folder when the task is created, so
-    // the destination travels with /resolve instead.
+    // No save_dir: it travels with /resolve.
     expect(JSON.parse(opts.body)).toEqual({ infohash: 'abc', selected: [1, 3] })
     vi.unstubAllGlobals()
   })
@@ -69,7 +66,6 @@ describe('api helpers', () => {
 
     const [runUrl, runOpts] = fetchMock.mock.calls[1]
     expect(runUrl).toBe('/api/watermark/run')
-    // The masks are base64 strings inside JSON — NOT another multipart form.
     expect(JSON.parse(runOpts.body)).toEqual({
       batch_id: 'b1',
       inpainter: 'cv2',
@@ -80,8 +76,6 @@ describe('api helpers', () => {
 
   it('builds watermark image and mask URLs under /api', () => {
     expect(watermarkImageUrl('b1', 'i1')).toBe('/api/watermark/b1/i1/image')
-    // The detector rides in the URL so changing it refetches the proposal,
-    // the same way the sensitivity slider does.
     expect(watermarkMaskUrl('b1', 'i1', 70)).toBe(
       '/api/watermark/b1/i1/mask?sensitivity=70&detector=auto',
     )
@@ -106,8 +100,7 @@ describe('api helpers', () => {
     expect(url).toBe('/api/purge/delete')
     expect(opts.method).toBe('POST')
     expect(opts.headers['Content-Type']).toBe('application/json')
-    // Only the scan id travels: the server holds the file list, so no request
-    // shape can point the delete at a path it did not choose itself.
+    // Only the scan id travels; the server owns the file list.
     expect(JSON.parse(opts.body)).toEqual({ scan_id: 'scan123' })
     vi.unstubAllGlobals()
   })
@@ -126,7 +119,7 @@ describe('api helpers', () => {
     await api.docToPdf(form)
 
     const [, opts] = fetchMock.mock.calls[0]
-    expect(opts.body).toBe(form) // browser sets the multipart boundary
+    expect(opts.body).toBe(form)
     expect(opts.headers['Content-Type']).toBeUndefined()
     vi.unstubAllGlobals()
   })

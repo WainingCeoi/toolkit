@@ -13,7 +13,6 @@ router = APIRouter(prefix="/fs", tags=["fs"])
 
 @router.post("/pick-folder", response_model=PickFolderOut)
 def pick(req: PickFolderIn) -> PickFolderOut:
-    # Blocking is fine: FastAPI runs sync endpoints in a threadpool, and the
-    # dialog blocks only its own request while the user picks.
+    # Keep this a sync def so the blocking dialog runs on the threadpool.
     picked = pick_folder(req.start_dir or None, packages=req.packages)
     return PickFolderOut(path=picked or None)

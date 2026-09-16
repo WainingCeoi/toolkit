@@ -1,1 +1,1 @@
-"""Framework-free domain logic extracted from the Streamlit tool pages."""
+"""Framework-free domain logic behind the toolkit's tools."""

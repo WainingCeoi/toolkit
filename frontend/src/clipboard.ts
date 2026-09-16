@@ -1,9 +1,4 @@
-// Copying text to the clipboard, on this app's actual deployment.
-//
-// navigator.clipboard only exists in a secure context (https / localhost), and
-// `make host` serves this app over plain HTTP on the LAN — so on a phone or a
-// second laptop, the modern API is simply undefined. Every copy button in the
-// app goes through here so that fallback exists once rather than per button.
+// navigator.clipboard is undefined off a secure context; make host serves plain HTTP on the LAN.
 
 export async function copyText(text: string): Promise<void> {
   if (navigator.clipboard?.writeText) {
@@ -17,10 +12,7 @@ export async function copyText(text: string): Promise<void> {
   document.body.appendChild(ta)
   ta.select()
   try {
-    // Deprecated, and the only thing that works off a secure origin. Throwing
-    // on a false return matters: execCommand reports failure this way rather
-    // than by raising, so ignoring it would show "copied" over an empty
-    // clipboard.
+    // execCommand reports failure by returning false, not by throwing.
     if (!document.execCommand('copy')) throw new Error('copy rejected')
   } finally {
     ta.remove()

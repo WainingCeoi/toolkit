@@ -36,8 +36,7 @@ class PurgeDeleteIn(BaseModel):
 @router.post("/scan", response_model=PurgeScanOut)
 def scan_folder(req: PurgeScanIn, scans: PurgeScansDep) -> PurgeScanOut:
     src = Path(req.folder).expanduser()
-    # A relative (or empty) typed path would resolve against the app's CWD —
-    # refuse it before the delete flow can target the wrong tree.
+    # Relative paths would resolve against the app's CWD.
     if not src.is_absolute():
         raise HTTPException(
             status_code=400,
@@ -64,11 +63,7 @@ def scan_folder(req: PurgeScanIn, scans: PurgeScansDep) -> PurgeScanOut:
 def delete_files(
     req: PurgeDeleteIn, jobs: JobsDep, scans: PurgeScansDep
 ) -> JobStartedOut:
-    # The client names a scan, never a path. Deleting is irreversible, so the
-    # list has to be one this server produced from its own extension filtering
-    # — an earlier version took the folder and the file list from the same
-    # request and confined one against the other, which `folder: "/"` satisfied
-    # for every absolute path on the machine.
+    # Delete only file lists this server produced; never a client-supplied path.
     scan = scans.take(req.scan_id)
     if scan is None:
         raise HTTPException(
@@ -84,8 +79,6 @@ def delete_files(
             job.set_message(f"Deleting… {done}/{total}")
             return job.cancelled
 
-        # On cancel, delete_files returns the partial deleted/failed already
-        # collected; keep them so a cancelled run still reports what it deleted.
         deleted, failed = purge.delete_files(files, on_progress)
         return {
             "deleted": deleted,

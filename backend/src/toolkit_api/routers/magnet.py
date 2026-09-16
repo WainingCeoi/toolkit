@@ -1,11 +1,4 @@
-"""🧲 Magnet Scraper — auto/manual magnet scraping and de-duplication.
-
-Auto mode walks the configured site's pagination until CUTOFF_VIDEO is found,
-advances the cutoff in backend/.env (exactly like the page: only after the
-cutoff is located, before scraping), then fans out the magnet fetches. Manual
-mode scrapes a pasted URL list. Both run as jobs; item names aren't known at
-submit time, so progress streams through the job message instead of items.
-"""
+"""🧲 Magnet Scraper — auto/manual magnet scraping and de-duplication."""
 
 from __future__ import annotations
 
@@ -26,7 +19,6 @@ router = APIRouter(prefix="/magnet", tags=["magnet"])
 
 TOOL_SLUG = "magnet-scraper"
 
-# The page's exact user-facing strings.
 ERR_NO_WEBSITE = "❌ WEBSITE_URL is not set in .env."
 ERR_NO_CUTOFF = "❌ CUTOFF_VIDEO is not set in .env (no stopping point)."
 WARN_CUTOFF_NOT_FOUND = (
@@ -64,12 +56,9 @@ def _scrape(
     urls: list[str],
     should_stop: Callable[[], bool] | None = None,
 ) -> dict:
-    """The page's execution block: parallel fetch with per-URL progress."""
+    """Fetch magnets for urls in parallel, then drop duplicate hrefs."""
     if not urls:
-        # Page equivalent: rendered as "No new unwatched video found." Carries
-        # the same keys as the populated result below — the client types both
-        # counts as always-present numbers, and an early return that omitted
-        # them made that a lie for anything reading them.
+        # Same keys as the populated result: the client expects every count.
         return {
             "urls": [],
             "successful": [],
@@ -89,10 +78,7 @@ def _scrape(
         urls, on_result=on_result, should_stop=should_stop
     )
     job.set_message(f"Fetched {total}/{total} link(s).")
-    # Auto-apply the unique filter before the result is shown: different (or
-    # repeated) URLs can serve the same magnet, and every grabbed list used to
-    # need a round-trip through Remove duplicated. Same semantics as /dedupe —
-    # first-seen order kept, keyed on the magnet href.
+    # Different URLs can serve the same magnet; keep one per href.
     unique_by_href = {r["result"]: r for r in successful}
     duplicate_count = len(successful) - len(unique_by_href)
     successful = list(unique_by_href.values())
@@ -109,9 +95,7 @@ def _scrape(
 
 @router.get("/config", response_model=MagnetConfigOut)
 def get_config() -> MagnetConfigOut:
-    # Read the file directly so set_key's cutoff advance is seen within a
-    # long-lived process (load_dotenv defaults override=False and never
-    # refreshes os.environ); shell-exported values still fill any gaps.
+    # Re-read .env so a set_key cutoff advance in this process is seen.
     cfg = dotenv_values(magnet.ENV_PATH)
     website = cfg.get("WEBSITE_URL") or os.getenv("WEBSITE_URL")
     cutoff = cfg.get("CUTOFF_VIDEO") or os.getenv("CUTOFF_VIDEO")
@@ -126,15 +110,11 @@ def start_auto(req: AutoScrapeIn, state: StateDep) -> JobStartedOut:
     start_page = req.start_page
 
     def worker(job: Job) -> dict | None:
-        # Read the .env file directly so a cutoff advanced by set_key earlier
-        # in this same process is seen; os.getenv only fills unset gaps (a
-        # cached load_dotenv would keep re-scraping the whole batch forever).
+        # Re-read .env so a set_key cutoff advance in this process is seen.
         cfg = dotenv_values(magnet.ENV_PATH)
         cutoff_video_url = cfg.get("CUTOFF_VIDEO") or os.getenv("CUTOFF_VIDEO")
         source_website = cfg.get("WEBSITE_URL") or os.getenv("WEBSITE_URL")
 
-        # Guard against missing config (otherwise URLs become "None/page/1/"
-        # and the pagination loop has no valid stopping point).
         if not source_website:
             raise RuntimeError(ERR_NO_WEBSITE)
         if not cutoff_video_url:
@@ -154,14 +134,10 @@ def start_auto(req: AutoScrapeIn, state: StateDep) -> JobStartedOut:
             should_stop=should_stop,
         )
 
-        # A cancel during the walk leaves the cutoff untouched and marks the
-        # job cancelled (None result); the registry reads job.cancelled.
         if job.cancelled:
             return None
 
-        # Only save / advance the cutoff / scrape once the cutoff is located —
-        # otherwise a stale CUTOFF_VIDEO or a network error would overwrite
-        # the anchor and submit a huge/partial batch.
+        # Never touch the cutoff unless it was found; a bad anchor scrapes everything.
         if not found:
             return {
                 "cutoff_found": False,
@@ -170,11 +146,7 @@ def start_auto(req: AutoScrapeIn, state: StateDep) -> JobStartedOut:
             }
         result = _scrape(job, urls, should_stop=should_stop)
         result["cutoff_found"] = True
-        # Advance the cutoff ONLY on a clean, uncancelled scrape. Cancelling
-        # mid-scrape must not move the anchor past videos we never fetched —
-        # otherwise they fall below the cutoff and are skipped forever. On
-        # cancel we return the partial result (the registry marks the job
-        # cancelled) and leave the next run to re-scrape the whole batch.
+        # A cancelled scrape must not advance the cutoff past unfetched videos.
         if job.cancelled:
             return result
         if urls:
@@ -202,6 +174,5 @@ def start_manual(req: ManualScrapeIn, state: StateDep) -> JobStartedOut:
 def dedupe(req: DedupeIn) -> DedupeOut:
     if not req.links:
         raise HTTPException(status_code=400, detail=WARN_NO_MAGNETS)
-    # The page used set() (order lost); dict.fromkeys keeps first-seen order.
     unique = list(dict.fromkeys(req.links))
     return DedupeOut(unique=unique, count=len(unique))

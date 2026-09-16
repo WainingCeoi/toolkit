@@ -16,7 +16,6 @@ from toolkit_engine import remux
 
 @pytest.fixture
 def tool_client(app_state):
-    # create_app already wires every /api router (don't re-include here).
     app = create_app(state=app_state)
     with TestClient(app) as c:
         yield c
@@ -51,7 +50,7 @@ def start_payload(**overrides):
     return payload
 
 
-# --- ported engine units (assertions unchanged) ---------------------------
+# --- engine units ---
 
 
 def test_build_ffmpeg_cmd_copies_and_tags_subtitle():
@@ -63,7 +62,7 @@ def test_build_ffmpeg_cmd_copies_and_tags_subtitle():
         "chi",
     )
     assert cmd[0] == "ffmpeg"
-    assert "copy" in cmd  # stream-copy, no re-encode
+    assert "copy" in cmd
     joined = " ".join(cmd)
     assert "title=in" in joined
     assert "language=chi" in joined
@@ -238,7 +237,6 @@ def test_start_cancel_keeps_partial_report(
     release = threading.Event()
 
     def fake_run_remux_task(task, progress_state, lock, ff_registry=None):
-        # The running ffmpeg finishes its current file; block until cancelled.
         title = Path(task["input_video"]).name
         started.set()
         release.wait(3.0)
@@ -270,7 +268,6 @@ def test_start_cancel_keeps_partial_report(
 
     snap = wait_for_job(tool_client, job_id)
     assert snap["state"] == "cancelled"
-    # The partial report of the already-remuxed file must survive cancellation.
     assert snap["result"] is not None
     assert snap["result"]["total"] == 1
     assert snap["result"]["successful"] == 1

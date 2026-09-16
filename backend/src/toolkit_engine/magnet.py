@@ -1,11 +1,4 @@
-"""Magnet Scraper engine — lifted from the Streamlit page magnet_scraper.py.
-
-Pure scraping logic only: fetch a magnet link from a video page, walk the
-source site's pagination until the cutoff video is found, and fan the magnet
-fetches out over a thread pool. Callers (the API router's job workers) handle
-env loading, cutoff persistence via dotenv.set_key, and progress reporting
-through the optional callbacks.
-"""
+"""Magnet Scraper engine: collect magnet links from a site's video pages."""
 
 from __future__ import annotations
 
@@ -18,14 +11,11 @@ from bs4 import BeautifulSoup
 
 MAX_PAGES = 100  # hard cap so Automatic mode can never loop forever
 
-# Anchor .env to backend/ regardless of the launch directory (the page
-# anchored it to the repo root; the backend owns it now).
+# Anchored to backend/ regardless of the launch directory.
 ENV_PATH = Path(__file__).resolve().parents[2] / ".env"
 
 
-# =======================================================
-# CORE FUNCTIONS — fetch a magnet link from a video page URL
-# =======================================================
+# --- CORE FUNCTIONS ---
 def get_magnet_link(url):
     try:
         response = requests.get(url, timeout=10)
@@ -46,21 +36,7 @@ def find_unwatched_urls(
     on_page: Callable[[int], None] | None = None,
     should_stop: Callable[[], bool] | None = None,
 ) -> tuple[list[str], bool, str | None]:
-    """The page's Automatic-mode pagination loop.
-
-    Walks {website_url}/page/{n}/ collecting <a rel="bookmark"> hrefs until the
-    cutoff video is found, an empty page is hit, a request fails, or MAX_PAGES
-    pages have been visited. `on_page(page_number)` fires before each fetch so
-    a job can stream progress. `should_stop()` is polled at the top of each
-    page so a cancelled job aborts the walk without advancing the cutoff.
-
-    Returns (urls_newer_than_cutoff, cutoff_found, error_message_or_None).
-    Only when the cutoff is found is the collected list sliced down to the
-    videos newer than the cutoff (the newest first — index 0 becomes the next
-    cutoff); otherwise the raw accumulation is returned and the caller must
-    not scrape or advance the cutoff. A should_stop abort returns
-    cutoff_found=False so the caller leaves the cutoff untouched.
-    """
+    """Walk the site's pages until the cutoff video; urls are trimmed only if found."""
     unwatched_video_urls: list[str] = []
     page_idx = start_page
     last_page = start_page + MAX_PAGES
@@ -106,15 +82,7 @@ def scrape_magnets(
     on_result: Callable[[int, dict], None] | None = None,
     should_stop: Callable[[], bool] | None = None,
 ) -> tuple[list[dict], list[dict]]:
-    """The page's execution block: fetch magnets simultaneously.
-
-    `on_result(count, result)` fires per completed URL (count is 1-based, in
-    completion order, matching the page's progress bar). `should_stop()` is
-    polled after each completion so a cancelled job stops fanning out and
-    returns whatever finished so far. Successful/failed lists preserve input
-    order and the page's result dict shapes: {"success": True,
-    "result": href} and {"success": False, "url": url, "reason": str}.
-    """
+    """Fetch magnets in a thread pool; return (successful, failed) in input order."""
     results_by_idx: dict[int, dict] = {}
     stopped = False
     executor = ThreadPoolExecutor()

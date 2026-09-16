@@ -1,15 +1,4 @@
-// The one button primitive. Every action control routes through it so hover,
-// focus-visible, active, disabled, and loading states live in exactly one
-// place. Variants are props, not new components.
-//
-//   <Button variant="primary" onClick={…}>Scan & move</Button>
-//   <Button variant="danger" disabled>Delete</Button>
-//   <Button variant="ghost" size="sm">Cancel</Button>
-//   <Button as="a" href={url}>⬇ Download</Button>   // styled like a button
-//
-// variant: primary | secondary (default) | danger | ghost
-// size:    md (default) | sm
-// loading: shows a spinner and disables (an action can't fire twice)
+// The one button primitive; variants are props, not new components.
 
 import type { AnchorHTMLAttributes, ButtonHTMLAttributes, ReactNode } from 'react'
 
@@ -32,9 +21,6 @@ interface CommonProps {
   children?: ReactNode
 }
 
-// A union rather than one props type with an optional href: the leftover props
-// spread onto <a> and <button> are genuinely different sets, and the anchor
-// form is chosen by `as="a"` OR by passing href at all.
 type AnchorProps = CommonProps &
   Omit<AnchorHTMLAttributes<HTMLAnchorElement>, keyof CommonProps> & {
     as: 'a'
@@ -72,7 +58,6 @@ export default function Button(props: ButtonProps) {
     .filter(Boolean)
     .join(' ')
 
-  // Anchor form: a real link that looks like a button (downloads, navigation).
   if (as === 'a' || href !== undefined) {
     const anchorRest = rest as AnchorHTMLAttributes<HTMLAnchorElement>
     return (

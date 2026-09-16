@@ -1,9 +1,4 @@
-"""Image to PDF: combine uploaded images into a single downloadable PDF.
-
-Thin over toolkit_engine.imgpdf — the validations and their exact messages
-(❌ included) carry over from the Streamlit page; the page's Desktop write
-becomes a direct download response.
-"""
+"""Image to PDF: combine uploaded images into a single downloadable PDF."""
 
 from __future__ import annotations
 
@@ -20,12 +15,7 @@ router = APIRouter(tags=["img-to-pdf"])
 
 
 def _content_disposition(out_name: str) -> str:
-    """Build a Content-Disposition header value that survives latin-1 encoding.
-
-    Mirrors Starlette's FileResponse: latin-1-safe names keep the ``filename="..."``
-    form (with backslash/quote escaped), while non-latin-1 names fall back to the
-    RFC 5987 ``filename*=utf-8''<percent-encoded>`` form.
-    """
+    """Build a Content-Disposition value that survives latin-1 header encoding."""
     try:
         out_name.encode("latin-1")
     except UnicodeEncodeError:

@@ -1,9 +1,4 @@
-"""Magnet Scraper: dedupe endpoint, auto/manual jobs, pagination slicing.
-
-Hermetic: requests.get and get_magnet_link are monkeypatched (no network),
-and ENV_PATH is pointed at a tmp .env so the real backend/.env is never read
-or written.
-"""
+"""Magnet Scraper: dedupe endpoint, auto/manual jobs, pagination slicing."""
 
 from __future__ import annotations
 
@@ -20,7 +15,6 @@ from toolkit_engine import magnet as magnet_engine
 
 @pytest.fixture
 def tool_client(app_state):
-    # create_app already wires every /api router (don't re-include here).
     app = create_app(state=app_state)
     with TestClient(app) as c:
         yield c
@@ -137,15 +131,12 @@ def test_auto_happy_path_advances_cutoff_and_scrapes(
         "magnet:?xt=https://site.test/v4",
     ]
     assert result["failed"] == []
-    # The cutoff was advanced to the newest video, in the .env file only.
     assert "https://site.test/v5" in env_file.read_text()
 
 
 def test_auto_cancel_during_scrape_does_not_advance_cutoff(
     tool_client, monkeypatch, tmp_path
 ):
-    # Regression: cancelling mid-scrape must NOT advance the cutoff — otherwise
-    # the un-fetched videos fall below the anchor and are skipped forever.
     env_file = tmp_path / ".env"
     env_file.write_text('CUTOFF_VIDEO="https://site.test/v0"\n')
     monkeypatch.setattr(magnet_engine, "ENV_PATH", env_file)
@@ -159,7 +150,6 @@ def test_auto_cancel_during_scrape_does_not_advance_cutoff(
         lambda *a, **k: (new_urls, True, None),
     )
 
-    # Simulate a scrape that gets cancelled after fetching the first video.
     def fake_scrape(job, urls, should_stop=None):
         job._cancel.set()
         return {
@@ -176,7 +166,6 @@ def test_auto_cancel_during_scrape_does_not_advance_cutoff(
     resp = tool_client.post("/api/magnet/auto", json={"start_page": 1})
     snap = wait_for_job(tool_client, resp.json()["job_id"])
     assert snap["state"] == "cancelled"
-    # Cutoff left untouched, and the partial result is preserved (not None).
     assert "https://site.test/v0" in env_file.read_text()
     assert "https://site.test/v3" not in env_file.read_text()
     assert snap["result"] is not None
@@ -255,8 +244,6 @@ def test_manual_scrape_splits_successful_and_failed(tool_client, monkeypatch):
 
 
 def test_manual_scrape_auto_dedupes_successful_magnets(tool_client, monkeypatch):
-    # Two distinct URLs serving the same magnet: the unique filter is applied
-    # before the result is returned, first-seen order kept, failures untouched.
     magnets = {
         "https://site.test/a": "magnet:?xt=shared",
         "https://site.test/mirror-of-a": "magnet:?xt=shared",
@@ -323,8 +310,6 @@ def test_find_unwatched_urls_slices_at_cutoff(monkeypatch):
     )
     assert found is True
     assert error is None
-    # Only the videos newer than the cutoff, newest first; the cutoff itself
-    # and everything older are dropped.
     assert urls == ["https://site.test/v5", "https://site.test/v4"]
     assert seen_pages == [1, 2]
 
@@ -382,22 +367,16 @@ def test_find_unwatched_urls_reports_page_error(monkeypatch):
     assert error == "❌ Error on page 7: connection refused"
 
 
-# ----------------------------------------------- regression: stale cutoff --
+# --- stale cutoff ---
 
 
 def test_auto_rereads_advanced_cutoff_from_env_file_within_process(
     tool_client, monkeypatch, tmp_path
 ):
-    """DEFECT 1: within a long-lived process, a second auto run must honour the
-    cutoff that the first run advanced via set_key (written to the file only).
-    The old load_dotenv(override=False) + os.getenv read kept the process-start
-    cutoff in os.environ forever, so every later run re-scraped the whole batch.
-    """
     env_file = tmp_path / ".env"
     env_file.write_text('CUTOFF_VIDEO="https://site.test/v3"\n')
     monkeypatch.setattr(magnet_engine, "ENV_PATH", env_file)
-    # Simulate the daemon: os.environ was populated at process start and never
-    # changes; set_key only rewrites the file.
+    # os.environ holds the process-start cutoff; set_key rewrites only the file.
     monkeypatch.setenv("WEBSITE_URL", "https://site.test")
     monkeypatch.setenv("CUTOFF_VIDEO", "https://site.test/v3")
 
@@ -412,7 +391,6 @@ def test_auto_rereads_advanced_cutoff_from_env_file_within_process(
     monkeypatch.setattr(magnet_engine.requests, "get", fake_requests_get)
     monkeypatch.setattr(magnet_engine, "get_magnet_link", fake_get_magnet_link)
 
-    # Run 1: cutoff v3; newest videos are v5, v4.
     pages["https://site.test/page/1/"] = _page_html(
         ["https://site.test/v5", "https://site.test/v4"]
     )
@@ -426,10 +404,8 @@ def test_auto_rereads_advanced_cutoff_from_env_file_within_process(
         "https://site.test/v5",
         "https://site.test/v4",
     ]
-    # set_key advanced the file's cutoff to v5; os.environ still says v3.
     assert "https://site.test/v5" in env_file.read_text()
 
-    # Run 2: one genuinely new video (v6) appeared at the top.
     pages["https://site.test/page/1/"] = _page_html(
         ["https://site.test/v6", "https://site.test/v5"]
     )
@@ -439,19 +415,15 @@ def test_auto_rereads_advanced_cutoff_from_env_file_within_process(
     resp = tool_client.post("/api/magnet/auto", json={"start_page": 1})
     snap = wait_for_job(tool_client, resp.json()["job_id"])
     assert snap["state"] == "done"
-    # Only v6 is new. Before the fix the worker read the stale v3 from
-    # os.environ and re-scraped [v6, v5, v4].
     assert snap["result"]["urls"] == ["https://site.test/v6"]
 
 
-# --------------------------------------------------- regression: cancel ----
+# --- cancel ---
 
 
 def test_find_unwatched_urls_should_stop_aborts_before_walking_all_pages(
     monkeypatch,
 ):
-    """DEFECT 2a: a should_stop that trips mid-walk stops paging and reports
-    cutoff_found=False so the caller never advances the cutoff."""
     pages = {
         "https://site.test/page/1/": _page_html(["https://site.test/v5"]),
         "https://site.test/page/2/": _page_html(["https://site.test/v4"]),
@@ -467,7 +439,6 @@ def test_find_unwatched_urls_should_stop_aborts_before_walking_all_pages(
     polls = {"n": 0}
 
     def should_stop() -> bool:
-        # Allow page 1, then abort before page 2.
         stop = polls["n"] >= 1
         polls["n"] += 1
         return stop
@@ -478,16 +449,13 @@ def test_find_unwatched_urls_should_stop_aborts_before_walking_all_pages(
         1,
         should_stop=should_stop,
     )
-    assert found is False  # cutoff not located -> caller leaves cutoff alone
+    assert found is False
     assert error is None
-    assert visited == ["https://site.test/page/1/"]  # stopped before page 2
+    assert visited == ["https://site.test/page/1/"]
     assert urls == ["https://site.test/v5"]
 
 
 def test_scrape_magnets_should_stop_returns_partial_results(monkeypatch):
-    """DEFECT 2b: once should_stop trips after k completions, scrape_magnets
-    stops fanning out and returns <= k results instead of the full batch."""
-
     def fake_get_magnet_link(url):
         return {"success": True, "result": f"magnet:?xt={url}"}
 
@@ -499,9 +467,9 @@ def test_scrape_magnets_should_stop_returns_partial_results(monkeypatch):
 
     def should_stop() -> bool:
         completed["n"] += 1
-        return completed["n"] >= 3  # stop after 3 completed results
+        return completed["n"] >= 3
 
     successful, failed = magnet_engine.scrape_magnets(urls, should_stop=should_stop)
     total = len(successful) + len(failed)
     assert total <= 3
-    assert total < len(urls)  # aborted well before the full fan-out finished
+    assert total < len(urls)

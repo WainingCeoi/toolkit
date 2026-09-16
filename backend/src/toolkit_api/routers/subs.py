@@ -1,12 +1,4 @@
-"""Optimized-IP Subscription: /api/subs management + the public /sub route.
-
-Re-expresses src/pages/optimized_ip_generator.py over the lifted subgen
-engine. The old embedded :8765 side-server (subgen.subserver) is retired:
-``public_router`` serves GET /sub/{sub_id} natively with the same semantics
-(token before id lookup, User-Agent target auto-detection, ?download=1,
-CORS *). The integrator mounts ``router`` under /api and ``public_router``
-without a prefix.
-"""
+"""Optimized-IP Subscription: /api/subs management + the public /sub route."""
 
 from __future__ import annotations
 
@@ -36,7 +28,7 @@ class GenerateIn(BaseModel):
 
 
 class CountsOut(BaseModel):
-    # None when a legacy payload predates stored counts (the page showed "—").
+    # None when a legacy payload predates stored counts.
     input_nodes: int | None = None
     endpoints: int | None = None
     output_nodes: int
@@ -61,10 +53,6 @@ class HistoryItemOut(BaseModel):
 
 # --------------------------------------------------------------------- urls
 def _sub_base_url(request: Request) -> str:
-    # Host preference matches the old page: explicit override, then the Mac's
-    # stable .local hostname, then a LAN IP. The port follows the incoming
-    # request because /sub is now served natively by this app rather than the
-    # retired :8765 side-server.
     host = config.PUBLIC_HOST or netutil.get_local_hostname()
     if not host:
         ips = netutil.get_lan_ips()
@@ -139,8 +127,7 @@ def generate(req: GenerateIn, request: Request, store: StoreDep) -> Subscription
             node_count=len(expanded["nodes"]),
             created_at=created_at,
         )
-        # A concurrent identical request may have stored first — return the id
-        # that actually persisted rather than our discarded freshly-minted one.
+        # A concurrent identical request may have stored first; use the persisted id.
         if stored_id != sub_id:
             sub_id, dedup = stored_id, True
     return SubscriptionOut(
@@ -168,7 +155,7 @@ def history(store: StoreDep) -> list[dict]:
 def load_subscription(
     sub_id: str, request: Request, store: StoreDep
 ) -> SubscriptionOut:
-    """Pull a stored subscription back into the result panel (top-right)."""
+    """Pull a stored subscription back into the result panel."""
     record = store.get_subscription(sub_id)
     if not record:
         raise HTTPException(
@@ -217,15 +204,13 @@ def render_subscription(
             status_code=404, detail="That subscription no longer exists."
         )
     nodes = record["payload"].get("nodes", [])
-    # The page passed the public surge URL so #!MANAGED-CONFIG points back at
-    # the live subscription; raw/clash ignore it (the page passed nothing).
+    # Surge embeds this URL as #!MANAGED-CONFIG; raw/clash ignore it.
     request_url = _build_urls(sub_id, request)["surge"] if target == "surge" else ""
     try:
         body, content_type, filename = core.render_subscription(
             target, nodes, request_url
         )
     except ValueError as exc:
-        # The page surfaced these as disabled-button tooltips.
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return Response(
         content=body,
@@ -246,8 +231,7 @@ _CORS = {"Access-Control-Allow-Origin": "*"}
 
 @public_router.get("/sub/{sub_id}")
 def serve_subscription(sub_id: str, request: Request, store: StoreDep) -> Response:
-    """Serve a rendered subscription — subgen.subserver semantics, natively."""
-    # The token gate runs BEFORE the id lookup, exactly like the old handler.
+    # The token gate must run before the id lookup.
     token = config.ACCESS_TOKEN
     if token and request.query_params.get("token", "") != token:
         return PlainTextResponse(

@@ -9,8 +9,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Toolkit</title>
     <script>
-      // Apply the saved color mode before first paint (no flash of wrong theme).
-      // 'auto' leaves data-theme unset so prefers-color-scheme governs.
+      // Apply the saved color mode before first paint; 'auto' leaves data-theme unset.
       try {
         var m = localStorage.getItem('toolkit-theme')
         if (m === 'light' || m === 'dark') document.documentElement.setAttribute('data-theme', m)

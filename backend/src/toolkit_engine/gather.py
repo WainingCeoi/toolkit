@@ -53,7 +53,7 @@ def normalize_pattern(token):
 
 
 def build_patterns(categories: list[str], custom_raw: str) -> list[str]:
-    """Assemble the dedup-sorted glob list exactly as the page did."""
+    """Assemble the dedup-sorted glob list from presets and custom tokens."""
     patterns = []
     for category in categories:
         patterns.extend(FILE_TYPE_PRESETS[category])
@@ -65,11 +65,7 @@ def build_patterns(categories: list[str], custom_raw: str) -> list[str]:
 
 
 def scan_source(src: Path, patterns: list[str]) -> tuple[list[str], list]:
-    """Recursively find matching files under `src`, natural-sorted by name.
-
-    Returns (file paths, scan errors) — an error means part of the tree was
-    unreadable, so the gather may be incomplete.
-    """
+    """Recursively find matching files under `src`, natural-sorted by name."""
     scanner, errors = Scandir(str(src), file_include=patterns).collect()
     files = [str(src / entry.path) for entry in scanner if entry.is_file]
     files.sort(key=lambda p: natural_sort_key(Path(p).name))
@@ -81,19 +77,13 @@ def move_files(
     tgt: Path,
     on_progress: Callable[[int, int], bool] | None = None,
 ) -> tuple[list[str], list[tuple[str, str]]]:
-    """Move files into `tgt`, auto-numbering duplicate names (stem_1, stem_2…).
-
-    Returns (moved names, failed (name, error) pairs). `on_progress(done,
-    total)` is called after each file; returning True stops the run early
-    (cancellation).
-    """
+    """Move files into `tgt`, auto-numbering duplicate names (stem_1, stem_2…)."""
     total = len(files)
     moved, failed = [], []
     for idx, file_path in enumerate(files, start=1):
         file = Path(file_path)
         try:
             target_path = tgt / file.name
-            # Handle duplicated files
             counter = 1
             while target_path.exists():
                 target_path = tgt / f"{file.stem}_{counter}{file.suffix}"

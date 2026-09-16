@@ -1,6 +1,3 @@
-// Three-way color-mode switch (Auto / Light / Dark), rendered as a small
-// segmented control in the rail. Auto follows the system.
-
 import { useTheme, MODES, type ThemeMode } from '../theme'
 
 const ICON: Record<ThemeMode, string> = { auto: '◐', light: '☀', dark: '☾' }

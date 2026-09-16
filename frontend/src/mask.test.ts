@@ -1,7 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { maskToOverlay, overlayToMask, TINT } from './mask'
 
-// One RGBA pixel per call site keeps the fixtures readable.
 const px = (r: number, g: number, b: number, a: number) =>
   new Uint8ClampedArray([r, g, b, a])
 
@@ -28,8 +27,6 @@ describe('mask pixel conversions', () => {
   })
 
   it('drops half-erased pixels below the alpha threshold', () => {
-    // destination-out erasing leaves fractional alpha behind; anything at or
-    // below 127 must export as "keep", not "remove".
     expect(overlayToMask(px(TINT.r, TINT.g, TINT.b, 127))[0]).toBe(0)
     expect(overlayToMask(px(TINT.r, TINT.g, TINT.b, 128))[0]).toBe(255)
   })

@@ -1,9 +1,4 @@
-"""Headless CLI — clean a folder of images without the web app:
-
-    python -m watermark clean IN_DIR OUT_DIR --inpainter lama|cv2
-
-Only edit images you own or are licensed to edit.
-"""
+"""Headless CLI: python -m watermark clean IN_DIR OUT_DIR [--inpainter lama|cv2]."""
 
 from __future__ import annotations
 
@@ -92,8 +87,6 @@ def main(argv: list[str] | None = None) -> int:
         for name in skipped:
             print(f"  {name}")
     if protected:
-        # A different thing from "skipped", and worth its own words: the mark WAS
-        # found, and leaving the image alone is the deliberate answer.
         print(
             f"left {len(protected)} image(s) alone — a watermark was found, but "
             "it could not be removed without destroying the picture under it "

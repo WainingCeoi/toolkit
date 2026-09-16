@@ -1,6 +1,4 @@
-// Editable path field + native Browse dialog (the folder_field successor).
-// Typing/pasting works everywhere; Browse opens the macOS chooser through the
-// backend (same machine as the server by design).
+// Browse opens the native chooser on the server's machine, not the browser's.
 
 import { useState } from 'react'
 import { api } from '../api'
@@ -34,8 +32,6 @@ export default function FolderField({
       const { path } = await api.pickFolder(value || startDir, packages)
       if (path) onChange(path)
     } catch (err) {
-      // Surface the failure instead of a dead button click (the dialog can't
-      // open when the server isn't on this Mac's GUI session, etc.).
       setError((err as Error).message || 'Could not open the folder picker.')
     } finally {
       setBusy(false)

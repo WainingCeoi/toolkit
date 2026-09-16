@@ -1,14 +1,4 @@
-"""Dependency Upgrader: upgrade every uv/npm manifest under a folder, then commit.
-
-Two phases keep the review-then-apply contract:
-- POST /deps/scan runs as a job — walks the folder for pyproject.toml/package.json
-  and, per manifest, syncs (uv sync -U / npm install) and returns the proposed
-  bumps for review.
-- POST /deps/apply is synchronous — per manifest it recomputes from the synced
-  state (server-authoritative) and rewrites the manifest, then commits every
-  changed manifest + lockfile together in a single commit. One at a time per
-  folder; see _exclusive_apply.
-"""
+"""Dependency Upgrader: upgrade every uv/npm manifest under a folder, then commit."""
 
 from __future__ import annotations
 
@@ -27,11 +17,7 @@ from ..schemas import JobStartedOut
 
 router = APIRouter(prefix="/deps", tags=["deps"])
 
-# Folders with an apply in flight. Apply is a long synchronous request — many
-# minutes across a monorepo — and the wait invites a second click. Two applies
-# over one tree each capture their own `originals` snapshot, so a rollback in
-# the loser restores stale manifests over the winner's writes; refusing the
-# second outright is the only way that cannot happen.
+# Folders with an apply in flight: a concurrent apply's rollback clobbers the first.
 _applying: set[str] = set()
 _applying_lock = threading.Lock()
 
@@ -165,7 +151,6 @@ def _apply_manifests(manifests: list, req: ApplyIn) -> ApplyOut:
 
     if req.commit:
         subject = (req.message or "").strip() or depsync.COMMIT_SUBJECT
-        # One commit per repo (normally exactly one) covering every changed file.
         groups: dict[str, list[Path]] = {}
         for result in results:
             for path in result["changed"]:

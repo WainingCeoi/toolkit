@@ -1,10 +1,4 @@
-"""Torrent Downloader engine: pure parsing and selection. No I/O, no network.
-
-Everything here is a function of its arguments, which is what makes the tool
-testable without BitComet running or a swarm reachable: a .torrent is bencode,
-so its file list is readable offline, and the category/size filter is a fold
-over that list.
-"""
+"""Torrent Downloader engine: pure parsing and selection. No I/O, no network."""
 
 from __future__ import annotations
 
@@ -18,8 +12,7 @@ from toolkit_engine.filetypes import SIZED_CATEGORIES, categorize
 
 @dataclass(frozen=True)
 class TorrentFile:
-    # 1-based, following the torrent's own file order. BitComet numbers from
-    # 0; toolkit_engine.bitcomet translates at that single boundary.
+    # 1-based, in the torrent's own file order (BitComet counts from 0).
     index: int
     path: str  # path inside the torrent, '/'-joined
     size: int  # bytes
@@ -33,9 +26,7 @@ class TorrentInfo:
     total_bytes: int
 
 
-# =======================================================
-# BENCODE
-# =======================================================
+# --- BENCODE ---
 def bencode(value) -> bytes:
     """Encode dict/list/int/bytes to bencode. Dict keys are sorted, per spec."""
     if isinstance(value, int):
@@ -86,13 +77,7 @@ def bdecode(data: bytes):
 
 
 def _decode_root(data: bytes) -> tuple[dict, dict[bytes, tuple[int, int]]]:
-    """Decode the outer dict, recording each value's raw byte span.
-
-    The span is what makes the infohash correct: btih is SHA1 over the ORIGINAL
-    bencoded `info` bytes, and re-encoding a decoded dict can differ from what
-    the file actually contained (key order, integer forms). Slicing the source
-    sidesteps that entirely.
-    """
+    """Decode the outer dict, recording each value's raw byte span."""
     if data[0:1] != b"d":
         raise ValueError("not a bencoded dictionary")
     out: dict = {}
@@ -107,9 +92,7 @@ def _decode_root(data: bytes) -> tuple[dict, dict[bytes, tuple[int, int]]]:
     return out, spans
 
 
-# =======================================================
-# .TORRENT
-# =======================================================
+# --- .TORRENT ---
 def parse_torrent(data: bytes) -> TorrentInfo:
     """Read a .torrent's file list and infohash. Offline, no network."""
     try:
@@ -123,7 +106,7 @@ def parse_torrent(data: bytes) -> TorrentInfo:
         raise ValueError("torrent has no info dict")
 
     start, end = spans[b"info"]
-    # btih is SHA1 by the BitTorrent spec -- not a security choice.
+    # btih is SHA1 (by spec) over the ORIGINAL info bytes; re-encoding can differ.
     infohash = hashlib.sha1(data[start:end], usedforsecurity=False).hexdigest()
 
     info = meta[b"info"]
@@ -151,14 +134,9 @@ def parse_torrent(data: bytes) -> TorrentInfo:
     )
 
 
-# =======================================================
-# MAGNET
-# =======================================================
+# --- MAGNET ---
 def parse_magnet(uri: str) -> tuple[str, str | None]:
-    """Return (infohash, display_name) from a magnet URI.
-
-    Accepts both btih forms: 40-char hex and 32-char base32.
-    """
+    """Return (infohash, display_name) from a magnet URI."""
     if not uri.startswith("magnet:?"):
         raise ValueError("not a magnet link")
 
@@ -179,16 +157,11 @@ def parse_magnet(uri: str) -> tuple[str, str | None]:
     raise ValueError("magnet link has no btih hash")
 
 
-# =======================================================
-# SELECTION
-# =======================================================
+# --- SELECTION ---
 def select_files(
     files: list[TorrentFile], categories: set[str], min_bytes: int
 ) -> list[int]:
-    """1-based indices to download: in a chosen category, and big enough.
-
-    The size floor applies only to SIZED_CATEGORIES. See filetypes.py for why.
-    """
+    """1-based indices to download: in a chosen category, and big enough."""
     chosen = set(categories)
     selected = []
     for entry in files:
@@ -202,12 +175,8 @@ def select_files(
 
 
 def format_selection(indices: list[int]) -> str:
-    """Render indices as the store's compact selection string, e.g. "1,4,7".
-
-    Never returns "": a torrent with every file deselected downloads nothing
-    and reports itself finished, so an empty selection is refused here rather
-    than becoming a download that silently produces no files.
-    """
+    """Render indices as the store's compact selection string, e.g. "1,4,7"."""
+    # An all-deselected torrent downloads nothing and reports itself finished.
     if not indices:
         raise ValueError("a torrent must download at least one file")
     return ",".join(str(i) for i in sorted(indices))

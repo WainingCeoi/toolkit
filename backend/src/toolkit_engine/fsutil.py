@@ -5,13 +5,8 @@ from pathlib import Path
 
 
 def natural_sort_key(name):
-    """
-    Human-friendly sort key: split a name into text/number chunks so digit
-    runs compare numerically (ep2 < ep10) and text compares case-insensitively.
-    """
-    # `isdecimal()` (not `isdigit()`) matches exactly what int() accepts, so a
-    # superscript/circled digit like "²" or "①" — isdigit True, int() raises —
-    # sorts as text instead of crashing the key.
+    """Sort key: digit runs compare numerically (2 < 10), text case-insensitively."""
+    # isdecimal, not isdigit: "²" is isdigit but int() rejects it.
     return [
         int(chunk) if chunk.isdecimal() else chunk.lower()
         for chunk in re.split(r"(\d+)", name)
@@ -19,14 +14,7 @@ def natural_sort_key(name):
 
 
 def dedupe_filenames(names):
-    """Disambiguate duplicate basenames as ``stem (2).ext``, preserving order.
-
-    Batch tools bundle each upload's output into one zip by filename, so two
-    uploads sharing a name (``report.docx`` from two folders) would collide to a
-    single archive entry and silently drop one result on extraction. Renaming
-    the later duplicates keeps every output distinct — matching how the File
-    Gatherer already auto-numbers colliding moves.
-    """
+    """Disambiguate duplicate basenames as ``stem (2).ext``, preserving order."""
     seen: dict[str, int] = {}
     out: list[str] = []
     for name in names:

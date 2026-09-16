@@ -1,12 +1,4 @@
-// App frame: left rail (tool nav grouped by category, "/" quick filter),
-// keep-alive hosts for every open tool, and the tab dock along the bottom.
-//
-// Open tools stay MOUNTED — an inactive one is display:none, not unmounted —
-// so a half-configured form survives jumping to another tool and back. The
-// dock shows one browser-style tab per open tool, with every tracked job
-// riding inside it as a chip; each finished chip has its own dismiss ×, so a
-// stale job can be cleared without unmounting the tool. A tab with a running
-// job refuses to close, so running work can never silently disappear.
+// App frame: rail, keep-alive hosts for every open tool, and the tab dock.
 
 import React, {
   Suspense,
@@ -32,8 +24,6 @@ import { nextTabAfterClose, parseToolSlug, restoreTabs, tabOrder } from './tabs'
 import { ToolActiveContext, ToolBusyContext, ToolSlugContext } from './toolHost'
 import type { Category } from './types/api'
 
-// Reload restores the tabs, not their form state. See sessionStore for why
-// every read and write is guarded.
 const TABS_KEY = 'toolkit.openTabs'
 
 const toolPath = (slug: string) => `/tools/${slug}`
@@ -50,8 +40,6 @@ function Dock({ openTabs, activeSlug, titles, busySlugs, onCloseTab }: DockProps
   const { jobs, dismiss } = useJobs()
   const navigate = useNavigate()
 
-  // The dock scrolls horizontally when tabs overflow (narrow screens); keep
-  // the tab just activated visible, the way a browser keeps its active tab.
   const dockRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     dockRef.current
@@ -59,24 +47,18 @@ function Dock({ openTabs, activeSlug, titles, busySlugs, onCloseTab }: DockProps
       ?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
   }, [activeSlug])
 
-  // One tab per open tool. Tools that still have tracked jobs are appended
-  // even if their tab is gone (defensive: jobs must never become invisible).
   const jobSlugs = Object.values(jobs)
     .map((j) => parseToolSlug(j.toolPath))
     .filter((s): s is ToolSlug => s !== null && isToolSlug(s))
   const tabs = tabOrder(openTabs, jobSlugs)
 
   const close = (slug: ToolSlug) => {
-    // Closing a tab also sweeps up whatever finished jobs it still shows;
-    // running ones can't reach here (the × is disabled) and would keep the
-    // tab derived.
     for (const [id, j] of Object.entries(jobs)) {
       if (j.toolPath === toolPath(slug) && j.snapshot.state !== 'running') dismiss(id)
     }
     if (slug === activeSlug) {
       const next = nextTabAfterClose(tabs, slug)
-      // replace, not push: the closed tool's path must leave the history
-      // stack, or one Back press would resurrect the tab as a blank copy.
+      // replace, not push: otherwise Back would reopen the closed tab.
       navigate(next ? toolPath(next) : '/', { replace: true })
     }
     onCloseTab(slug)
@@ -91,19 +73,12 @@ function Dock({ openTabs, activeSlug, titles, busySlugs, onCloseTab }: DockProps
         const emoji = title?.split(' ')[0] || TOOL_EMOJI[path] || '⚙️'
         const label = title ? title.split(' ').slice(1).join(' ') : slug.replace(/-/g, ' ')
 
-        // One chip per tracked job, oldest first: an earlier run's outcome
-        // stays visible beside a newer one, and each finished chip carries
-        // its own dismiss × — clearing a job never touches the tab itself.
         const toolJobs = Object.entries(jobs).filter(([, j]) => j.toolPath === path)
-        // Tracked jobs are not the only work worth protecting: a page running
-        // its own async batch (see useToolBusy) is just as unfinished, and
-        // closing its tab would unmount the only thing steering it.
         const hasRunning =
           busySlugs.has(slug) || toolJobs.some(([, j]) => j.snapshot.state === 'running')
 
         return (
-          // A div, not a Link: the buttons live beside the anchor instead of
-          // illegally nested inside it. The link covers emoji + label.
+          // A div, not a Link: buttons cannot nest inside an anchor.
           <div key={slug} className={`dock-tab ${slug === activeSlug ? 'active' : ''}`}>
             <Link
               className="dock-tab-link"
@@ -131,8 +106,7 @@ function Dock({ openTabs, activeSlug, titles, busySlugs, onCloseTab }: DockProps
                       </>
                     )
                   ) : (
-                    // State name spelled out: failed and cancelled share the
-                    // red ✕, and a bare glyph says nothing to a screen reader.
+                    // Spelled out: failed and cancelled share a glyph; screen readers need text.
                     <span className={`state-${snapshot.state}`}>
                       {snapshot.state === 'done' ? '✓ done' : `✕ ${snapshot.state}`}
                     </span>
@@ -185,10 +159,7 @@ export default function Layout() {
     restoreTabs(readSession(TABS_KEY), isToolSlug),
   )
 
-  // Tools reporting page-local work in flight. The setter handed to each host
-  // is cached per slug so it keeps its identity across renders — useToolBusy
-  // depends on it, and a fresh function each render would re-fire that effect
-  // forever.
+  // useCallback is load-bearing: useToolBusy's effect depends on this setter's identity.
   const [busySlugs, setBusySlugs] = useState<Set<string>>(() => new Set())
   const setToolBusy = useCallback((slug: string, busy: boolean) => {
     setBusySlugs((prev) => {
@@ -200,12 +171,7 @@ export default function Layout() {
     })
   }, [])
 
-  // Visiting a tool opens its tab. Adjusted during render (the documented
-  // you-might-not-need-an-effect pattern), and keyed to a path TRANSITION,
-  // not to the current location alone: closing the active tab removes the
-  // slug and navigates away, and a render can land in between with the old
-  // location still showing — matching on the transition keeps that
-  // intermediate render from re-opening the tab that was just closed.
+  // Keyed to the path transition: keying on location alone re-opens a tab just closed.
   const [prevPath, setPrevPath] = useState<string | null>(null)
   if (prevPath !== location.pathname) {
     setPrevPath(location.pathname)
@@ -218,12 +184,8 @@ export default function Layout() {
     writeSession(TABS_KEY, JSON.stringify(openTabs))
   }, [openTabs])
 
-  // Per-route scroll memory: pages share one scroll container, so switching
-  // tabs would otherwise carry one tool's scroll position into the next.
-  // Saved as the user scrolls, NOT at switch time: by the time the layout
-  // effect runs the outgoing page is already hidden and the browser has
-  // clamped scrollTop to the incoming page's height, so reading it there
-  // would overwrite a long page's position with 0.
+  // Scroll memory is saved on scroll, not at switch time: by then the outgoing page is
+  // hidden and scrollTop has been clamped to the incoming page's height.
   const mainRef = useRef<HTMLElement>(null)
   const scrollsRef = useRef(new Map<string, number>())
   useLayoutEffect(() => {
@@ -231,8 +193,6 @@ export default function Layout() {
     if (el) el.scrollTop = scrollsRef.current.get(location.pathname) ?? 0
   }, [location.pathname])
 
-  // Load the tool catalog; on failure keep an error note and retry when the
-  // window regains focus, instead of dead-ending on a permanently empty rail.
   useEffect(() => {
     let cancelled = false
     const load = () =>
@@ -256,8 +216,6 @@ export default function Layout() {
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      // e.target is EventTarget, which has no tagName; the guard exists to skip
-      // the shortcut while the user is typing in a field.
       const target = e.target as HTMLElement | null
       if (e.key === '/' && !/input|textarea|select/i.test(target?.tagName ?? '')) {
         e.preventDefault()
@@ -370,10 +328,7 @@ export default function Layout() {
         {openTabs.map((slug) => {
           const Page = PAGES[slug]
           return (
-            // Per-host ErrorBoundary: Suspense doesn't catch a rejected lazy
-            // chunk or a render error, and without a boundary here one broken
-            // tool would unmount every host — losing all the kept-alive state
-            // these tabs exist to preserve.
+            // Per-host boundary: one broken tool must not unmount every kept-alive host.
             <div key={slug} className="tool-host" hidden={slug !== activeSlug}>
               <ToolActiveContext.Provider value={slug === activeSlug}>
                 <ToolSlugContext.Provider value={slug}>

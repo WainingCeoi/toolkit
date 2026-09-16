@@ -1,12 +1,4 @@
-"""Watermark engine: synthetic watermarks in, measured quality out.
-
-No real watermarked images anywhere: every fixture is generated — a gradient
-background with shapes, tiled with semi-transparent text the way stock-photo
-watermarks are. Generating the watermark yields its ground-truth mask for
-free, so detection recall and inpainting improvement are measured, not
-eyeballed. Everything here runs on the cv2 inpainter; LaMa (torch + a ~200 MB
-checkpoint) lives behind the slow marker in test_watermark_lama.py.
-"""
+"""Watermark engine: synthetic watermarks in, measured quality out."""
 
 from __future__ import annotations
 
@@ -32,13 +24,7 @@ def synthetic_pair(
     bg_range=(40, 160),
     font_size=22,
 ):
-    """A clean image, the same image watermarked, and the true mask.
-
-    The background is a gradient with two filled shapes (so it is not
-    trivially flat), tiled with ``text`` at ``alpha`` — the classic
-    semi-transparent stock-photo watermark. Tile spacing scales with the font
-    so a high-resolution variant is the same watermark, larger.
-    """
+    """(clean, marked, true_mask) for ``text`` tiled at ``alpha`` over a gradient."""
     w, h = size
     lo, hi = bg_range
     xs = np.linspace(lo, hi, w).astype(np.uint8)
@@ -69,17 +55,14 @@ def recall(proposed: np.ndarray, true_mask: np.ndarray) -> float:
     return hits / np.count_nonzero(true_mask)
 
 
-# =========================================================================
-# Detection
-# =========================================================================
+# --- Detection ---
 
 
 def test_default_sensitivity_finds_most_of_a_light_text_watermark():
     _clean, marked, true_mask = synthetic_pair()
     proposed = propose_texture_mask(marked)
     assert recall(proposed, true_mask) >= 0.6
-    # Over-detection is acceptable, blanketing the image is not: a mask that
-    # marks half the picture would make the review step useless.
+    # Over-detection is fine; blanketing half the image is not.
     assert np.count_nonzero(proposed) / proposed.size < 0.5
 
 
@@ -91,11 +74,6 @@ def test_dark_text_is_caught_by_the_black_tophat_half():
 
 
 def test_a_high_resolution_watermark_is_still_found():
-    # Same watermark at phone-camera resolution: the strokes are now far wider
-    # than the structuring element, so at native resolution the top-hat is
-    # completely blind to them (recall 0.00, measured). This passes only
-    # because detection runs at a bounded working size and scales the mask
-    # back up.
     _clean, marked, true_mask = synthetic_pair(size=(7200, 4800), font_size=260)
     proposed = propose_texture_mask(marked)
     assert proposed.shape == true_mask.shape
@@ -104,11 +82,7 @@ def test_a_high_resolution_watermark_is_still_found():
 
 
 def mixed_texture_pair(w=1000, h=700, alpha=42):
-    """The case that broke a global threshold: one photo, two very different
-    textures — smooth sky on top, high-frequency grass below — under one faint
-    grey tiled watermark. The sky needs a low threshold to catch the mark; the
-    grass responds harder than the mark does without containing any.
-    """
+    """One faint tiled mark over smooth sky above and noisy grass below."""
     rng = np.random.default_rng(7)
     img = np.zeros((h, w, 3), np.float32)
     sky_h = int(h * 0.45)
@@ -135,9 +109,6 @@ def mixed_texture_pair(w=1000, h=700, alpha=42):
 
 
 def test_a_faint_mark_is_caught_without_selecting_the_textured_half():
-    # Regression guard for the real complaint: raising sensitivity until a
-    # faint watermark was caught used to select unrelated parts of the photo.
-    # Local contrast normalisation is what separates them.
     _clean, marked, truth = mixed_texture_pair()
     proposed = propose_texture_mask(marked, 90)
     wm = truth > 0
@@ -152,8 +123,6 @@ def test_a_faint_mark_is_caught_without_selecting_the_textured_half():
 
 
 def test_the_top_of_the_slider_is_not_a_cliff():
-    # A linear threshold mapping put everything interesting in the last few
-    # steps, so 100 went from a usable mask to half the image.
     _clean, marked, truth = mixed_texture_pair()
     at_90 = np.count_nonzero(propose_texture_mask(marked, 90)) / truth.size
     at_100 = np.count_nonzero(propose_texture_mask(marked, 100)) / truth.size
@@ -164,8 +133,6 @@ def test_the_top_of_the_slider_is_not_a_cliff():
 
 
 def test_the_pattern_detector_ignores_an_edge_that_texture_flags():
-    # The point of recovering the mark: a hard edge is not part of the repeat,
-    # so pattern must leave it far more intact than the texture detector does.
     _clean, marked, _truth = mixed_texture_pair()
     marked = marked.copy()
     marked[:, 480:486] = 255  # a bright seam, like a tent edge or a railing
@@ -175,8 +142,6 @@ def test_the_pattern_detector_ignores_an_edge_that_texture_flags():
         pytest.skip("no repeat recovered from this fixture")
     texture_mask = propose_mask_detailed(marked, 50, detector="texture")[0]
 
-    # Compare only the seam's own columns, which contain no watermark that the
-    # bright fill did not overwrite.
     seam = slice(480, 486)
     by_pattern = np.count_nonzero(pattern_mask[:, seam]) / pattern_mask[:, seam].size
     by_texture = np.count_nonzero(texture_mask[:, seam]) / texture_mask[:, seam].size
@@ -187,9 +152,6 @@ def test_the_pattern_detector_ignores_an_edge_that_texture_flags():
 
 
 def test_asking_for_pattern_on_an_image_with_no_repeat_declines():
-    # It must NOT fall back to the texture mask. That fallback marked thin
-    # image detail and inpainted it, damaging photos while leaving their
-    # watermark in place.
     flat = np.full((400, 500, 3), 180, np.uint8)
     flat[100:300, 150:350] = 120  # one block, nothing repeating
     mask, used = propose_mask_detailed(flat, 50, detector="pattern")
@@ -198,18 +160,12 @@ def test_asking_for_pattern_on_an_image_with_no_repeat_declines():
 
 
 def test_the_default_detector_is_auto():
-    # Nobody should have to pick a detector: auto leads with pattern and falls
-    # back to texture only on demonstrated repeating evidence.
     from watermark.detect import DEFAULT_DETECTOR
 
     assert DEFAULT_DETECTOR == "auto"
 
 
 def test_a_clean_photo_is_never_given_an_invented_pattern():
-    # This is what makes pattern safe to lead with. Folding alone cannot tell a
-    # watermark from any frame-consistent structure — a clean photo passes
-    # fold significance by locking onto its own sky gradient — so every stamp
-    # is checked against the image, and a clean photo leaves nothing standing.
     clean, _marked, _truth = mixed_texture_pair()
     mask, used = propose_mask_detailed(clean, 50, detector="pattern")
     assert used == "none", "a watermark-free photo must not yield a pattern mask"
@@ -222,8 +178,6 @@ def test_an_unknown_detector_is_rejected():
 
 
 def test_a_flat_region_is_not_amplified_into_noise():
-    # Dividing by a local baseline blows up where the baseline is ~0 (a blown
-    # sky, a product render's white background) unless a floor holds it down.
     flat = np.full((300, 400, 3), 250, np.uint8)
     assert np.count_nonzero(propose_texture_mask(flat, 100)) / flat[:, :, 0].size < 0.02
 
@@ -232,13 +186,10 @@ def test_sensitivity_marks_monotonically_more_pixels():
     _clean, marked, _true = synthetic_pair()
     counts = [np.count_nonzero(propose_texture_mask(marked, s)) for s in (10, 50, 90)]
     assert counts[0] <= counts[1] <= counts[2]
-    # ...and the slider's ends actually differ, or it is decoration.
     assert counts[0] < counts[2]
 
 
-# =========================================================================
-# Inpainting
-# =========================================================================
+# --- Inpainting ---
 
 
 def test_cv2_inpaint_moves_pixels_toward_the_unwatermarked_original():
@@ -251,9 +202,6 @@ def test_cv2_inpaint_moves_pixels_toward_the_unwatermarked_original():
 
 
 def test_inpainting_is_tiled_so_memory_does_not_track_image_size():
-    # LaMa's memory grows with the frame it is handed: 0.8 MP peaked at 12 GB
-    # and 3.1 MP at 25 GB on CPU, so a 36 MP photo took the whole process down.
-    # Tiling is what keeps the frame — and therefore the peak — bounded.
     from watermark.pipeline import CONTEXT_PX, TILE_PX
 
     seen = []
@@ -275,7 +223,6 @@ def test_inpainting_is_tiled_so_memory_does_not_track_image_size():
 
 
 def test_tiles_with_nothing_masked_are_skipped_entirely():
-    # Cost should track the watermark's area, not the photo's.
     calls = []
 
     def counting_inpaint(rgb, mask):
@@ -290,8 +237,6 @@ def test_tiles_with_nothing_masked_are_skipped_entirely():
 
 
 def test_only_masked_pixels_are_ever_rewritten():
-    # LaMa reconstructs the whole frame it is handed; compositing keeps
-    # everything the user did not mark bit-identical to the upload.
     rgb = np.dstack([np.tile(np.arange(200, dtype=np.uint8), (150, 1))] * 3)
     mask = np.zeros((150, 200), np.uint8)
     mask[40:60, 40:60] = 255
@@ -300,8 +245,8 @@ def test_only_masked_pixels_are_ever_rewritten():
         return np.zeros_like(_rgb)  # a "model" that rewrites everything
 
     out = remove_watermark(rgb, mask, destructive, dilate_px=0)
-    assert (out[mask > 0] == 0).all()  # masked pixels came from the model
-    assert np.array_equal(out[mask == 0], rgb[mask == 0])  # the rest untouched
+    assert (out[mask > 0] == 0).all()
+    assert np.array_equal(out[mask == 0], rgb[mask == 0])
 
 
 def test_an_empty_mask_returns_the_image_unchanged():
@@ -315,9 +260,7 @@ def test_get_inpainter_rejects_unknown_names():
         get_inpainter("photoshop")
 
 
-# =========================================================================
-# Image IO
-# =========================================================================
+# --- Image IO ---
 
 
 def test_mask_roundtrips_through_png():
@@ -334,9 +277,7 @@ def test_a_mask_of_the_wrong_size_is_refused_not_resized():
 
 
 def test_exif_rotation_is_normalized_at_decode():
-    # A 60×30 JPEG tagged orientation 6 (rotate 90 CW to display) must decode
-    # to upright 30×60 pixels — cv2 would ignore the tag and the browser would
-    # honour it, and the mask would land on a rotated copy of the image.
+    # 0x0112 is Orientation; 6 means rotate 90 CW to display.
     import io
 
     image = Image.new("RGB", (60, 30), "white")
@@ -347,9 +288,7 @@ def test_exif_rotation_is_normalized_at_decode():
     assert imgio.load_rgb(buffer.getvalue()).shape == (60, 30, 3)
 
 
-# =========================================================================
-# CLI
-# =========================================================================
+# --- CLI ---
 
 
 def write_marked_folder(folder, count=2):
@@ -372,8 +311,6 @@ def test_cli_cleans_a_folder_with_cv2(tmp_path, capsys):
 
 
 def test_two_inputs_with_the_same_stem_both_survive(tmp_path, capsys):
-    # Every output is a PNG, so photo.jpg and photo.png both want photo.png —
-    # one would silently overwrite the other and still be counted as cleaned.
     src = tmp_path / "in"
     src.mkdir()
     _clean, marked, _true = synthetic_pair(size=(120, 90))
@@ -386,8 +323,6 @@ def test_two_inputs_with_the_same_stem_both_survive(tmp_path, capsys):
 
 
 def test_cli_refuses_to_write_into_its_own_input_folder(tmp_path, capsys):
-    # Writing into the input folder would overwrite images the run has not
-    # read yet, so the later ones would be cleaned twice.
     src = write_marked_folder(tmp_path / "in")
     args = ["clean", str(src), str(src), "--inpainter", "cv2", "--detector", "texture"]
     code = main(args)
@@ -421,7 +356,6 @@ def test_cli_refuses_lama_without_torch(tmp_path, capsys, monkeypatch):
 
 
 def test_cli_module_entrypoint_is_wired(tmp_path):
-    # `python -m watermark` must work headless, straight from the venv.
     src = write_marked_folder(tmp_path / "in", count=1)
     result = subprocess.run(
         [
@@ -446,8 +380,6 @@ def test_cli_module_entrypoint_is_wired(tmp_path):
 def test_the_cli_reports_images_it_left_alone_rather_than_copying_them(
     tmp_path, capsys
 ):
-    # The default detector declines when it finds no repeat. Writing those
-    # images out unchanged would pass a no-op off as a cleaned result.
     src = write_marked_folder(tmp_path / "in", count=2)
     out = tmp_path / "out"
     assert main(["clean", str(src), str(out), "--inpainter", "cv2"]) == 0
@@ -457,7 +389,6 @@ def test_the_cli_reports_images_it_left_alone_rather_than_copying_them(
 
 
 def test_importing_the_engine_never_imports_torch():
-    # The lazy-ML contract: torch loads on first LaMa *use*, not on import.
     code = (
         "import sys; import watermark.pipeline, watermark.inpaint, "
         "watermark.detect, watermark.__main__; "

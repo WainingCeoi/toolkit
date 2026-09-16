@@ -1,10 +1,4 @@
-"""The AES-256-CBC pair behind the login envelope, held to the NIST vectors.
-
-The pure-Python fallback is what an Intel Mac runs (no `cryptography` wheel
-there -- see aescbc.py), so it is tested directly and unconditionally, even on
-machines where the public pair delegates to `cryptography`: the platform that
-NEEDS the fallback is exactly the one this suite is least often run on.
-"""
+"""The AES-256-CBC pair and its pure-Python fallback, held to the NIST vectors."""
 
 from __future__ import annotations
 
@@ -22,8 +16,7 @@ from toolkit_engine.aescbc import (
     encrypt_cbc,
 )
 
-# NIST SP 800-38A appendix F.2.5/F.2.6 (CBC-AES256), the standard's own
-# worked example: one key, one IV, four chained blocks.
+# NIST SP 800-38A appendix F.2.5/F.2.6 (CBC-AES256).
 KEY = bytes.fromhex("603deb1015ca71be2b73aef0857d77811f352c073b6108d72d9810a30914dff4")
 IV = bytes.fromhex("000102030405060708090a0b0c0d0e0f")
 PLAINTEXT = bytes.fromhex(
@@ -49,9 +42,7 @@ def test_pure_decrypt_matches_the_nist_cbc_vectors():
 
 
 def test_pure_single_block_matches_fips_197():
-    # FIPS-197 appendix C.3, the bare AES-256 block example. A zero IV makes
-    # CBC of one block the bare cipher, so the same pair pins the block core
-    # independently of the chaining.
+    # FIPS-197 appendix C.3; a zero IV makes one CBC block the bare cipher.
     key = bytes.fromhex(
         "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
     )
@@ -63,9 +54,6 @@ def test_pure_single_block_matches_fips_197():
 
 
 def test_pure_and_cryptography_agree_both_ways():
-    # Byte-equality against the audited implementation, wherever it is
-    # installed. On an Intel Mac the public pair IS the pure pair and this
-    # would prove nothing, so it skips; the vector tests carry the proof there.
     pytest.importorskip("cryptography")
     for blocks in (1, 2, 7):
         key, iv, data = os.urandom(32), os.urandom(16), os.urandom(16 * blocks)
@@ -88,8 +76,6 @@ def test_pure_pair_refuses_the_sizes_the_envelope_never_sends():
 
 
 def test_login_envelope_survives_on_the_pure_pair(monkeypatch):
-    # What an Intel Mac actually runs: the whole envelope -- PBKDF2, PKCS7,
-    # HMAC and all -- with the pure pair underneath instead of cryptography.
     from toolkit_engine import bitcomet
 
     monkeypatch.setattr(bitcomet, "encrypt_cbc", _encrypt_cbc_py)
@@ -103,11 +89,7 @@ def test_login_envelope_survives_on_the_pure_pair(monkeypatch):
 
 
 def test_the_import_fallback_actually_wires_in_the_pure_pair():
-    # The monkeypatch test above proves the pure pair CAN carry the envelope;
-    # this one proves the `except ImportError` in aescbc.py actually selects
-    # it. A subprocess, because the wiring under test runs once, at first
-    # import -- and in this process cryptography is already imported and
-    # cached, so no in-process trick can make that import fail honestly.
+    # A subprocess: the fallback wiring runs once, at first import.
     script = textwrap.dedent(
         """
         import importlib.abc

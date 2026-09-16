@@ -1,6 +1,4 @@
-"""Doc to Markdown engine: convert PDFs, Office docs, and images to Markdown
-with MinerU (subprocess). Lifted from the old Doc to Markdown page; the page's
-button flow is re-expressed as convert_batch()."""
+"""Doc to Markdown engine: MinerU subprocess conversion, batched into a zip."""
 
 import io
 import shutil
@@ -10,24 +8,18 @@ import tempfile
 import zipfile
 from pathlib import Path
 
-# Project root — needed as the working directory when we have to fall back to
-# `uv run mineru` (uv resolves the project venv relative to its cwd).
+# cwd for the `uv run mineru` fallback: uv resolves the venv relative to cwd.
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 # Files MinerU can parse (mirrors its CLI's accepted inputs).
 ACCEPTED_TYPES = ["pdf", "png", "jpg", "jpeg", "docx", "pptx", "xlsx"]
 
-# Per-file ceiling. Generous because the very first run downloads models and a
-# long PDF can take minutes to parse on CPU/MPS.
+# Per-file ceiling; the first run downloads models and CPU parsing takes minutes.
 PER_FILE_TIMEOUT = 1800
 
 
 def find_mineru():
-    """Return the MinerU command prefix as a list, or None if unavailable.
-
-    Prefers the console script sitting next to the running interpreter (the
-    project venv), then a `mineru` on PATH, then `uv run mineru` as a fallback.
-    """
+    """Return the MinerU command prefix as a list, or None if unavailable."""
     venv_bin = Path(sys.executable).with_name("mineru")
     if venv_bin.exists():
         return [str(venv_bin)]
@@ -51,11 +43,7 @@ def build_mineru_cmd(
     formula=True,
     table=True,
 ):
-    """Assemble the `mineru` argv for converting one file to Markdown.
-
-    Only flags the chosen backend actually honours are appended: method/lang
-    and the formula/table toggles are pipeline-only; effort is hybrid-only.
-    """
+    """Assemble the `mineru` argv for converting one file to Markdown."""
     cmd = [
         *prefix,
         "-p",
@@ -82,22 +70,14 @@ def build_mineru_cmd(
 
 
 def find_markdown(out_dir):
-    """Return the first Markdown file MinerU produced under out_dir, or None.
-
-    MinerU writes to {out_dir}/{stem}/{method}/{stem}.md, but the stem folder can
-    be truncated for long names and the method folder varies by backend
-    (auto/ocr/vlm/hybrid_*) — so we just search the (per-file isolated) tree.
-    """
+    """Return the first Markdown file MinerU produced under out_dir, or None."""
+    # Not a direct path: MinerU truncates long stems and the method folder varies.
     md_files = sorted(Path(out_dir).rglob("*.md"))
     return md_files[0] if md_files else None
 
 
 def zip_tree(out_dir, archive):
-    """Add every file under out_dir to the zip, preserving its relative path.
-
-    out_dir holds exactly one file's output (its named stem folder), so the
-    paths land under that folder in the archive.
-    """
+    """Add every file under out_dir to the zip, preserving its relative path."""
     out_dir = Path(out_dir)
     for path in sorted(out_dir.rglob("*")):
         if path.is_file():
@@ -105,16 +85,7 @@ def zip_tree(out_dir, archive):
 
 
 def convert_batch(named_files, options, on_progress, mineru_cmd):
-    """Convert a batch of (name, bytes) uploads to a zip of Markdown trees.
-
-    The old page's button flow: each file gets an isolated in_{idx}/out_{idx}
-    pair (identical names and MinerU's whole-directory scanning can't collide),
-    one MinerU subprocess per file with the per-file timeout, and every
-    successful output tree is bundled into one in-memory zip. `options` carries
-    backend/method/lang/effort/formula/table. Returns (zip_bytes, done, failed)
-    — failed entries are (idx, name, error); zip_bytes is None when nothing
-    converted.
-    """
+    """Convert (name, bytes) uploads to a zip of Markdown trees."""
     done, failed, zip_bytes = [], [], None
     total = len(named_files)
     with tempfile.TemporaryDirectory() as tmp:
@@ -123,23 +94,16 @@ def convert_batch(named_files, options, on_progress, mineru_cmd):
         archive = zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED)
 
         for idx, (name, content) in enumerate(named_files):
-            # Sanitize the client-supplied filename to a bare basename before
-            # ANY path use — a name like "../../x" or an absolute path would
-            # otherwise escape the temp dir on the join below. Path().name
-            # already strips every directory/traversal segment (and reduces
-            # "." / ".." to ""), so an empty result is the only unsafe case;
-            # a legitimate dotfile like ".hidden.pdf" is kept.
+            # Security: basename only, or "../x" would escape the temp dir below.
             safe = Path(name or "").name
             if not safe:
                 failed.append((idx, name, "❌ Invalid filename."))
                 continue
-            # Show which file is in flight before its (long) MinerU run.
             on_progress(
                 int(idx / total * 100),
                 f"Converting {idx + 1}/{total} — {name}…",
             )
-            # Isolate each file's input and output so identical names
-            # and MinerU's whole-directory scanning can't collide.
+            # Per-file dirs: MinerU scans the whole input directory.
             src = tmp / f"in_{idx}" / safe
             out_dir = tmp / f"out_{idx}"
             src.parent.mkdir(parents=True, exist_ok=True)

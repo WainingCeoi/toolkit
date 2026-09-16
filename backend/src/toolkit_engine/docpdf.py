@@ -1,6 +1,4 @@
-"""Doc to PDF engine: accept tracked changes, strip comments, render to PDF
-with LibreOffice. Lifted from the old Doc to PDF page; the page's button flow
-is re-expressed as convert_batch()."""
+"""Doc to PDF engine: flatten .docx revisions and comments, render via LibreOffice."""
 
 import io
 import shutil
@@ -23,8 +21,7 @@ def _w(tag):
 
 # Tracked insertions / moves-in: accept by unwrapping (keep the inner content).
 _UNWRAP = {_w("ins"), _w("moveTo")}
-# Accept by dropping the element and its content: deletions, moves-out, comment
-# markers, and format-change records (which would otherwise leave revision marks).
+# Dropped with their content; the *Change records would otherwise leave revision marks.
 _DROP = {
     _w("del"),
     _w("moveFrom"),
@@ -55,12 +52,7 @@ def find_soffice():
 
 
 def _flatten_revisions(root):
-    """Accept all tracked changes in a parsed Word XML part, in place.
-
-    Insertions/moves-in are unwrapped (content kept); deletions, moves-out,
-    comment markers, and format-change records are removed outright — so nothing
-    is left for a renderer to mark up.
-    """
+    """Accept all tracked changes in a parsed Word XML part, in place."""
     # Unwrap insertions repeatedly so nested ins/moveTo are fully resolved.
     while True:
         targets = [el for el in root.iter() if el.tag in _UNWRAP]
@@ -74,7 +66,6 @@ def _flatten_revisions(root):
             for child in reversed(list(el)):
                 parent.insert(idx, child)
             parent.remove(el)
-    # Drop deletions, comment markers, and format-change records.
     for el in [el for el in root.iter() if el.tag in _DROP]:
         parent = el.getparent()
         if parent is not None:
@@ -107,15 +98,7 @@ def _transform_part(name, data):
 
 
 def clean_docx(src_path, dst_path):
-    """Accept every tracked change and strip comment markers via direct XML.
-
-    Operates on the .docx parts (document body, headers/footers, notes) and
-    turns off change recording in settings.xml, so the result carries no
-    revision markup and renders to PDF without any marks or comments. Members
-    are streamed one at a time; non-XML parts (images, fonts) are copied with
-    their original compression so already-compressed media isn't inflated and
-    re-deflated.
-    """
+    """Accept every tracked change and strip comment markers via direct XML."""
     src_path, dst_path = Path(src_path), Path(dst_path)
     with (
         zipfile.ZipFile(src_path) as zin,
@@ -127,21 +110,13 @@ def clean_docx(src_path, dst_path):
             if transformed is not None:
                 zout.writestr(item.filename, transformed)
             else:
-                # Preserve the member's original compress_type (STORED media
-                # stays STORED — no wasted recompression).
+                # Passing the ZipInfo keeps the original compress_type.
                 zout.writestr(item, data)
     return dst_path
 
 
 def batch_to_pdf(soffice, docx_paths, out_dir):
-    """Render many .docx to PDF in a single LibreOffice run (one cold start).
-
-    LibreOffice starts once and converts every file in that process, which is
-    much faster than one invocation per file. Each PDF lands in out_dir named
-    after its input stem. Returns the completed subprocess so the caller can
-    surface a failure reason; the caller decides per-file success by checking
-    which expected PDFs were actually produced.
-    """
+    """Render many .docx to PDF in a single LibreOffice run (one cold start)."""
     docx_paths = [str(p) for p in docx_paths]
     return subprocess.run(
         [
@@ -161,15 +136,7 @@ def batch_to_pdf(soffice, docx_paths, out_dir):
 
 
 def convert_batch(named_files, on_progress, soffice):
-    """Clean and convert a batch of (name, bytes) uploads to a zip of PDFs.
-
-    The old page's button flow: clean each upload into a temp dir (per-file
-    failure capture), render everything in one batched LibreOffice run, then
-    bundle the produced PDFs into an in-memory zip. Cleaning spans the first
-    half of the progress range; the batched conversion sits at 50; bundling
-    fills the second half. Returns (zip_bytes, done, failed) — failed entries
-    are (idx, name, error); zip_bytes is None when nothing converted.
-    """
+    """Clean and convert (name, bytes) uploads to a zip of PDFs."""
     done, failed, zip_bytes = [], [], None
     total = len(named_files)
     with tempfile.TemporaryDirectory() as tmp:
@@ -179,9 +146,6 @@ def convert_batch(named_files, on_progress, soffice):
         clean_dir.mkdir()
         out_dir.mkdir()
 
-        # Clean each upload (fast, in-memory XML) into one temp dir.
-        # Cleaning spans the first half of the bar; the conversion below
-        # is one batched LibreOffice run with no per-file progress.
         jobs = []  # (cleaned_path, arcname, original_name)
         for idx, (name, content) in enumerate(named_files):
             on_progress(
@@ -198,12 +162,9 @@ def convert_batch(named_files, on_progress, soffice):
             except Exception as e:
                 failed.append((idx, name, str(e)))
 
-        # Convert every cleaned file in a single LibreOffice run, then
-        # bundle the produced PDFs into an in-memory zip.
         if jobs:
             on_progress(50, f"Converting {len(jobs)} file(s) with LibreOffice…")
-            # A LibreOffice timeout must not fail the whole job — bundle whatever
-            # PDFs it produced before dying and mark the rest failed.
+            # A LibreOffice timeout keeps whatever PDFs it produced; the rest fail.
             try:
                 result = batch_to_pdf(soffice, [job[0] for job in jobs], out_dir)
                 stderr = result.stderr.strip()
@@ -221,8 +182,7 @@ def convert_batch(named_files, on_progress, soffice):
                         archive.write(produced, arcname)
                         done.append(arcname)
                     else:
-                        # cleaned stem is "{idx}_{stem}" — recover the input
-                        # index so per-item state is keyed correctly.
+                        # cleaned stem is "{idx}_{stem}"; recover the input index.
                         idx = int(cleaned.stem.split("_", 1)[0])
                         failed.append((idx, name, stderr or "no PDF produced"))
             if done:

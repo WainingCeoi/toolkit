@@ -1,13 +1,7 @@
-// Optimized-IP Subscription Generator — paste nodes + optimized IPs, get
-// Shadowrocket / Clash / Surge subscription links, files, and a QR code.
-// The subs API is synchronous (no job), so this page manages its own
-// request state instead of useToolJob.
-
 import { useCallback, useEffect, useState } from 'react'
 import { api, saveBlob } from '../api'
 import Button from '../components/Button'
 import CodeBox from '../components/CodeBox'
-// Aliased: the default export below is also called Subscription.
 import type { Subscription as SubscriptionData, SubsHistoryItem } from '../types/api'
 
 const PREVIEW_COLS = ['name', 'type', 'server', 'port', 'host', 'sni', 'network', 'tls']
@@ -23,12 +17,9 @@ export default function Subscription() {
   const [result, setResult] = useState<SubscriptionData | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
-  // per-target download failure (e.g. Surge can't express vless nodes) — the
-  // old page showed the render reason on a disabled button; here it appears
-  // inline under the download row.
   const [dlError, setDlError] = useState<string | null>(null)
 
-  // history (loads independently of any generate)
+  // history
   const [history, setHistory] = useState<SubsHistoryItem[]>([])
   const [historyError, setHistoryError] = useState<string | null>(null)
 
@@ -41,9 +32,7 @@ export default function Subscription() {
     }
   }, [])
 
-  // Initial load. Inlined rather than calling refreshHistory() so state is only
-  // ever set from a promise callback, and so a response arriving after the page
-  // is closed is dropped instead of landing on an unmounted component.
+  // Inlined rather than refreshHistory() so a response arriving after unmount is dropped.
   useEffect(() => {
     let cancelled = false
     api
@@ -82,8 +71,6 @@ export default function Subscription() {
   }
 
   async function download(target: string) {
-    // The download row only renders inside `result &&`, so this cannot fire
-    // without one.
     if (!result) return
     setDlError(null)
     try {
@@ -100,7 +87,7 @@ export default function Subscription() {
     try {
       setResult(await api.subsGet(id))
     } catch (err) {
-      setError((err as Error).message) // "That subscription no longer exists."
+      setError((err as Error).message)
       refreshHistory()
     }
   }

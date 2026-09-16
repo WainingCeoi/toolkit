@@ -1,12 +1,4 @@
-"""Watermark Remover: propose masks, take the human-corrected ones, inpaint.
-
-Thin over the `watermark` engine package. The flow is upload → auto-mask (one
-PNG per image, refetched as the sensitivity slider moves) → run with the
-human-approved masks (base64 PNGs, white = remove). Results go through the
-shared artifact store, progress through the shared job registry. The lama
-inpainter is probed with find_spec per request, so importing this module —
-and therefore creating the app — never touches torch.
-"""
+"""Watermark Remover: propose masks, take the human-corrected ones, inpaint."""
 
 from __future__ import annotations
 
@@ -53,8 +45,7 @@ from ..uploads import read_uploads
 
 router = APIRouter(prefix="/watermark", tags=["watermark"])
 
-# The review step renders every image on its own canvas editor; past ~20 the
-# page (and the person correcting masks) is the bottleneck, not the backend.
+# Past ~20 the canvas review page is the bottleneck, not the backend.
 MAX_IMAGES = 20
 
 
@@ -78,16 +69,14 @@ class WatermarkHealthOut(BaseModel):
 class WatermarkRunIn(BaseModel):
     batch_id: str
     inpainter: str = "lama"
-    # image id -> base64 PNG of the human-approved mask (white = remove).
-    # Only listed images are processed, so deselecting one is just omitting it.
+    # image id -> base64 PNG mask (white = remove); unlisted images are skipped.
     masks: dict[str, str]
     dilate_px: int = DEFAULT_DILATE_PX
 
 
 @router.get("/health", response_model=WatermarkHealthOut)
 def health() -> WatermarkHealthOut:
-    # resolve_device imports torch to probe for an accelerator, which is why
-    # this is a request and not module state — creating the app stays clean.
+    # resolve_device imports torch; never call it at module import time.
     return WatermarkHealthOut(lama=lama_available(), device=resolve_device())
 
 
@@ -110,8 +99,7 @@ def create_batch(
         )
     names = []
     for upload in files:
-        # Basenames only: the name comes back as a zip entry and a download
-        # filename, so a "../" smuggled in here must die at the door.
+        # Basenames only: the name becomes a zip entry, so "../" must die here.
         safe = Path(upload.filename or "").name
         if not safe:
             raise HTTPException(status_code=400, detail="❌ Invalid filename.")
@@ -163,17 +151,10 @@ def working_copy(
 
 
 def _collect_marks(paths: list[Path]) -> list:
-    """Marks the whole batch can share, read one image at a time.
-
-    Collected at the default sensitivity whatever the slider says: sensitivity
-    decides how wide a footprint to stamp, while this decides whether a mark is
-    real at all, and recollecting the batch on every slider nudge would cost a
-    full re-read of it for an answer that does not change.
-    """
+    """Marks the whole batch shares; independent of the sensitivity slider."""
 
     def each():
-        # A generator, so only one image is ever decoded at a time — a batch of
-        # 20 phone photos would be gigabytes held at once otherwise.
+        # A generator: only one decoded image is held at a time.
         for path in paths:
             try:
                 yield imgio.load_rgb(path.read_bytes())
@@ -191,19 +172,7 @@ def auto_mask(
     sensitivity: Annotated[int, Query(ge=0, le=100)] = DEFAULT_SENSITIVITY,
     detector: str = DEFAULT_DETECTOR,
 ) -> Response:
-    """The proposed mask as a PNG (white = watermark), recomputed per call.
-
-    ``X-Watermark-Detector`` names the detector that actually ran — under
-    ``auto`` that is ``pattern``, or ``stacked`` for a mark stamped once per
-    image that the whole batch proved together (see watermark/stacked.py), or
-    ``texture`` for an image that demonstrably carries a repeating mark no
-    pattern could be recovered for, or ``none``.
-    An empty mask means the image will be left alone, either because nothing
-    was found or because what was found could not be isolated into a mask worth
-    using; the run says which. Any mask returned here is one the run would
-    actually apply — the fallback is checked against the destruction guard
-    before it is offered, not after.
-    """
+    """The proposed mask as a PNG (white = watermark), recomputed per call."""
     if detector not in DETECTORS:
         raise HTTPException(
             status_code=400,
@@ -268,8 +237,7 @@ def run(req: WatermarkRunIn, state: StateDep, watermarks: WatermarksDep):
             status_code=400,
             detail=f"❌ Unknown image id(s): {', '.join(unknown)}.",
         )
-    # Decode every mask up front so a malformed payload is a 400 now, not a
-    # failed job later.
+    # Decode up front so a malformed mask is a 400, not a failed job.
     masks: dict[str, bytes] = {}
     for image_id, encoded in req.masks.items():
         try:
@@ -281,8 +249,7 @@ def run(req: WatermarkRunIn, state: StateDep, watermarks: WatermarksDep):
             ) from e
 
     selected = [entry for entry in batch["images"] if entry["id"] in masks]
-    # Output names are the input stems as .png; two stems can collide even
-    # after upload dedup ("a.png" + "a.jpg"), so dedupe again on the way out.
+    # Stems can collide after upload dedup ("a.png" + "a.jpg"); dedupe again.
     out_names = dedupe_filenames(
         [f"{Path(entry['name']).stem}.png" for entry in selected]
     )
@@ -297,34 +264,18 @@ def run(req: WatermarkRunIn, state: StateDep, watermarks: WatermarksDep):
         protected: list[str] = []
         cleaned: list[tuple[str, Path]] = []
         zip_id: str | None = None
-        # Cleaned PNGs are spooled here rather than accumulated in memory. At
-        # this router's limit -- 20 images, up to 36 MP each -- holding every
-        # output as bytes AND the zip built from them is hundreds of MB, and it
-        # is held concurrently with LaMa's inpainting peak, which is measured in
-        # pipeline.py at 12-25 GB. The zip is streamed member by member from
-        # these files for the same reason. Removed in the finally below.
+        # Spooled to disk: outputs held in RAM would stack on LaMa's inpainting peak.
         spool = Path(tempfile.mkdtemp(prefix="toolkit_watermark_"))
 
         def bundle(dest: Path) -> None:
-            """Write the zip of everything cleaned so far, rebuilt from scratch.
-
-            STORED, not DEFLATED: the members are PNGs, already compressed, so
-            deflate bought nothing and made each rebuild cost real time.
-            """
+            """Rebuild the zip of everything cleaned so far."""
+            # ZIP_STORED: the members are PNGs, already compressed.
             with zipfile.ZipFile(dest, "w", zipfile.ZIP_STORED) as archive:
                 for name, png in cleaned:
                     archive.write(png, arcname=name)
 
         def publish() -> dict:
-            """Hand back everything finished so far.
-
-            Called after every image, not just at the end: a batch can die on
-            its last file (a huge photo, an out-of-memory kill) and the images
-            already cleaned must not die with it. The zip is republished under
-            ONE artifact id every time an image lands, so whatever the run got
-            to is always a click away — there are no per-file downloads to
-            fall back on, so the zip itself has to be the harvest.
-            """
+            """Republish after every image, so a crash keeps what is already done."""
             nonlocal zip_id
             if cleaned:
                 staging = spool / "cleaned_images.zip"
@@ -348,8 +299,7 @@ def run(req: WatermarkRunIn, state: StateDep, watermarks: WatermarksDep):
             job.set_result(partial)
             return partial
 
-        # Pinned for the whole run: images are read lazily, one per iteration,
-        # so an unpinned batch could be swept between two of its own images.
+        # Pin for the whole run, or the batch could be swept between two images.
         try:
             with watermarks.pin(req.batch_id):
                 for idx, (entry, out_name) in enumerate(
@@ -365,13 +315,7 @@ def run(req: WatermarkRunIn, state: StateDep, watermarks: WatermarksDep):
                         rgb = imgio.load_rgb(entry["path"].read_bytes())
                         mask = imgio.load_mask(masks[entry["id"]], rgb.shape[:2])
                         if not mask.any():
-                            # Nothing to remove. Writing the image back unchanged
-                            # would present a no-op as a cleaned result, so say
-                            # plainly that it was left alone -- and say WHICH kind
-                            # of left alone, exactly as the folder pipeline does.
-                            # An empty proposal covers two opposite cases: no
-                            # watermark was found, or one is demonstrably there and
-                            # no route could isolate a mask worth using.
+                            # Not written back: an unchanged copy is not a result.
                             if repeating_evidence(rgb):
                                 protected.append(entry["name"])
                             else:
@@ -380,9 +324,6 @@ def run(req: WatermarkRunIn, state: StateDep, watermarks: WatermarksDep):
                             publish()
                             continue
                         if would_destroy_content(rgb, mask, req.dilate_px):
-                            # The mark IS there, but the picture under it would not
-                            # survive the fill — a document whose text the mark sits
-                            # on. Leaving it alone is the answer, said out loud.
                             protected.append(entry["name"])
                             job.update_item(idx, pct=100, state="done")
                             publish()
@@ -403,13 +344,8 @@ def run(req: WatermarkRunIn, state: StateDep, watermarks: WatermarksDep):
                     job.update_item(idx, pct=100, state="done")
                     publish()
 
-            # batch_id rides along so the results view survives a page unmount:
-            # the snapshot outlives this page's local state, and the "before"
-            # image is fetched from the batch.
             return publish()
         finally:
-            # The zip has been moved into the artifact store by now; what is
-            # left here is the spooled PNGs it was built from.
             shutil.rmtree(spool, ignore_errors=True)
 
     job = state.jobs.submit("watermark", [entry["name"] for entry in selected], worker)

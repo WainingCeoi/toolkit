@@ -1,7 +1,4 @@
-// Single HTTP wrapper for the whole app. Components call `api.*` — never
-// `fetch` directly — so the base path, error handling, and streaming live in
-// one place. Same-origin '/api' works in dev (Vite proxy) and in
-// single-origin production (served from the same server).
+// The app's only HTTP layer: components call api.*, never fetch.
 
 import type {
   Category,
@@ -41,12 +38,7 @@ import type {
 
 const BASE = '/api'
 
-// A non-2xx answer, with the status kept so callers can tell a failure that
-// clears up on its own (503: the engine behind the API did not answer) from
-// one that would repeat identically (400/404). A network-level failure never
-// constructs this — fetch rejects with its own TypeError before a Response
-// exists — so `instanceof ApiError` also separates "the server said no" from
-// "the server never spoke".
+// Only a non-2xx response constructs this; a network failure rejects with fetch's TypeError.
 export class ApiError extends Error {
   readonly status: number
 
@@ -61,13 +53,7 @@ interface RequestOptions {
   body?: unknown
 }
 
-/**
- * The type parameter is an ASSERTION about what the server sends, not a
- * runtime check — nothing here validates the payload. It is the one place in
- * the app where types are taken on trust; every caller below names the type it
- * expects so at least that trust is stated in one readable list rather than
- * spread across the pages. See the drift note in types/api.ts.
- */
+// T is an assertion about the wire shape; nothing here validates the payload.
 async function request<T>(path: string, { method = 'GET', body }: RequestOptions = {}): Promise<T> {
   const headers: Record<string, string> = {}
   const opts: RequestInit = { method, headers }
@@ -91,7 +77,6 @@ async function request<T>(path: string, { method = 'GET', body }: RequestOptions
   }
   if (res.status === 204) return null as T
   const type = res.headers.get('content-type') || ''
-  // Non-JSON falls through as the raw Response, unchanged from the JS version.
   return type.includes('application/json') ? ((await res.json()) as T) : (res as T)
 }
 
@@ -113,27 +98,20 @@ async function blobError(res: Response): Promise<Error> {
   return new Error(detail)
 }
 
-// Binary POST (Image to PDF returns the file directly): resolves to a Blob +
-// suggested filename from Content-Disposition.
 async function requestBlob(path: string, formData: FormData): Promise<DownloadedBlob> {
   const res = await fetch(`${BASE}${path}`, { method: 'POST', body: formData })
   if (!res.ok) throw await blobError(res)
   return { blob: await res.blob(), filename: filenameFromDisposition(res, 'download') }
 }
 
-// Binary GET (subscription file downloads): same shape, but a failed render
-// (e.g. Surge can't express vless nodes) surfaces its reason as an Error the
-// page can show inline instead of a broken browser download.
 async function fetchBlob(path: string, fallbackName: string): Promise<DownloadedBlob> {
   const res = await fetch(`${BASE}${path}`)
   if (!res.ok) throw await blobError(res)
   return { blob: await res.blob(), filename: filenameFromDisposition(res, fallbackName) }
 }
 
-// Save a Blob through the browser's download flow. The anchor must be in the
-// document for the click to fire in some browsers, and the object URL is
-// revoked only after the click has been processed (revoking it synchronously
-// can cancel the download).
+// Browser quirks: the anchor must be in the document for click() to work, and revoking
+// the object URL synchronously can cancel the download.
 export function saveBlob(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
@@ -152,24 +130,11 @@ const TERMINAL_STATES = new Set(['done', 'failed', 'cancelled'])
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
 const POLL_INTERVAL_MS = 500
-// Roughly a minute of unreachable server before giving up, given the backoff
-// below. Long enough to ride out a Wi-Fi handover, short enough that a truly
-// dead backend still resolves the job instead of polling forever.
+// About a minute of unreachable server, given the backoff below.
 const MAX_POLL_FAILURES = 8
 const MAX_POLL_BACKOFF_MS = 15000
 
-/**
- * Fallback when the SSE stream drops mid-job: poll until the job reaches a
- * terminal state.
- *
- * There is deliberately NO overall time budget. Jobs here legitimately run for
- * half an hour (a MinerU conversion), and a poller that gives up first would
- * report a still-running job as failed — re-enabling Start, inviting a
- * duplicate run, and losing the artifact id, which only ever travels inside
- * the snapshot. The only fatal answer is 404: the registry keeps recent jobs,
- * so a missing one is genuinely gone rather than slow. Everything else is
- * treated as transient and retried with backoff.
- */
+// SSE fallback. No overall time budget (jobs run for up to half an hour); only a 404 is fatal.
 async function pollJob<R>(
   jobId: string,
   onSnapshot: (snapshot: Job<R>) => void,
@@ -180,8 +145,6 @@ async function pollJob<R>(
     try {
       const snap = await request<Job<R>>(`/jobs/${jobId}`)
       failures = 0
-      // Deduped like the SSE side (routers/jobs.py only pushes on change), so
-      // a quiet job doesn't churn the jobs context twice a second for an hour.
       const payload = JSON.stringify(snap)
       if (payload !== last) {
         last = payload
@@ -198,10 +161,7 @@ async function pollJob<R>(
   }
 }
 
-// Follow a job's SSE progress stream. Calls onSnapshot(snapshot) for every
-// progress frame and resolves with the final snapshot on the terminal frame. A
-// transient disconnect is NOT fatal — it falls back to polling so a running
-// job is never stranded as "failed" (matters most under LAN hosting).
+// Follows a job's SSE stream, falling back to polling on disconnect.
 export function followJob<R>(
   jobId: string,
   onSnapshot: (snapshot: Job<R>) => void,
@@ -250,8 +210,6 @@ export const api = {
 
   // jobs
   job: (id: string) => request<Job<unknown>>(`/jobs/${id}`),
-  // `cancelling: false` means the job had already finished — a refused cancel,
-  // not an error, so callers can say so instead of leaving the button dead.
   cancelJob: (id: string) => request<JobCancel>(`/jobs/${id}/cancel`, { method: 'POST' }),
 
   // magnet scraper
@@ -287,7 +245,7 @@ export const api = {
   purgeDelete: (scanId: string) =>
     request<JobStarted>('/purge/delete', { method: 'POST', body: { scan_id: scanId } }),
 
-  // photos library filter — both are jobs; the dry run writes nothing
+  // photos library filter
   photofilterDryRun: (payload: PhotoFilterPayload) =>
     request<JobStarted>('/photofilter/dry-run', { method: 'POST', body: payload }),
   photofilterRun: (payload: PhotoFilterPayload) =>
@@ -310,7 +268,7 @@ export const api = {
     request<JobStarted>('/doc-to-markdown', { method: 'POST', body: formData }),
   docmdHealth: () => request<MarkdownHealth>('/doc-to-markdown/health'),
 
-  // dependency upgrader (scan runs as a job, apply is synchronous)
+  // dependency upgrader
   depsScan: (folder: string) =>
     request<JobStarted>('/deps/scan', { method: 'POST', body: { folder } }),
   depsApply: (folder: string, commit: boolean, message: string | null) =>
@@ -328,12 +286,8 @@ export const api = {
   subsDownload: (id: string, target: string) =>
     fetchBlob(`/subs/${id}/render?target=${target}`, `subscription-${target}`),
 
-  // torrent downloader — a dispatcher, not a queue. There is no list/pause/
-  // resume endpoint to call: once torrentSend resolves, the task is BitComet's.
-  // /resolve is multipart on BOTH paths: one endpoint accepts a pasted magnet
-  // or an uploaded .torrent, so a JSON body would 422.
-  // save_dir rides along with /resolve, not with the send: BitComet fixes a
-  // task's save folder when the task is created and cannot move it afterwards.
+  // torrent downloader. /resolve is multipart on both paths (JSON would 422), and save_dir
+  // travels with it: BitComet fixes a task's folder at creation.
   torrentStatus: () => request<TorrentStatus>('/torrent/status'),
   torrentResolveMagnet: (magnet: string, saveDir = '') => {
     const body = new FormData()
@@ -351,14 +305,12 @@ export const api = {
     request<TorrentResolve>(`/torrent/resolve/${infohash}`),
   torrentSend: (payload: TorrentSendPayload) =>
     request<TorrentSent>('/torrent', { method: 'POST', body: payload }),
-  // Cancels a staging that was never sent. A magnet runs while it fetches
-  // metadata, so abandoning one without this leaves it downloading in BitComet.
+  // A staged magnet keeps downloading in BitComet until discarded.
   torrentDiscard: (infohash: string) =>
     request<{ infohash: string; state: string }>(`/torrent/${infohash}`, {
       method: 'DELETE',
     }),
-  // Which BitComet gets the task. Every one of these returns the whole list
-  // back, so the page never has to guess what changed and re-fetch.
+  // devices
   torrentDevices: () => request<TorrentDeviceList>('/torrent/devices'),
   torrentDeviceAdd: (payload: TorrentDeviceInput) =>
     request<TorrentDeviceList>('/torrent/devices', { method: 'POST', body: payload }),
@@ -371,8 +323,6 @@ export const api = {
     request<TorrentDeviceList>(`/torrent/devices/${id}`, { method: 'DELETE' }),
   torrentDeviceSelect: (id: string) =>
     request<TorrentDeviceList>(`/torrent/devices/${id}/select`, { method: 'POST' }),
-  // Answers with ok:false and a reason rather than throwing — a failed test is
-  // the expected outcome of typing an address, not an exception.
   torrentDeviceTest: (payload: TorrentDeviceInput & { id?: string }) =>
     request<TorrentDeviceTest>('/torrent/devices/test', {
       method: 'POST',
@@ -387,7 +337,6 @@ export const api = {
     request<JobStarted>('/watermark/run', { method: 'POST', body: payload }),
 }
 
-// The canvas editor loads these as <img>/fetch sources, not through request<T>.
 export const watermarkImageUrl = (batchId: string, imageId: string): string =>
   `${BASE}/watermark/${batchId}/${imageId}/image`
 export const watermarkMaskUrl = (

@@ -39,16 +39,11 @@ def test_categorize_maps_extensions_to_categories(path, expected):
 
 
 def test_only_video_and_audio_are_size_gated():
-    # The whole point of the filter design: a 100MB floor must never be able
-    # to discard a subtitle, which is ~40KB and could never pass it.
     assert SIZED_CATEGORIES == frozenset({"video", "audio"})
 
 
-# =======================================================
-# BENCODE / .TORRENT
-# =======================================================
+# --- BENCODE / .TORRENT ---
 def make_torrent(files, name="Example.Release"):
-    """Build a real multi-file .torrent as bytes, so tests need no fixtures."""
     return bencode(
         {
             b"announce": b"udp://tracker.example:80",
@@ -122,9 +117,7 @@ def test_parse_torrent_rejects_junk():
         parse_torrent(b"this is not a torrent")
 
 
-# =======================================================
-# MAGNET
-# =======================================================
+# --- MAGNET ---
 HASH40 = "c9e15763f722f23e98a29decdfae341b98d53056"
 
 
@@ -141,7 +134,6 @@ def test_parse_magnet_lowercases_and_survives_a_missing_name():
 
 
 def test_parse_magnet_decodes_a_base32_btih():
-    # 32-char base32 magnets are common in the wild and must not be rejected.
     b32 = base64.b32encode(bytes.fromhex(HASH40)).decode()
     assert parse_magnet(f"magnet:?xt=urn:btih:{b32}")[0] == HASH40
 
@@ -155,9 +147,7 @@ def test_parse_magnet_rejects_non_magnets_and_hashless_magnets(uri):
         parse_magnet(uri)
 
 
-# =======================================================
-# SELECTION
-# =======================================================
+# --- SELECTION ---
 SAMPLE = [
     TorrentFile(index=1, path="Movie.2024.1080p.mkv", size=2_000_000_000),
     TorrentFile(index=2, path="Sample/sample.mkv", size=40_000_000),
@@ -172,8 +162,6 @@ def test_select_files_defaults_to_large_videos_only():
 
 
 def test_size_floor_does_not_apply_to_subtitles():
-    # THE case this filter design exists for: the 100MB floor gates the video
-    # but must let the 45KB subtitle through.
     got = select_files(SAMPLE, {"video", "subtitle"}, 100 * 1024 * 1024)
     assert got == [1, 3]
 
@@ -196,7 +184,5 @@ def test_format_selection_sorts_and_joins_the_indexes():
 
 
 def test_format_selection_rejects_an_empty_selection():
-    # A torrent with every file deselected downloads nothing and calls itself
-    # finished, so the empty case is refused instead of being committed.
     with pytest.raises(ValueError, match="at least one file"):
         format_selection([])

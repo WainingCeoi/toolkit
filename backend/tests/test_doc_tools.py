@@ -1,8 +1,4 @@
-"""Doc to PDF + Doc to Markdown: engine units and router validation/job flow.
-
-No LibreOffice or MinerU is ever invoked — the batch runners are monkeypatched
-at the engine seam, and everything else is pure XML/zip work on tmp files.
-"""
+"""Doc to PDF + Doc to Markdown: engine units and router validation/job flow."""
 
 from __future__ import annotations
 
@@ -23,7 +19,6 @@ from toolkit_engine import docmd, docpdf
 
 @pytest.fixture
 def tool_client(app_state):
-    # create_app already wires every /api router (don't re-include here).
     app = create_app(state=app_state)
     with TestClient(app) as c:
         yield c
@@ -39,9 +34,7 @@ def wait_for_job(client, job_id, timeout=5.0):
     raise AssertionError(f"job {job_id} did not finish within {timeout}s")
 
 
-# =======================================================
-# Doc to Markdown engine units (ported from tests/test_helpers.py)
-# =======================================================
+# --- Doc to Markdown engine units ---
 def test_build_mineru_cmd_pipeline_includes_method_lang_and_toggles():
     cmd = docmd.build_mineru_cmd(
         ["mineru"],
@@ -76,9 +69,7 @@ def test_build_mineru_cmd_hybrid_uses_effort_not_pipeline_flags():
     assert "-l " not in joined
 
 
-# =======================================================
-# Doc to PDF engine units
-# =======================================================
+# --- Doc to PDF engine units ---
 DOCUMENT_XML = b"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
   <w:body>
@@ -119,18 +110,16 @@ def test_clean_docx_accepts_insertions_drops_deletions_and_trackchanges(tmp_path
         settings = etree.fromstring(z.read("word/settings.xml"))
 
     tags = {el.tag for el in doc.iter()}
-    assert docpdf._w("ins") not in tags  # insertion unwrapped, no marker left
-    assert docpdf._w("del") not in tags  # deletion dropped with its content
+    assert docpdf._w("ins") not in tags
+    assert docpdf._w("del") not in tags
     texts = [el.text for el in doc.iter(docpdf._w("t"))]
-    assert "inserted text" in texts  # inserted content kept
+    assert "inserted text" in texts
     assert "plain text" in texts
     assert b"deleted text" not in etree.tostring(doc)
     assert docpdf._w("trackChanges") not in {el.tag for el in settings.iter()}
 
 
-# =======================================================
-# Doc to PDF router
-# =======================================================
+# --- Doc to PDF router ---
 def test_docpdf_post_without_files_is_400(tool_client):
     resp = tool_client.post("/api/doc-to-pdf")
     assert resp.status_code == 400
@@ -190,9 +179,7 @@ def test_docpdf_job_bundles_pdfs_into_zip_artifact(tool_client, monkeypatch, tmp
         assert z.namelist() == ["report.pdf"]
 
 
-# =======================================================
-# Doc to Markdown router
-# =======================================================
+# --- Doc to Markdown router ---
 def test_docmd_post_without_files_is_400(tool_client):
     resp = tool_client.post("/api/doc-to-markdown")
     assert resp.status_code == 400
@@ -250,8 +237,6 @@ def test_docmd_post_rejects_unsupported_type(tool_client):
 
 
 def test_docmd_convert_batch_sanitizes_traversal_filename(monkeypatch):
-    # A client-supplied name like "../../pwned.pdf" must never reach the path
-    # join unsanitized — otherwise the upload escapes the per-run temp dir.
     captured = {}
 
     def fake_run(cmd, **kwargs):
@@ -281,14 +266,11 @@ def test_docmd_convert_batch_sanitizes_traversal_filename(monkeypatch):
     )
 
     in_path = captured["in_path"]
-    # Sanitized to a bare basename: no traversal segments survive the join.
     assert in_path.name == "pwned.pdf"
     assert ".." not in in_path.parts
 
 
 def test_docmd_duplicate_names_get_index_correct_states(tool_client, monkeypatch):
-    # Two uploads share a name; only index 0 fails. The failure must not bleed
-    # onto the succeeded duplicate — states must be keyed by input index.
     monkeypatch.setattr(docmd, "find_mineru", lambda: ["mineru"])
 
     def fake_run(cmd, **kwargs):
@@ -320,8 +302,6 @@ def test_docmd_duplicate_names_get_index_correct_states(tool_client, monkeypatch
 def test_docpdf_duplicate_names_get_index_correct_states(
     tool_client, monkeypatch, tmp_path
 ):
-    # Two uploads share a name; only index 0 fails to render. The failure must
-    # not mark the succeeded duplicate red — states are keyed by input index.
     monkeypatch.setattr(docpdf, "find_soffice", lambda: "/stub/soffice")
 
     def fake_batch_to_pdf(soffice, docx_paths, out_dir):

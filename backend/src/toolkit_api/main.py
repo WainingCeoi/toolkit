@@ -1,15 +1,4 @@
-"""FastAPI application factory.
-
-Run with:  uv run uvicorn toolkit_api.main:app --reload
-
-One AppState (SQLite store, job registry, artifact spool, browser session) is
-built at startup and shared by every request — this app is single-user and
-single-process (see host.py: one worker, always). Routers mount under /api so
-the Vite dev proxy can forward /api/* here; the public subscription route
-lives at /sub/{id} for proxy clients. In single-origin production
-(make start / make host) the built frontend in frontend/dist is served from
-this same server.
-"""
+"""FastAPI application factory."""
 
 from __future__ import annotations
 
@@ -45,19 +34,13 @@ from .state import AppState, build_state
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
 
-# Backend-local config (WEBSITE_URL, SUB_*, ...). Values already exported in
-# the shell win; the file only fills gaps.
+# Shell values win; .env only fills gaps.
 load_dotenv(BACKEND_DIR / ".env")
 
-# Runtime data lives under backend/data/ (covered by backend/.gitignore).
-# Seeded here rather than edited into the lifted subgen config, whose own
-# default still points at the old repo-root data/; setdefault keeps any
-# user-set SUB_DB_PATH winning.
+# subgen.config defaults to <repo>/data; keep runtime data under backend/data.
 os.environ.setdefault("SUB_DB_PATH", str(BACKEND_DIR / "data" / "sub.db"))
 
-# Dev origins for the Vite frontend. Override with a comma-separated env var.
-# In single-origin production the UI is same-origin, so CORS is only
-# exercised when hitting the API directly.
+# Vite dev origins.
 _DEFAULT_ORIGINS = "http://localhost:5173,http://127.0.0.1:5173"
 
 
@@ -74,19 +57,14 @@ def _frontend_dist() -> Path | None:
 
 
 def create_app(state: AppState | None = None) -> FastAPI:
-    """Build the app. Pass `state` to inject fakes (tests); otherwise the real
-    shared state is built at startup."""
+    """Build the app; pass ``state`` to inject fakes (tests)."""
     provided = state is not None
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.state = state or build_state()
-        # Nothing to reconcile at boot: the torrent tool keeps no record of
-        # what it dispatched, so there is no second copy of BitComet's task
-        # list here that could have drifted from it while the app was down.
         yield
-        # Session-scoped resources die with the process. Cancel in-flight jobs
-        # first so their children (ffmpeg, …) are cleaned up before teardown.
+        # Jobs first, so their child processes are cleaned up before teardown.
         app.state.state.jobs.shutdown()
         if app.state.state.torrents is not None:
             app.state.state.torrents.close()
@@ -103,17 +81,11 @@ def create_app(state: AppState | None = None) -> FastAPI:
         allow_headers=["*"],
     )
 
-    # Infrastructure: the manifest, the folder picker, job streams. Always on,
-    # since every tool's progress and downloads come through them.
+    # Always mounted: manifest, folder picker, job streams.
     for api_router in (meta.router, fs.router, jobs.router):
         app.include_router(api_router, prefix="/api")
 
-    # One entry per tool in the manifest. A tool switched off in
-    # TOOLKIT_DISABLED_TOOLS is not mounted at all — it used to be dropped from
-    # the sidebar while its endpoints kept answering, which made the setting
-    # read as a kill switch it was not. That gap matters most for exactly the
-    # tools someone would reach for it to turn off: the ones that permanently
-    # delete and move files.
+    # TOOLKIT_DISABLED_TOOLS is a kill switch: disabled routers are never mounted.
     disabled = disabled_slugs()
     for slug, api_router in (
         ("magnet-scraper", magnet.router),
@@ -132,13 +104,10 @@ def create_app(state: AppState | None = None) -> FastAPI:
     ):
         if slug not in disabled:
             app.include_router(api_router, prefix="/api")
-    # Public subscription route for proxy clients: GET /sub/{id} (no /api). It
-    # carries its own SUB_ACCESS_TOKEN gate for token-gated fetches.
+    # Public /sub/{id} for proxy clients; gated by SUB_ACCESS_TOKEN in the router.
     app.include_router(subs.public_router)
 
-    # Serve the built frontend from this same server, if present (make start /
-    # make host). Mounted LAST so it only catches unmatched paths, and skipped
-    # in tests (which inject state and only exercise the API).
+    # The built frontend, mounted last so it only catches unmatched paths.
     if not provided:
         dist = _frontend_dist()
         if dist is not None:

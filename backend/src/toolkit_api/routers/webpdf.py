@@ -1,11 +1,4 @@
-"""Web Images to PDF: drive one live Chrome session, capture into a PDF.
-
-Mirrors the page's model exactly: at most ONE browser session at a time
-(state.browser), the user scrolls the real Chrome window until every image
-has loaded, then capture scrapes page_source, builds the PDF, adds bookmarks
-best-effort, and closes the browser. The PDF lands in the artifact store
-instead of a typed output folder (download replaces the Desktop write).
-"""
+"""Web Images to PDF: drive one live Chrome session, capture into a PDF."""
 
 from __future__ import annotations
 
@@ -49,9 +42,7 @@ def _session_open(state) -> bool:
 
 @router.post("/open", response_model=StatusOut)
 def open_browser(req: OpenIn, state: StateDep) -> StatusOut:
-    # Hold browser_lock across check + launch + assign so a near-simultaneous
-    # second open (double-click / retry) blocks and then gets a clean 409
-    # instead of both passing the check and each leaking a Chrome driver.
+    # Hold the lock across check + launch + assign, or a double open leaks a driver.
     with state.browser_lock:
         if _session_open(state):
             raise HTTPException(
@@ -75,7 +66,6 @@ def status(state: StateDep) -> StatusOut:
 
 @router.post("/close", response_model=StatusOut)
 def close_browser(state: StateDep) -> StatusOut:
-    # Ok even if none is open — the page's close button swallows quit errors.
     # Swap the slot out under the lock, then quit outside it (quit is slow).
     with state.browser_lock:
         session, state.browser = state.browser, None
@@ -86,8 +76,6 @@ def close_browser(state: StateDep) -> StatusOut:
 
 @router.post("/capture", response_model=CaptureOut)
 def capture(state: StateDep, artifacts: ArtifactsDep) -> CaptureOut:
-    # Read the single browser slot under the lock (matching open/close), then do
-    # the slow scrape/build work outside it.
     with state.browser_lock:
         if not _session_open(state):
             raise HTTPException(status_code=409, detail="No browser session is open.")
@@ -97,7 +85,7 @@ def capture(state: StateDep, artifacts: ArtifactsDep) -> CaptureOut:
         page_source = session.page_source()
         pdf_name, images, skipped = scrape_images_from_source(page_source, url)
         if not images:
-            # Page behavior: error out but leave the browser open for a retry.
+            # Leave the browser open for a retry.
             raise HTTPException(
                 status_code=400,
                 detail=(
@@ -108,8 +96,7 @@ def capture(state: StateDep, artifacts: ArtifactsDep) -> CaptureOut:
         with tempfile.TemporaryDirectory() as tmp_dir:
             pdf_path = build_pdf(images, tmp_dir, pdf_name)
             warn = add_bookmark(page_source, pdf_path)
-            # Move the finished PDF into the artifact store while the temp dir
-            # still exists — no full-file read-into-RAM-then-write round-trip.
+            # Stays inside the temp-dir block: put_file moves the PDF out of it.
             artifact_id = artifacts.put_file(
                 pdf_name, Path(pdf_path), "application/pdf"
             )
@@ -118,9 +105,7 @@ def capture(state: StateDep, artifacts: ArtifactsDep) -> CaptureOut:
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Capture failed: {e}") from e
 
-    # Page behavior: a successful capture also closes the browser. Only clear
-    # the slot if it still holds the session we captured from — a newer session
-    # opened meanwhile (double-click / retry) must not be clobbered.
+    # Clear the slot only if it still holds this session; a newer one must survive.
     session.quit()
     with state.browser_lock:
         if state.browser is session:

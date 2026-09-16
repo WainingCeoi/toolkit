@@ -1,8 +1,4 @@
-"""Remux Processor: scan videos, match external subtitles, start remux jobs.
-
-Thin over toolkit_engine.remux — every validation and its exact error
-message (including the ❌ prefix) carries over from the Streamlit page.
-"""
+"""Remux Processor: scan videos, match external subtitles, start remux jobs."""
 
 from __future__ import annotations
 
@@ -20,10 +16,8 @@ from ..schemas import JobStartedOut
 
 router = APIRouter(prefix="/remux", tags=["remux"])
 
-# ffmpeg treats a leading "scheme:" as a protocol, and not every one of them
-# needs the "//" that the plainer check catches -- "concat:", "pipe:" and
-# "subfile:" are all bare. A Windows drive letter is a single character, so
-# requiring two rules it out.
+# ffmpeg protocols like "concat:" and "pipe:" have no "//"; two-plus characters
+# before the colon rules out a Windows drive letter.
 _SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]+:")
 
 
@@ -109,7 +103,6 @@ def start(req: StartIn, jobs: JobsDep) -> JobStartedOut:
             ),
         )
 
-    # Single picker -> one track; multi mode -> parse comma-separated list
     try:
         if req.multi_audio:
             audio_indices = [
@@ -129,7 +122,6 @@ def start(req: StartIn, jobs: JobsDep) -> JobStartedOut:
         "subtitle": int(req.subtitle_index) if req.include_subtitle else None,
     }
 
-    # Refuse an all-empty stream map (ffmpeg would reject it with no -map)
     if (
         track_configs["video"] is None
         and not track_configs["audio"]
@@ -141,12 +133,7 @@ def start(req: StartIn, jobs: JobsDep) -> JobStartedOut:
             detail="❌ Select at least one video, audio, or subtitle track.",
         )
 
-    # Every selected entry has to be a real local file. ffmpeg resolves its
-    # input itself and speaks http/rtmp/concat/pipe among others, so a string
-    # like "http://169.254.169.254/…" reaching ffmpeg.input() is an outbound
-    # fetch on this machine's behalf, and any readable media path is a file
-    # this tool will happily copy somewhere the caller names. /scan validates
-    # what it hands out, but nothing required /start to be given those.
+    # Security boundary: ffmpeg fetches URLs itself, so inputs must be local files.
     for video in [*req.selected, *req.external_sub_map.values()]:
         if not video or "://" in video or _SCHEME.match(video):
             raise HTTPException(
@@ -162,16 +149,12 @@ def start(req: StartIn, jobs: JobsDep) -> JobStartedOut:
     try:
         out_path.mkdir(parents=True, exist_ok=True)
     except OSError as e:
-        # e.g. the typed path (or one of its parents) is a file
         raise HTTPException(
             status_code=400, detail=f"❌ Cannot create the output folder: {e}"
         ) from e
 
-    # ffmpeg's -y overwrite plus its string-only same-file guard would let an
-    # output that resolves to the source (e.g. the picker returns the canonical
-    # /private/tmp form of a source typed as /tmp) truncate the input to zero.
-    # Reject that, and reject duplicate output basenames that would clobber each
-    # other, before any task runs.
+    # ffmpeg's same-file guard compares strings only, so an output that resolves to
+    # the source (/tmp vs /private/tmp) would truncate it; compare resolved paths.
     out_resolved = out_path.resolve()
     seen_outputs: set[str] = set()
     for video in req.selected:
@@ -196,7 +179,6 @@ def start(req: StartIn, jobs: JobsDep) -> JobStartedOut:
             )
         seen_outputs.add(str(dest))
 
-    # Build the task list
     tasks = []
     for idx, video in enumerate(req.selected):
         ext_sub = req.external_sub_map.get(video) if req.use_external_sub else None
@@ -214,8 +196,6 @@ def start(req: StartIn, jobs: JobsDep) -> JobStartedOut:
     max_workers = req.max_workers
 
     def worker(job):
-        # On cancel, run_remux_batch returns the results of the tasks that
-        # already finished; keep them so a cancelled run still reports them.
         results = run_remux_batch(tasks, max_workers, job)
         successful = [r for r in results if r["success"]]
         failed = [r for r in results if not r["success"]]

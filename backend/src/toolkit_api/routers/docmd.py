@@ -1,9 +1,4 @@
-"""Doc to Markdown: convert PDFs, Office docs, and images with MinerU.
-
-The conversion runs as a job (one MinerU subprocess per file). /health reports
-whether the MinerU CLI and its ML backend (torch) are installed, probed per
-request so importing this module never touches torch.
-"""
+"""Doc to Markdown: convert PDFs, Office docs, and images with MinerU."""
 
 from __future__ import annotations
 
@@ -35,9 +30,7 @@ class _CancelledError(Exception):
 
 @router.get("/health", response_model=MarkdownHealthOut)
 def health() -> MarkdownHealthOut:
-    # The base `mineru` package ships the CLI but no ML backend — torch (and
-    # the pipeline/vlm deps) live in optional extras. Detect that up front so
-    # the UI can warn before a conversion fails deep inside the subprocess.
+    # The base mineru package ships the CLI without torch; the extras add it.
     return MarkdownHealthOut(
         mineru=docmd.find_mineru() is not None,
         backend_ready=importlib.util.find_spec("torch") is not None,
@@ -77,9 +70,7 @@ def convert(
             detail="Missing required tool: MinerU (`uv add mineru`).",
         )
 
-    # Uploads are request-scoped — read every file (size-capped) before
-    # returning. Disambiguate duplicate basenames so two same-named uploads
-    # don't collide to one tree in the result zip (dropping one output).
+    # Uploads are request-scoped: read them all before returning.
     unique_names = dedupe_filenames([upload.filename for upload in files])
     named = list(zip(unique_names, read_uploads(files), strict=True))
     options = {
@@ -104,8 +95,6 @@ def convert(
         except _CancelledError:
             return None
 
-        # Key per-item state by input index — two uploads with the same name
-        # must not cross-contaminate each other's success/failure state.
         failed_by_idx = {idx: error for idx, _name, error in failed}
         for idx in range(len(named)):
             if idx in failed_by_idx:

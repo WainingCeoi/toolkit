@@ -1,4 +1,4 @@
-"""Unit tests for the pure engine helpers (ported from the Streamlit repo)."""
+"""fsutil and picker helpers."""
 
 import subprocess
 
@@ -17,8 +17,7 @@ def test_natural_sort_orders_numbers_humanly():
 
 
 def test_natural_sort_key_survives_non_decimal_digits():
-    # Superscript/circled digits are isdigit() but int() rejects them — the key
-    # must sort them as text instead of raising ValueError.
+    # Superscript/circled digits are isdigit() but int() rejects them.
     assert fsutil.natural_sort_key("page²") == ["page²"]
     assert fsutil.natural_sort_key("①") == ["①"]
     sorted(["a²", "a1", "a"], key=fsutil.natural_sort_key)  # no crash
@@ -31,7 +30,6 @@ def test_dedupe_filenames_disambiguates_collisions():
         "b.pdf",
         "a (3).pdf",
     ]
-    # Basenames only; distinct names pass through untouched.
     assert fsutil.dedupe_filenames(["/x/a.docx", "/y/a.docx"]) == [
         "a.docx",
         "a (2).docx",
@@ -55,8 +53,8 @@ def test_pick_folder_returns_selection_and_embeds_start_dir(monkeypatch, tmp_pat
 
     monkeypatch.setattr(picker.subprocess, "run", fake_run)
     picked = picker.pick_folder(str(tmp_path))
-    assert picked == "/Users/me/Movies"  # trailing slash trimmed
-    assert str(tmp_path) in captured["script"]  # start dir embedded when it exists
+    assert picked == "/Users/me/Movies"
+    assert str(tmp_path) in captured["script"]
 
 
 def test_pick_folder_shows_packages_only_when_asked(monkeypatch, tmp_path):
@@ -71,7 +69,7 @@ def test_pick_folder_shows_packages_only_when_asked(monkeypatch, tmp_path):
     assert picker.pick_folder(str(tmp_path), packages=True) == "/x/A.photoslibrary"
     assert "showing package contents true" not in scripts[0]
     assert scripts[1].endswith(" showing package contents true)")
-    assert str(tmp_path) in scripts[1]  # the start dir survives alongside it
+    assert str(tmp_path) in scripts[1]
 
 
 def test_pick_folder_returns_empty_on_cancel(monkeypatch):

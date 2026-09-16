@@ -1,11 +1,4 @@
-"""Photos Library Filter: mirror a Photos library minus its caches, as a job.
-
-Two endpoints, one worker. /dry-run plans and verifies against the plan
-without touching the destination; /run mirrors, deletes whatever the plan
-does not contain, then verifies what landed. Both report through the job
-registry -- a library is hundreds of thousands of files, and even the walk
-alone is too long for a request to wait on.
-"""
+"""Photos Library Filter: mirror a Photos library minus its caches, as a job."""
 
 from __future__ import annotations
 
@@ -24,11 +17,8 @@ from ..schemas import JobStartedOut
 
 router = APIRouter(prefix="/photofilter", tags=["photofilter"])
 
-# Destinations with a mirror in flight. Two runs writing and deleting inside
-# the same bundle would undo each other's work, so the second is refused. The
-# guard is taken inside the worker, not at submit: a job cancelled while it
-# sits in the queue never runs its worker, and a guard taken earlier would
-# then never be released.
+# Destinations with a mirror in flight. Guard inside the worker, not at submit:
+# a job cancelled while queued never runs its worker and would never release it.
 _writing: set[str] = set()
 _writing_lock = threading.Lock()
 
@@ -36,8 +26,7 @@ _writing_lock = threading.Lock()
 class PhotoFilterIn(BaseModel):
     source: str
     dest: str
-    # None means the shipped defaults (photofilter.DEFAULT_RULES); an empty
-    # string is a choice -- exclude nothing -- rather than an omission.
+    # None = shipped defaults; "" = exclude nothing.
     rules: str | None = None
 
 
@@ -56,8 +45,7 @@ def run(req: PhotoFilterIn, jobs: JobsDep) -> JobStartedOut:
 def _submit(req: PhotoFilterIn, jobs: JobsDep, *, dry_run: bool) -> JobStartedOut:
     src_raw = Path(req.source).expanduser()
     dest_raw = Path(req.dest).expanduser()
-    # A relative (or empty) typed path would resolve against the app's CWD --
-    # refuse it before a mirror-and-delete can target the wrong tree.
+    # Relative paths would resolve against the app's CWD.
     if not (src_raw.is_absolute() and dest_raw.is_absolute()):
         raise HTTPException(
             status_code=400,
@@ -66,8 +54,6 @@ def _submit(req: PhotoFilterIn, jobs: JobsDep, *, dry_run: bool) -> JobStartedOu
                 "(e.g. ~/Pictures/Photos Library.photoslibrary)."
             ),
         )
-    # The engine's own guards, run here too so a refused run is a 400 with the
-    # reason rather than a job that fails a moment later.
     try:
         src, dest = photofilter.check_paths(src_raw, dest_raw)
     except photofilter.PhotoFilterError as e:
@@ -97,8 +83,6 @@ def _submit(req: PhotoFilterIn, jobs: JobsDep, *, dry_run: bool) -> JobStartedOu
             if not dry_run:
                 with _writing_lock:
                     _writing.discard(key)
-        # A cancelled run returns its partial result too: what was copied
-        # before the stop is on disk, and the report should say so.
         return {
             "dry_run": dry_run,
             "source": str(src),

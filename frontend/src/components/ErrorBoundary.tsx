@@ -1,15 +1,10 @@
-// App-wide safety net: a render error in any tool page (or a malformed job
-// snapshot) shows a recoverable message instead of a blank white screen.
-
 import React, { type ReactNode } from 'react'
 
 interface ErrorBoundaryProps {
   children: ReactNode
 }
 
-// `unknown`, not Error: React re-throws whatever was thrown, and a page can
-// throw a non-Error (a string, a rejected value). The render path below already
-// handled that with `error?.message || error`.
+// unknown, not Error: a page can throw a non-Error value.
 interface ErrorBoundaryState {
   error: unknown
 }

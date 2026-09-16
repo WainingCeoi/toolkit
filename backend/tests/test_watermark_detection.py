@@ -1,11 +1,4 @@
-"""Detection benchmark: measured recall and false positives per watermark shape.
-
-This file exists because the first fixtures lied by omission. They all tiled
-their watermark axis-aligned, every test passed, and half of a real sample of
-eight photos still fell back to the weaker detector — their overlays sit on
-OBLIQUE lattices, which the detector had no way to express. Cases are kept here
-whether or not they currently pass, so the gap is visible rather than absent.
-"""
+"""Detection benchmark: recall and false positives per watermark shape."""
 
 from __future__ import annotations
 
@@ -29,9 +22,7 @@ def propose(marked, sensitivity=50):
     return propose_mask_detailed(marked, sensitivity, detector="pattern")
 
 
-# =========================================================================
-# What the pattern detector handles today
-# =========================================================================
+# --- What the pattern detector handles ---
 
 
 def test_a_rectangular_lattice_is_recovered_and_masked_precisely():
@@ -40,20 +31,10 @@ def test_a_rectangular_lattice_is_recovered_and_masked_precisely():
     assert used == "pattern"
     recall, false_positives = score(mask, truth)
     assert recall > 0.25, f"only {recall:.1%} of the mark was masked"
-    # Precision is the point of this detector: it stamps instances of the
-    # recovered mark, so it should hardly touch anything else.
     assert false_positives < 0.02, f"{false_positives:.1%} of clean pixels masked"
 
 
 def test_a_lattice_too_coarse_to_fold_is_still_recovered_from_one_image():
-    # The tent photograph's shape: a 572x268 lockup, 13 live copies in 16 cells.
-    # Nothing in the fold could reach it. The cell fits the frame 8x2, under
-    # MIN_TILES=9, and 572 is past the +-540 lag an 1080-wide autocorrelation
-    # can hold at all -- so _rect_period answered (406, 255) and
-    # _fit_rectifying_lattice answered a 38x66 basis fitted to the photograph's
-    # own texture. Both detectors returned an EMPTY mask at sensitivity
-    # 0/25/50/75/100 while repeating_evidence read True, so the image was
-    # reported "protected": a watermark is plainly there and we cannot touch it.
     _clean, marked, truth = tiled_pair(
         size=(1080, 1922), basis=COARSE_RECTANGULAR, glyph_size=44, alpha=70
     )
@@ -68,16 +49,6 @@ def test_a_lattice_too_coarse_to_fold_is_still_recovered_from_one_image():
     "background", ["sky_grass", "grass", "render_dither", "gradient"]
 )
 def test_a_clean_frame_of_that_shape_is_never_given_a_coarse_lattice(background):
-    # The other half of the test above, and the one that matters more. The
-    # tiled route trusts a lattice across the WHOLE frame, so a lattice fitted
-    # to scenery would cost the whole picture rather than a few stamps.
-    #
-    # What stops it is that a photograph's best lattice is a LINE, not a grid:
-    # measured over clean controls, every one put the live cells of its best
-    # lattice in a single row -- along a sky/grass horizon, or the edge of a
-    # render's dithered ground, where the whole band responds and any pitch
-    # across it fits. Their second row is dead (0.00-0.03 against the live
-    # row's 0.12-0.18), which caps live share at ~0.46 against the bar of 0.65.
     clean = tiled_pair(
         size=(1080, 1922),
         basis=COARSE_RECTANGULAR,
@@ -100,12 +71,6 @@ def test_a_clean_frame_of_that_shape_is_never_given_a_coarse_lattice(background)
     ids=["dither-bg", "gradient-bg", "faint-alpha-22", "dark-mark"],
 )
 def test_the_mark_is_found_across_opacities_and_backgrounds(kwargs, least):
-    # The dual top-hat answers light and dark marks alike, and the fold does not
-    # care either — these cases are here because the fixtures used to be unable
-    # to express them. Their watermark was composited with paste(im, box, im),
-    # which premultiplies twice: a light mark at 16% opacity was silently
-    # rendered as a DARK one at 2%, so every case looked the same, and looked
-    # nothing like the samples. See tiled_pair.
     _clean, marked, truth = tiled_pair(basis=RECTANGULAR, **kwargs)
     mask, used = propose(marked)
     assert used == "pattern"
@@ -115,11 +80,6 @@ def test_the_mark_is_found_across_opacities_and_backgrounds(kwargs, least):
 
 
 def test_the_primitive_lattice_is_used_not_a_multiple_of_it():
-    # A doubled or tripled vector explains the autocorrelation peaks just as
-    # well, but folding on it puts several instances in one tile; the crop then
-    # straddles them and the stamps land between marks instead of on them.
-    # Measured before this was fixed: only 13% of the stamped area had any
-    # evidence under it.
     import cv2
 
     import watermark.pattern as pattern
@@ -145,9 +105,7 @@ def test_the_primitive_lattice_is_used_not_a_multiple_of_it():
     assert lengths[1] == pytest.approx(expected[1], abs=4)
 
 
-# =========================================================================
-# False positives — the constraint that matters most without a brush
-# =========================================================================
+# --- False positives ---
 
 
 @pytest.mark.parametrize(
@@ -158,14 +116,6 @@ def test_the_primitive_lattice_is_used_not_a_multiple_of_it():
 )
 @pytest.mark.parametrize("sensitivity", [0, 50, 100])
 def test_a_clean_frame_is_never_pattern_masked(background, size, sensitivity):
-    """The bar that matters most, now swept rather than sampled.
-
-    This used to run three backgrounds at tiled_pair's default 1200x800 alone --
-    and that size happens to be one that does NOT leak, so it reported a clean
-    bill while the detector was masking up to 8.44% of watermark-free frames at
-    other sizes. Nine of 96 swept frames leaked before the on-lattice gate in
-    apply_mark; none of 144 do now.
-    """
     clean, _marked, _truth = tiled_pair(
         watermarked=False, background=background, size=size
     )
@@ -174,9 +124,7 @@ def test_a_clean_frame_is_never_pattern_masked(background, size, sensitivity):
     assert np.count_nonzero(mask) == 0
 
 
-# =========================================================================
-# Oblique lattices — the shape most real overlays actually use
-# =========================================================================
+# --- Oblique lattices ---
 
 
 @pytest.mark.parametrize(
@@ -185,10 +133,6 @@ def test_a_clean_frame_is_never_pattern_masked(background, size, sensitivity):
     ids=["shallow-11deg", "steep-76deg"],
 )
 def test_an_oblique_lattice_is_recovered(basis, angle):
-    # These were xfail: the lattice fitter found the right grid, but rectifying
-    # a sheared parallelogram onto a rectangle tripled the cell area and blew
-    # the frame guard, so every oblique case silently fell back. Reducing the
-    # basis and excluding the rectified frame's padding from the fold fixed it.
     _clean, marked, truth = tiled_pair(basis=basis, angle=angle)
     mask, used = propose(marked)
     assert used == "pattern"
@@ -197,9 +141,7 @@ def test_an_oblique_lattice_is_recovered(basis, angle):
     assert false_positives < 0.02, f"{false_positives:.1%} of clean pixels masked"
 
 
-# =========================================================================
-# Sharing a mark across a batch
-# =========================================================================
+# --- Sharing a mark across a batch ---
 
 
 @pytest.mark.parametrize(
@@ -208,26 +150,6 @@ def test_an_oblique_lattice_is_recovered(basis, angle):
     ids=["other-background", "other-size"],
 )
 def test_a_mark_from_one_image_masks_the_same_overlay_on_another(background, size):
-    """The transfer itself: a mark recovered on one frame masks a different one.
-
-    What makes this worth having is that recovery and application need completely
-    different things — see watermark.pattern.Mark. On the real sample this is why
-    two more of eight images are masked at all: they carry the overlay three
-    siblings recovered, but their own folds are refused, one for want of a quiet
-    region and one for a lattice fitted to the furniture instead of the mark.
-
-    The frames here recover their own marks too, so what is checked is that a
-    FOREIGN mark lands accurately on a different photograph — a mark placed by a
-    stale offset would fail the false-positive bound, not the recall one.
-
-    Transfer is not unconditional, and the bound is the target's own texture
-    rather than anything about the donor: measured with this donor, the same
-    overlay correlates at 0.998 over sky and 0.997 over a gradient, but only 0.29
-    once the background is noise of several times the mark's amplitude, well
-    under the bar to be believed. The real samples that this rescues sit at
-    0.87-0.93. An overlay drowned in the photograph's own texture is not
-    recoverable from a sibling either.
-    """
     from watermark import pattern
 
     _clean, donor, _truth = tiled_pair(basis=RECTANGULAR)
@@ -243,9 +165,6 @@ def test_a_mark_from_one_image_masks_the_same_overlay_on_another(background, siz
 
 
 def test_an_image_that_finds_its_own_mark_does_not_use_a_borrowed_one():
-    # Sharing must only ever add. An image that recovers its own mark knows more
-    # about itself than any sibling does, so the borrowed path must not preempt
-    # it — only answer when it comes back empty.
     from watermark import pattern
 
     _clean, donor, _t = tiled_pair(basis=RECTANGULAR, background="render_dither")
@@ -259,9 +178,6 @@ def test_an_image_that_finds_its_own_mark_does_not_use_a_borrowed_one():
 
 @pytest.mark.parametrize("background", ["sky_grass", "render_dither", "gradient"])
 def test_a_borrowed_mark_is_never_forced_onto_a_clean_frame(background):
-    # The whole risk of sharing. A mark that masked its own image is real, but
-    # that says nothing about the next image, and an over-eager match would
-    # inpaint a photograph that has no watermark in it at all.
     _clean, marked, _truth = tiled_pair(basis=RECTANGULAR)
     marks = collect_marks(lambda: [marked])
     assert marks
@@ -272,20 +188,12 @@ def test_a_borrowed_mark_is_never_forced_onto_a_clean_frame(background):
 
 
 def test_a_mark_that_cannot_mask_its_own_image_is_not_offered_to_the_batch():
-    # Corroboration is what keeps a lattice fitted to scenery from travelling.
-    # Offering every recovered mark instead of only the ones that masked their
-    # own image put a mask on a clean control frame.
     clean, _m, _t = tiled_pair(watermarked=False, background="sky_grass")
     assert collect_marks(lambda: [clean]) == []
 
 
 @pytest.mark.parametrize("noise", [0.0, 1.0, 2.0], ids=["flat", "quantised", "faint"])
 def test_a_featureless_frame_holds_no_instances(noise):
-    # Normalised correlation divides by the window's own deviation, so where
-    # there is nothing under it — the white backdrop of a product render, a
-    # blown-out sky — it divides ~0 by ~0. On a real render sample every
-    # correlation peak scored a perfect 1.000 over windows of deviation 0.0000,
-    # and those anchored the grid walk in empty sky. See _MIN_WINDOW_STD_SHARE.
     from watermark import pattern
 
     _clean, marked, _truth = tiled_pair(basis=RECTANGULAR)
@@ -299,18 +207,11 @@ def test_a_featureless_frame_holds_no_instances(noise):
     assert pattern.propose_pattern_mask(frame, 50) is None
 
 
-# =========================================================================
-# The sparse route: marks too large for any single frame to fold
-# =========================================================================
+# --- The sparse route ---
 
 
 def _sparse_batch(count=3, size=(1300, 800), seed=0):
-    """Frames carrying a mark on a cell so large only a few copies fit.
-
-    A 300px cell puts about six instances in frame where the fold needs nine, so
-    no image here can recover its own mark however clear the mark is. Backgrounds
-    differ per frame, which is what lets pooling cancel the scenery.
-    """
+    """Frames on a 300px cell: about six copies each, under the nine the fold needs."""
     out = []
     for index in range(count):
         _clean, marked, truth = tiled_pair(
@@ -329,11 +230,7 @@ def test_a_mark_too_sparse_to_fold_is_pooled_across_the_batch():
 
     batch = _sparse_batch()
     for marked, _truth in batch:
-        # The guard is on the FOLD alone, not on propose_pattern_mask: the
-        # tiled route now masks this fixture from one image (see tiled.py), and
-        # asking the public entry point would only ever prove that. What has to
-        # stay true for the pooled route to be under test is that no mark is
-        # recoverable by folding, which is what pooling exists to work around.
+        # Only the fold must fail here; the tiled route may still mask it.
         assert pattern.recover_mark(marked) is None or (
             pattern._propose_own_folded(marked, 50) is None
         ), "fixture no longer needs the pooled route"
@@ -345,11 +242,6 @@ def test_a_mark_too_sparse_to_fold_is_pooled_across_the_batch():
 
 @pytest.mark.parametrize("background", ["sky_grass", "render_dither", "gradient"])
 def test_a_clean_batch_never_pools_into_a_mark(background):
-    # The guard that makes the sparse route safe. Three collinear evenly spaced
-    # matches is a weak claim and clean frames do supply them — measured pitches
-    # of 321/236/173 on dithered frames and 311/306/213 on gradients. What they
-    # cannot do is AGREE: a real overlay repeats at the same pitch in every image
-    # it was stamped on (measured 294.0, 294.0, 294.0), and coincidence does not.
     from watermark import pattern
 
     frames = [
@@ -366,18 +258,12 @@ def test_a_clean_batch_never_pools_into_a_mark(background):
 
 
 def test_pooling_needs_several_images_and_is_skipped_when_folding_worked():
-    # Per image the sparse route cannot be trusted at all: on real photos a clean
-    # control frame beat all three of them on both available gates (0.972 against
-    # 0.41-0.46 on evidence share, 2.29-3.23 against 1.34-2.97 on significance).
-    # Only agreement between images carries it, so one image can never pool.
     from watermark import pattern
 
     batch = _sparse_batch()
     assert pattern.pooled_marks([batch[0][0]]) == []
     assert pattern.pooled_marks([batch[0][0], batch[1][0]]) == []
 
-    # And when every image folded on its own there is nothing to rescue, so the
-    # pass is not paid for.
     _clean, easy, _truth = tiled_pair(basis=RECTANGULAR)
     calls = []
 
@@ -390,13 +276,6 @@ def test_pooling_needs_several_images_and_is_skipped_when_folding_worked():
 
 
 def test_the_batch_votes_for_the_pitch_across_the_run():
-    # A run establishes ONE lattice vector, which describes a line rather than a
-    # grid, and the copies on the other rows are precisely the ones that never
-    # correlate -- on the render samples they read 0.03-0.14 where the found row
-    # reads 0.49-0.88. So no single image can supply the second pitch: asked
-    # alone, the three real photographs answered 288, 292 and 354. Pooled, they
-    # answer the truth. Here the fixture's grid is 300x300 and the vote has to
-    # find the second 300 without ever having seen a whole column.
     from watermark import pattern
 
     batch = _sparse_batch()
@@ -409,13 +288,6 @@ def test_the_batch_votes_for_the_pitch_across_the_run():
 
 @pytest.mark.parametrize("background", ["render_dither", "sky_grass", "gradient"])
 def test_a_clean_batch_is_never_handed_a_grid(background):
-    # The counterpart of the gate above, and the one that matters more. Pooling
-    # already refuses most clean batches outright, but dithered frames of one size
-    # do reach it -- they agree on a pitch by coincidence and come away with a
-    # small mask. That is survivable while the mark only stamps where it actually
-    # correlates. A grid is not survivable: it would spend that wrong lattice over
-    # the entire frame. Measured, the vote's winner stands 5.65 robust deviations
-    # above its own curve where a second pitch exists, and 0.00-1.75 here.
     from watermark import pattern
 
     frames = [
@@ -427,10 +299,6 @@ def test_a_clean_batch_is_never_handed_a_grid(background):
 
 
 def test_the_grid_masks_the_copies_that_never_correlate():
-    # What the second pitch is FOR. Both marks below are the same template with
-    # the same gates in front of them; the only difference is whether the lattice
-    # is spent. A copy over a colour boundary cannot prove itself and is invisible
-    # to correlation, but its address is known once the grid is.
     from watermark import pattern
 
     batch = _sparse_batch()
@@ -461,13 +329,6 @@ def test_the_grid_masks_the_copies_that_never_correlate():
 
 
 def test_the_grid_folds_the_mark_out_at_its_own_size():
-    # The template that finds the grid is a fixed anchor window -- 68x156, a shape
-    # chosen to enclose an anchor rather than a mark. On the render samples the
-    # mark is a ~80x80 diagonal, so that window clips its top and the stamp taken
-    # from it left the upper third of every copy standing. Once the grid is known
-    # the mark can be folded at its own extent instead, which must be neither the
-    # anchor window nor the whole cell: a cell is mostly empty, and stamping one
-    # covered window mullions and a deck edge.
     from watermark import pattern
 
     batch = _sparse_batch()
@@ -482,11 +343,7 @@ def test_the_grid_folds_the_mark_out_at_its_own_size():
 
 
 def test_a_frame_too_short_for_the_anchor_window_cannot_sink_the_batch():
-    # A panoramic strip reduces below the 68-row anchor window at work size,
-    # and cv2.matchTemplate RAISES on a subject smaller than its template
-    # rather than returning nothing. The template build already skipped such a
-    # frame; the cross-pitch vote had to learn to. Left unguarded, one odd
-    # frame in an otherwise healthy batch took the whole batch down.
+    # 56 rows is under the 68-row anchor window; cv2.matchTemplate raises on that.
     from PIL import Image, ImageDraw
 
     from watermark import pattern
@@ -509,15 +366,6 @@ def test_a_frame_too_short_for_the_anchor_window_cannot_sink_the_batch():
 
 
 def test_a_cell_narrower_than_the_anchor_window_never_hurts():
-    # The anchor window is a fixed 68x156 and a real overlay can repeat on a
-    # narrower cell -- the sample of eight carries one on a pitch of 114. The
-    # fold centres that window in the cell, so its offset goes NEGATIVE, and a
-    # raw numpy slice then reads from the far edge of the cell instead of
-    # clipping: the trim kept a 21px sliver of the wrong corner, and the
-    # mispositioned stamp made the grid route WORSE than no grid at all
-    # (recall 0.230 against 0.651). The invariant: whatever the vote and the
-    # fold decide, the pooled mark must never do worse than the plain unfolded
-    # template this route used before grids existed.
     from watermark import pattern
 
     batch = [
@@ -549,12 +397,6 @@ def test_a_cell_narrower_than_the_anchor_window_never_hurts():
 
 
 def test_a_lattice_coarser_than_the_search_is_not_halved():
-    # The vote's candidates stop at _CROSS_MAX, and a lattice coarser than that
-    # has no candidate to be found at. What won instead was HALF of it -- a step
-    # of half the truth lands on every second copy, plenty to take the argmax
-    # and clear the prominence bar (measured: a true 560 voted 281 at
-    # prominence 14.1), and every intermediate row it stamps holds nothing.
-    # The winner is now tested against its own doubles before it is believed.
     from watermark import pattern
 
     frames = [
@@ -575,12 +417,6 @@ def test_a_lattice_coarser_than_the_search_is_not_halved():
 
 
 def test_a_short_clean_frame_batch_is_still_refused_a_grid():
-    # On a short frame most candidate steps do not fit. Scoring the untested
-    # ones with a sentinel collapsed the vote curve's median onto the sentinel
-    # and its deviation to exactly zero, whereupon a clean batch cleared the
-    # 4.5-deviation bar by nine orders of magnitude with a winning candidate
-    # whose mean correlation was NEGATIVE. Steps that were never tested now
-    # stay out of the statistic entirely.
     from watermark import pattern
 
     frames = [
@@ -592,19 +428,10 @@ def test_a_short_clean_frame_batch_is_still_refused_a_grid():
 
 
 def test_a_copy_over_busy_ground_is_masked_whole_not_in_fragments():
-    # The per-pixel evidence trim kept only the pixels that individually stood
-    # out, and over grass or glass that is about a third of a copy's ink -- the
-    # stamp came back as fragments and the inpaint left a legible ghost, while
-    # the copy over smooth sky next to it was masked crisply. The mark's whole
-    # shape is already known from the batch's cleanest copies, so a site with
-    # enough evidence that a copy is THERE now gets the whole shape. Measured
-    # on the grass half of the standard frame: core recall 0.388 trimmed,
-    # 0.544 filled, at false positives below the trimmed detector's own old
-    # figure.
     from watermark import pattern
 
     _clean, marked, truth = tiled_pair(basis=RECTANGULAR)
-    half = truth.shape[0] // 2  # sky above, grass below
+    half = truth.shape[0] // 2
     core = truth[half:] == 255
 
     mask, used = propose(marked)
@@ -626,19 +453,7 @@ def test_a_copy_over_busy_ground_is_masked_whole_not_in_fragments():
 
 
 def test_an_unmaskable_repeat_is_protected_not_reported_clean(tmp_path):
-    # "No watermark found" and "a watermark is visible but cannot be removed
-    # safely" are opposite messages, and both used to end in SKIPPED. Under the
-    # pattern detector alone, an image carrying an evenly spaced run that no
-    # pattern route can turn into a mask is deliberately left alone, and the
-    # batch report has to say so.
-    #
-    # The fixture is a STEEP OBLIQUE lattice, and it has to be: this case used
-    # to be carried by a 300x300 axis-aligned mark, which the tiled route (see
-    # tiled.py) now masks at 3.31%. The tiled route searches the frame's own
-    # axes and cannot express an oblique cell, so a steep one is still evidently
-    # repeating and still unmaskable -- which is exactly the state this test is
-    # about. Measured: propose_mask_detailed(..., "pattern") returns "none" at
-    # 0.00% while repeating_evidence reads True.
+    # Steep oblique: the axis-aligned tiled route would mask a rectangular cell.
     from PIL import Image
 
     from watermark.pipeline import clean_folder
@@ -661,17 +476,7 @@ def test_an_unmaskable_repeat_is_protected_not_reported_clean(tmp_path):
 
 
 def test_auto_rescues_a_repeat_the_pattern_routes_cannot_mask(tmp_path):
-    # The same folder under the DEFAULT detector. Auto leads with pattern and,
-    # for the one image that demonstrably carries a repeating mark no pattern
-    # could be recovered for, falls back to the texture detector -- measured on
-    # this fixture: a 5.04% mask, so the mark is actually removed. The clean
-    # photo shows no repeating evidence, gets no fallback, and is skipped
-    # untouched -- the blanket fallback that damaged six of eight photos stays
-    # gone.
-    #
-    # Steep oblique for the same reason as the test above: the axis-aligned
-    # tiled route masks the 300x300 mark this used to use, so the fallback is
-    # no longer reached on it.
+    # Steep oblique: the axis-aligned tiled route would mask a rectangular cell.
     from PIL import Image
 
     from watermark.detect import propose_mask_detailed
@@ -698,9 +503,7 @@ def test_auto_rescues_a_repeat_the_pattern_routes_cannot_mask(tmp_path):
     assert skipped == ["holiday.png"], "a clean photo must stay plainly skipped"
 
 
-# =========================================================================
-# Spending the lattice: every copy's position is known once the grid is
-# =========================================================================
+# --- Spending the lattice ---
 
 
 def _site_coverage(marked):
@@ -748,10 +551,7 @@ def _site_coverage(marked):
     "kwargs,least",
     [
         (dict(basis=RECTANGULAR), 0.95),
-        # Lattice phase shifted so copies STRADDLE the frame edge, which is
-        # structurally different from merely being faint: cv2.matchTemplate only
-        # scores where the whole template fits, so a straddling copy has no score
-        # at all and no threshold can reach it.
+        # Phase shifted so copies straddle the frame edge.
         (dict(basis=RECTANGULAR, offset=(-28, -17)), 0.95),
         (dict(basis=SHALLOW_OBLIQUE, angle=11.0), 0.95),
         (dict(basis=RECTANGULAR, background="render_dither"), 0.85),
@@ -759,32 +559,12 @@ def _site_coverage(marked):
     ids=["rect", "straddling-the-edge", "oblique", "dither-bg"],
 )
 def test_every_copy_the_lattice_predicts_is_masked(kwargs, least):
-    """The grid is the answer, not a hint.
-
-    The overlay is laid on a regular lattice, so once that lattice is established
-    every copy's position is known and there is nothing left for an individual
-    copy to prove. Requiring each one to clear a correlation bar of its own threw
-    most of the watermark away: measured on this fixture it covered 39.0% of the
-    predicted copies, and on real photographs 41.9% of interior copies and 1.2%
-    of the ones clipped by the frame edge.
-
-    The copies this hits hardest are exactly the ones that cannot answer for
-    themselves — an overlay fainter than the photograph's own grain (4-8 grey
-    levels against a median high-pass of 4-9) correlates at 0.13-0.25 where a
-    colour boundary runs under it, against 0.39 on smooth sky.
-
-    Correlation still decides whether the mark is present at all, on confidently
-    matching copies alone, before any of this runs; and the per-pixel evidence
-    check still trims every stamp. Only the per-copy veto is gone.
-    """
     covered, total = _site_coverage(tiled_pair(**kwargs)[1])
     assert total > 20, f"fixture predicted only {total} copies"
     assert covered / total > least, f"masked {covered}/{total} predicted copies"
 
 
-# =========================================================================
-# Refusing when removal would cost more than the watermark
-# =========================================================================
+# --- Refusing destructive removal ---
 
 
 def _document(width=1200, height=800, ground=246, ink=25):
@@ -823,15 +603,6 @@ def _mark_onto(base):
 
 
 def test_a_watermarked_document_is_left_alone_rather_than_wrecked():
-    """The mark is found, and removing it anyway would be the wrong answer.
-
-    A watermark tiled over a DOCUMENT is genuinely present and genuinely masked,
-    but the strokes underneath carry the meaning and inpainting discards whatever
-    a mask covers. On the real spec sheet that prompted this it turned "Projected
-    area (m2)" into "Projected a m2", moving 13.35% of the frame by a mean of 39
-    grey levels. No sensitivity escapes it: at 0 the damage falls but residual
-    mark correlation is 0.412 against 0.441 untouched, so it removes nothing.
-    """
     from watermark.pipeline import destruction, would_destroy_content
 
     page = _mark_onto(_document())
@@ -844,20 +615,6 @@ def test_a_watermarked_document_is_left_alone_rather_than_wrecked():
 
 
 def test_auto_withholds_a_fallback_mask_it_would_not_be_allowed_to_use():
-    """The fallback may only OFFER a mask it would actually be allowed to use.
-
-    A page of text is the shape that breaks the auto fallback: its lines form
-    an evenly spaced run, so it reads as carrying a repeating mark, and the
-    texture filter then marks the LETTERING — 8.44% of the frame at a
-    destruction of 222 against a bar of 88. The run's own guard refused that
-    mask, so nothing was ever damaged, but the review panel had already shown
-    a page covered in red over the content rather than any watermark. The real
-    case was a product sheet whose watermark is a large faint per-panel logo,
-    a shape the texture filter cannot see at all; this reproduces it without
-    shipping the photograph.
-
-    Asking the removal question at proposal time is what withholds the offer.
-    """
     from watermark import detect
     from watermark.pipeline import destruction
 
@@ -870,8 +627,6 @@ def test_auto_withholds_a_fallback_mask_it_would_not_be_allowed_to_use():
     assert used == "none", f"auto offered a {used} mask over a page of text"
     assert np.count_nonzero(mask) == 0
 
-    # And the gate is the only thing standing between the two: with it
-    # disabled the same call hands back exactly the mask above.
     real = detect._worth_removing
     detect._worth_removing = lambda rgb, m: True
     try:
@@ -884,10 +639,6 @@ def test_auto_withholds_a_fallback_mask_it_would_not_be_allowed_to_use():
 
 @pytest.mark.parametrize("background", ["sky_grass", "render_dither", "gradient"])
 def test_an_ordinary_photograph_is_not_refused(background):
-    # The guard must not cost a single ordinary image. Measured over five
-    # documents and eight photographs the two populations do not overlap:
-    # documents scored 97-150 and photographs 40-79, so MAX_DESTRUCTION sits
-    # between them rather than being tuned against either.
     from watermark.pipeline import destruction, would_destroy_content
 
     _clean, marked, _truth = tiled_pair(basis=RECTANGULAR, background=background)
@@ -937,32 +688,12 @@ def _railings(width, height, step=26):
     ids=["brick", "brick-wide", "railings", "railings-coarse"],
 )
 def test_repeating_architecture_is_not_mistaken_for_a_watermark(scene, sensitivity):
-    """Scenery repeats too, and it is not a watermark.
-
-    A brick wall and a rank of railings are strong periodic structure, and every
-    gate before the on-lattice one asks only whether a repeat is STRONG. What
-    separates them is that their matches are not ARRANGED on the fitted lattice:
-    measured 0.333-0.538 of matches on a node here against 0.769-1.000 where a
-    real overlay is present.
-    """
     mask, used = propose(scene, sensitivity)
     assert used == "none", f"masked {100 * np.count_nonzero(mask) / mask.size:.1f}%"
 
 
 @pytest.mark.parametrize("sensitivity", [0, 50, 100])
 def test_a_window_facade_is_refused_before_anything_is_inpainted(sensitivity):
-    """The case the on-lattice gate CANNOT catch, caught by the next one.
-
-    A facade is a genuine two-dimensional lattice, so its matches really do sit
-    on the grid and the arrangement test passes — a watermark and a repeating
-    scene element are geometrically the same thing. What stops it is the cost of
-    removal: erasing the windows out of a wall rewrites it beyond recognition
-    (destruction 130-140 against a bar of 88), so the image is left alone.
-
-    Known gap, deliberately not asserted here: a LOW-CONTRAST regular pattern —
-    pale tiling, ink 170 on ground 205 — passes both gates, because filling it
-    changes little (destruction 35) and so is judged harmless.
-    """
     from watermark.pipeline import would_destroy_content
 
     scene = _facade(1200, 800, 70, 90)
@@ -972,28 +703,15 @@ def test_a_window_facade_is_refused_before_anything_is_inpainted(sensitivity):
     assert would_destroy_content(scene, mask, 3), "a facade would have been inpainted"
 
 
-# =========================================================================
-# The stacked route — a mark stamped once per image, proven by the batch
-# =========================================================================
-#
-# Nothing repeats within any one of these frames, so every single-image route
-# is structurally blind here (no lattice to fold, no run to pool). What the
-# batch shares — the same translucent banner at the same place on different
-# scenes — is exactly what stacking recovers. These tests pin the route's
-# whole contract: it fires through the ordinary batch-marks plumbing, meets
-# the same recall/false-positive bars as the other detectors, and refuses
-# every batch whose "agreement" is not a watermark.
+# --- The stacked route ---
 
 
 def _reloadable(frames):
-    # recover_stacked reads the batch twice (sizes, then fields), so marks
-    # collection needs a loader it can call again — same contract as the
-    # sparse pass documents on collect_marks.
+    # recover_stacked reads the batch twice, so the loader must be re-callable.
     return lambda: iter(frames)
 
 
 def test_a_batchwide_banner_is_recovered_from_the_stack():
-    """The cutlery-photo case: one banner, same place, every frame."""
     frames, truth = stacked_batch(n=5)
     marks = collect_marks(_reloadable(frames))
     assert any(not hasattr(m, "template") for m in marks), "no stacked mark"
@@ -1006,7 +724,6 @@ def test_a_batchwide_banner_is_recovered_from_the_stack():
 
 
 def test_a_clean_batch_recovers_no_stacked_mark():
-    """Independent scenes agree on nothing — the stack must stay silent."""
     frames, _truth = stacked_batch(n=5, watermarked=False)
     assert recover_stacked(_reloadable(frames)) is None
     marks = collect_marks(_reloadable(frames))
@@ -1017,16 +734,6 @@ def test_a_clean_batch_recovers_no_stacked_mark():
 
 
 def test_near_duplicate_frames_are_refused_not_read_as_one_big_mark():
-    """The same scene five times agrees EVERYWHERE — on the scene.
-
-    A catalogue page of one product re-shot (or in five colourways) is
-    indistinguishable from an overlay by consistency alone: every registered
-    edge deviates identically in every frame. Measured, genuine marked
-    batches reach a median pairwise field correlation of 0.681 while
-    re-shot scenes sit at 0.998-1.000; the guard refuses the latter even
-    when a real banner IS present, because nothing separates the banner
-    from the scene it is glued to.
-    """
     marked, _ = stacked_batch(n=5, duplicates=True)
     assert recover_stacked(_reloadable(marked)) is None
     clean, _ = stacked_batch(n=5, duplicates=True, watermarked=False)
@@ -1034,15 +741,11 @@ def test_near_duplicate_frames_are_refused_not_read_as_one_big_mark():
 
 
 def test_a_stack_of_two_proves_nothing():
-    """Variance estimated from two frames is not evidence — refused, not
-    guessed at. Two is also below MIN_STACK, so the route never runs."""
     frames, _truth = stacked_batch(n=2)
     assert recover_stacked(_reloadable(frames)) is None
 
 
 def test_stacked_sensitivity_marks_monotonically_more_pixels():
-    """The slider contract, same as the texture detector's: higher
-    sensitivity re-cuts a superset from the shared field."""
     frames, _truth = stacked_batch(n=5)
     mark = recover_stacked(_reloadable(frames))
     assert mark is not None
@@ -1055,8 +758,6 @@ def test_stacked_sensitivity_marks_monotonically_more_pixels():
 
 
 def test_a_lone_image_gets_no_stacked_mask():
-    """One image has no batch to prove anything with — unchanged behaviour:
-    the pattern routes decline and the image is skipped, not guessed at."""
     frames, _truth = stacked_batch(n=1)
     assert recover_stacked(_reloadable(frames)) is None
     mask, used = propose_mask_detailed(frames[0], 50, "auto", [])

@@ -1,9 +1,3 @@
-// useToolJob's gate on starting a second copy of the same work.
-//
-// This is the layer where the double-submit regressions lived, and until now
-// nothing here was testable: the job core is hooks and context, so the pure
-// helper tests next door could not reach it.
-
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import type { ReactNode } from 'react'
@@ -11,8 +5,7 @@ import { JobsContext, useToolJob, type AnyJob, type JobsContextValue } from './j
 
 const TOOL = '/tools/cache-purge'
 
-/** A jobs context whose track() never resolves, standing in for a job that has
- *  started on the server but whose first progress frame has not arrived. */
+// track() never resolves: the job has started but no frame has arrived.
 function harness(overrides: Partial<JobsContextValue> = {}) {
   const value: JobsContextValue = {
     jobs: {},
@@ -28,10 +21,6 @@ function harness(overrides: Partial<JobsContextValue> = {}) {
 
 describe('useToolJob', () => {
   it('reports running from the click, not from the first progress frame', async () => {
-    // The window this covers is the whole start request. For a batch of masks
-    // or a multi-file upload that is seconds, and every page gates its Start
-    // button on `running` alone — so while this was false the button stayed
-    // live and a second click launched a duplicate of the same heavy job.
     const { wrapper } = harness()
     let release: (value: { job_id: string }) => void = () => {}
     const startFn = vi.fn(() => new Promise<{ job_id: string }>((r) => (release = r)))
@@ -42,8 +31,6 @@ describe('useToolJob', () => {
     act(() => void result.current.start(startFn))
     await waitFor(() => expect(result.current.running).toBe(true))
 
-    // Still running after the POST resolves: the snapshot that would carry the
-    // gate does not exist until the stream delivers its first frame.
     await act(async () => release({ job_id: 'j1' }))
     expect(result.current.running).toBe(true)
   })
@@ -61,10 +48,6 @@ describe('useToolJob', () => {
   })
 
   it('picks the newest job by creation time, not by map order', () => {
-    // Jobs re-attached after a reload land in whatever order their probes
-    // resolve, so the finished older job can be inserted last. Reading map
-    // order as recency handed back its 'done' snapshot and re-enabled Start
-    // while the newer job was still running.
     const snap = (id: string, state: 'running' | 'done', created: string) => ({
       id,
       tool: 'remux',
@@ -88,8 +71,6 @@ describe('useToolJob', () => {
   })
 
   it('still reports running for a job it did not start itself', () => {
-    // Reload and revisit both land here: the page has no local job id, so the
-    // gate has to come from whatever the provider is tracking for this tool.
     const { wrapper } = harness({
       jobs: {
         j9: {

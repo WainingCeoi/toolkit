@@ -1,32 +1,4 @@
-"""The tiled route: a repeating overlay whose cell is too big for the fold.
-
-pattern.py recovers a repeat by folding its tiles together, which needs
-MIN_TILES=9 cells in frame. A 572x268 cell fits a 1080x1922 photograph SEVEN
-times, in one column, so the fold never gets there.
-
-Worse, that period is UNREACHABLE rather than merely unproven, and no constant
-moves it. After fftshift the autocorrelation of a 1080-wide frame spans lags
--540..+539, so a 572px lag is not a value the data can hold at any threshold.
-Measured on such a photograph: _rect_period answers (406, 255) confidently,
-_fit_rectifying_lattice answers a 38x66 basis fitted to the photograph's own
-texture, and the fold that follows is judged against that wrong pitch and
-refused by MIN_SIGNIFICANCE at a ratio of 1.007. The refusal is correct -- what
-it was shown was not the mark. Nothing downstream can recover from a period
-that was never representable, which is why this SEARCHES the period directly
-instead of inferring it from an autocorrelation peak.
-
-What one image can prove about such a mark is the question pooled_marks
-answers "not much, use the batch" -- it needs _MIN_POOL_IMAGES=3 because, on
-the sparse marks it was built for, a clean control frame beat three genuinely
-marked photographs on both gates available at the time. This route is only
-allowed to exist because it asks a different question. Not "is this repeat
-STRONG", which a photograph answers for free, but "is it ARRANGED": see
-_accept, where the gate and the populations it separates are documented.
-
-Every route in pattern.py runs first. This one is reached only after
-recover_mark, apply_mark and every borrowed mark have already returned None,
-so no image that gets a mask today can get a different one.
-"""
+"""The tiled route: a repeating overlay whose cell is too big for the fold."""
 
 from __future__ import annotations
 
@@ -48,56 +20,25 @@ from .pattern import (
     _work_size,
 )
 
-# --- new constants --------------------------------------------------------
-# The window the residual's local energy is measured over, and the two
-# background estimates the residual itself is taken against. See whitened().
+# --- constants ---
+# Local-energy window, and the two background widths (see whitened).
 _WHITEN_ENERGY = 31
-_MATCH_BG = 31
-_INK_BG = 91
-# Period search, in working pixels: from a cell that clearly holds a mark of
-# anchor size, out to one that only fits a couple of times in the frame.
+_MATCH_BG = 31  # wider and the search locks onto the photo's own structure
+_INK_BG = 91  # narrower and a solid feature is absorbed, folding as a ring
+# Period search, in working pixels.
 _TILED_MIN_PERIOD = 150
 _TILED_MAX_SHARE = 0.75
 _TILED_STEP = 2
-# A predicted cell is read only where this much of the patch is inside the
-# frame; below that its score is mostly zero-pad arithmetic.
+# Share of a predicted cell that must be inside the frame to be read.
 _MIN_VISIBLE = 0.5
-# Cells a lattice must predict (not counting the seed) before its mean means
-# anything.
+# Cells a lattice must predict (not counting the seed).
 _MIN_CELLS = 4
 # Anchors enumerated from the whitened field, in addition to pattern.py's own.
 _TILED_ANCHOR_COUNT = 10
 
 
 def whitened(gray: np.ndarray, background: int = _MATCH_BG) -> np.ndarray:
-    """Residual against a median background, divided by its own local energy.
-
-    Dividing by local energy is why this exists. The plain Gaussian high-pass
-    the rest of pattern.py matches on leaves the score field's noise dominated
-    by whichever part of the photograph is busiest, so a copy stamped on smooth
-    canvas and one stamped on grass are not comparable. Dividing makes them so:
-    measured on the sample, score-field noise 0.0607 -> 0.0320 and the best
-    genuine instance 0.279 -> 0.442.
-
-    ``background`` is called at TWO widths and the pair is load-bearing.
-
-    _MATCH_BG (31) is what everything that MATCHES uses -- the lattice search,
-    the per-cell scores, the gate. It has to be tight, because a wider residual
-    keeps more of the photograph's own low-frequency structure and the search
-    then locks onto that: measured, running the search at 91 moved the real
-    photo's answer from its true 268x572 to 150x156, which the emptiness test
-    then threw away. The mark was lost.
-
-    _INK_BG (91) is used for NOTHING but the shape of the stamp, inside a box
-    the 31 fold has already drawn and already gated. A background estimate
-    narrower than a solid feature ABSORBS it: inside this mark's 62px logo disc
-    the 31 estimate becomes the disc, the residual falls to zero, and the disc
-    folds as a hollow ring. Measured over the disc's middle third, mean |field|
-    is 0.338 at 31 against 1.010 at 91; the stamp cut from the 31 fold covers
-    the disc as a broken crescent, which encloses nothing so hole-filling
-    cannot close it, and the logo survives inpainting. 91 costs 10ms on a 2 MP
-    frame.
-    """
+    """Residual against a ``background``-wide median, over its own local energy."""
     g8 = gray if gray.dtype == np.uint8 else np.clip(gray, 0, 255).astype(np.uint8)
     res = g8.astype(np.float32) - cv2.medianBlur(g8, background).astype(np.float32)
     energy = cv2.boxFilter(res * res, -1, (_WHITEN_ENERGY, _WHITEN_ENERGY))
@@ -105,18 +46,10 @@ def whitened(gray: np.ndarray, background: int = _MATCH_BG) -> np.ndarray:
 
 
 def _score_field(field: np.ndarray, patch: np.ndarray, pad: int) -> np.ndarray:
-    """Correlation of ``patch`` over a zero-padded ``field``.
-
-    Padded so a copy hanging off the frame still scores on the part that is
-    present -- matchTemplate otherwise evaluates nothing at all there.
-
-    Guarded exactly the way _matched_sites guards its own map, and for the same
-    measured reason: normalised correlation over a window with no variation
-    divides ~0 by ~0 and OpenCV hands back a perfect score. Without this the
-    zero pad itself, and the flat white of a product render, read as evidence.
-    """
+    """Correlation of ``patch`` over a zero-padded ``field``."""
     padded = cv2.copyMakeBorder(field, pad, pad, pad, pad, cv2.BORDER_CONSTANT, value=0)
     score = cv2.matchTemplate(padded, patch, cv2.TM_CCOEFF_NORMED)
+    # TM_CCOEFF_NORMED returns 1.0 over a flat window (0/0), so those are zeroed.
     floor = _MIN_WINDOW_STD_SHARE * float(patch.std())
     substance = _window_std(padded, patch.shape)[: score.shape[0], : score.shape[1]]
     return np.where(substance >= floor, score, 0.0).astype(np.float32)
@@ -137,26 +70,13 @@ def _positions(seed: int, period: int, span: int, extent: int) -> list[int]:
 
 
 def _scan(score, pad, seed_y, seed_x, span_y, span_x, high, wide):
-    """The best lattice through the seed, by collective evidence.
-
-    Every candidate is judged on the MEAN score over the cells it predicts,
-    times the square root of how many it predicts. That product is what makes
-    the true period win: a half-period predicts twice as many cells but half of
-    them land on nothing, so its mean halves while its count only doubles; a
-    double period predicts only live cells but too few of them.
-
-    The seed's own cell is excluded. It is a self-match, scores 1.000 by
-    construction, and on a lattice predicting four cells that is a quarter of
-    the statistic handed over for free.
-    """
+    """The best lattice through the seed, by mean score x sqrt(cells it predicts)."""
     ys = np.arange(_TILED_MIN_PERIOD, int(_TILED_MAX_SHARE * span_y) + 1, _TILED_STEP)
     xs = np.arange(_TILED_MIN_PERIOD, int(_TILED_MAX_SHARE * span_x) + 1, _TILED_STEP)
     if len(ys) == 0 or len(xs) == 0:
         return None
 
-    # Column weights, built once: row j selects the columns period xs[j]
-    # predicts, so ONE matrix multiply scores every lattice against the folded
-    # row profiles instead of a Python loop per lattice.
+    # One matrix multiply scores every lattice against the folded row profiles.
     width = score.shape[1]
     weights = np.zeros((len(xs), width), np.float32)
     counts_x = np.zeros(len(xs), np.int32)
@@ -167,11 +87,7 @@ def _scan(score, pad, seed_y, seed_x, span_y, span_x, high, wide):
             weights[j, cols] = 1.0 / len(cols)
             counts_x[j] = len(cols)
 
-    # Magnitude, not sign. One overlay is DARKER than blown-out sky and
-    # BRIGHTER than shadow in the same frame, so its copies correlate with
-    # opposite signs -- measured on the render fixture, +1.00 above the horizon
-    # and -0.42 below it. Read signed, the true period scored -0.070 there and
-    # lost to a wrong one at +0.417; read as magnitude it wins, 12 anchors to 3.
+    # Magnitude: the same overlay correlates with opposite signs over sky and shadow.
     score = np.abs(score)
     height = score.shape[0]
     profiles = np.zeros((len(ys), width), np.float32)
@@ -186,13 +102,10 @@ def _scan(score, pad, seed_y, seed_x, span_y, span_x, high, wide):
     means = weights @ profiles.T  # (px, py)
     cells = counts_x[:, None] * counts_y[None, :]
     with np.errstate(invalid="ignore", divide="ignore"):
+        # Minus the seed's own cell, a self-match scoring 1.0.
         rest = (means * cells - 1.0) / np.maximum(cells - 1, 1)
     stat = rest * np.sqrt(np.maximum(cells - 1, 0))
-    # A lattice that predicts a single ROW of cells, or a single column, is a
-    # line and not a grid -- and a line is exactly what a photograph offers for
-    # free. Measured: every clean sky_grass and render_dither control's best
-    # "lattice" was one row of cells lying along the horizon or the edge of the
-    # dithered ground, where the whole band responds and any column pitch fits.
+    # A single row or column of cells is a line, which photographs offer for free.
     grid = (counts_x[:, None] >= 2) & (counts_y[None, :] >= 2)
     stat = np.where(grid & (cells - 1 >= _MIN_CELLS), stat, -np.inf)
     if not np.isfinite(stat).any():
@@ -211,15 +124,7 @@ def _scan(score, pad, seed_y, seed_x, span_y, span_x, high, wide):
 
 
 def _tiled_anchors(field: np.ndarray, high: int, wide: int) -> list[tuple[int, int]]:
-    """Patch-sized windows carrying the most whitened energy, well separated.
-
-    pattern.py's own _anchor_candidates is used as well, but it cannot serve
-    alone here: it keeps only responses inside the QUIETEST 45% of the frame,
-    and on a smooth gradient the only thing with any local texture at all is
-    the mark itself -- so the mark is never quiet, the field it ranks is
-    identically zero, and it returns nothing. Measured: 0 anchors on both the
-    marked and the clean gradient frames.
-    """
+    """Patch-sized windows carrying the most whitened energy, well separated."""
     energy = cv2.boxFilter(field * field, -1, (wide, high))
     work = energy.copy()
     found: list[tuple[int, int]] = []
@@ -233,30 +138,16 @@ def _tiled_anchors(field: np.ndarray, high: int, wide: int) -> list[tuple[int, i
 
 
 # --- the gate -------------------------------------------------------------
-# A predicted cell counts as holding a copy above this correlation. Measured on
-# the cells of accepted lattices: cells confirmed empty by eye score 0.00-0.03,
-# the weakest genuine copy 0.10.
+# Correlation above which a predicted cell counts as holding a copy.
 _CELL_LIVE = 0.06
 # Share of predicted cells that must hold a copy, and the shape they must make.
-# THIS IS THE GATE. See _accept.
 _MIN_LIVE_SHARE = 0.65
 _MIN_LIVE_LINES = 2
 # Anchors that must independently converge on the same lattice.
 _MIN_TILED_VOTES = 2
 
-# The ink cut, as a fraction of the seed copy's own peak energy, from
-# sensitivity 0 to 100. A FRACTION OF PEAK, not the percentile of the box that
-# apply_mark spends: a percentile assumes it is looking at a box the mark
-# fills, and the box this route draws around a lockup is mostly empty (measured
-# on the sample photo, 87x236 of a 268x572 cell, of which the mark is under a
-# third). Measured there, the percentile route spent its whole allowance on the
-# logo disc and left every copy's lettering on the picture at sensitivity 0, 50
-# AND 100 -- the fill fraction it assumes simply is not this shape's.
-#
-# Against the seed copy's own peak the same allowance lands on the mark:
-# measured coverage and destruction at 0.60/0.45/0.30 of peak are 2.9%/4.2%/5.5%
-# of frame at destruction 62/66/68, against the pipeline's gate of 88 -- so no
-# setting on this slider can push a photograph into PROTECTED.
+# Ink cut, sensitivity 0..100, as a fraction of the seed copy's own peak energy.
+# A percentile would assume the box is full; here the mark is under a third of it.
 _TILED_INK_MAX = 0.60
 _TILED_INK_MIN = 0.30
 
@@ -275,23 +166,7 @@ def _cells(score, pad, seed, period, span, extent):
 
 
 def _accept(rows, cols, vals, seed) -> dict | None:
-    """THE GATE: are the copies ARRANGED, or merely present?
-
-    Every other statistic available here asks whether the repeat is STRONG, and
-    a photograph offers strong repeats for free. What it does not offer is a
-    repeat laid out on a GRID. Measured over eight clean controls, every one of
-    them put the live cells of its best lattice in a single LINE -- along the
-    horizon of a sky-over-grass frame, or along the edge of a render's dithered
-    ground, where the whole band responds and any pitch across it fits. The
-    second row is dead: 0.00-0.03 against the live row's 0.12-0.18.
-
-    Two numbers, which are two views of that one fact:
-      live share  0.80-1.00 where a mark is present, 0.00-0.47 on a clean frame
-      live lines  min(live rows, live cols): 2-3 against 0-1
-
-    _MIN_LIVE_SHARE sits at 0.65 between those populations, which is where
-    _MIN_ON_LATTICE sits between its own, and for the same reason.
-    """
+    """The gate: are the copies arranged on a grid, or merely present?"""
     live = np.abs(vals) >= _CELL_LIVE
     si = rows.index(seed[0]) if seed[0] in rows else -1
     sj = cols.index(seed[1]) if seed[1] in cols else -1
@@ -312,17 +187,7 @@ def _accept(rows, cols, vals, seed) -> dict | None:
 
 
 def _fold(field, rows, cols, live, vals, cell, offset):
-    """The whole cell, median-folded over the live copies.
-
-    Each copy is folded in its OWN polarity. A light overlay is darker than
-    blown-out sky and brighter than shadow in one frame -- measured on the
-    render fixture, the same mark correlates at +1.00 above the horizon and
-    -0.42 below it -- and folding those together cancels the mark instead of
-    the scenery.
-
-    Partial cells donate what they have, per pixel, exactly as _fold_on_grid
-    does: a copy half off the frame edge is still half a copy.
-    """
+    """The cell median-folded over the live copies, each in its own polarity."""
     cell_y, cell_x = cell
     off_y, off_x = offset
     tiles = []
@@ -353,28 +218,7 @@ def _fold(field, rows, cols, live, vals, cell, offset):
 
 
 def _seed_ink(field, seed, cell, offset):
-    """The seed copy's own cell window, aligned to the fold's grid.
-
-    The SHAPE of the stamp comes from one copy, not from the fold, and the two
-    jobs are why. The fold's job is to decide WHERE the mark is, and folding is
-    what cancels the photograph out of that decision. Cutting the stamp needs
-    something else: a picture of the mark clean enough that its faintest stroke
-    outranks whatever scenery is left over.
-
-    A fold of a dozen copies is not that picture. Cancellation needs numbers --
-    it is the same shortfall MIN_TILES=9 exists to refuse -- and measured on the
-    sample photo the residue left in a 13-copy fold is as strong as the mark's
-    thinnest lettering, so an ink cut taken on it spends its allowance on
-    leftover photograph. Every cut tried on that fold left "MUYE OUTDOOR"
-    unmasked at sensitivity 0, 50 and 100.
-
-    The seed needs no cancelling instead of poor cancelling. It is an ANCHOR:
-    _anchor_candidates ranks only responses inside the quietest 45% of the
-    frame, so the seed copy sits on the smoothest ground any copy sits on, and
-    its residual is close to the mark alone. Measured, the same allowance then
-    covers the disc, every glyph and the full lettering -- 4.2% of frame at
-    destruction 66, against 1.9% and lettering left behind from the fold.
-    """
+    """The seed copy's cell on the fold's grid: cleaner to cut than a small fold."""
     cell_y, cell_x = cell
     top, left = seed[0] - offset[0], seed[1] - offset[1]
     tile = np.zeros((cell_y, cell_x), np.float32)
@@ -387,14 +231,7 @@ def _seed_ink(field, seed, cell, offset):
 
 
 def _shape(folded, ink, offset, patch_shape, sensitivity):
-    """(stamp, how much of the cell the ink fills).
-
-    The emptiness test is _fold_on_grid's own second, independent check, reused
-    here verbatim including its constant: a watermark cell is mostly empty by
-    construction, and that emptiness is what makes it a watermark rather than a
-    texture. Fold on a grid that is not there and nothing coheres, so the ink
-    cut spreads over the whole tile.
-    """
+    """(stamp, how much of the cell the ink fills)."""
     cell_y, cell_x = folded.shape
     off_y, off_x = offset
     high, wide = patch_shape
@@ -426,10 +263,7 @@ def _shape(folded, ink, offset, patch_shape, sensitivity):
     if fills[0] > _INK_CELL_SHARE or fills[1] > _INK_CELL_SHARE:
         return None, fills
 
-    # Cut on the INK image inside the box the fold already drew and already
-    # gated: see whitened() for why its background estimate is the wider one.
-    # Both are cell-sized and share the fold's offset, so they are pixel-aligned
-    # by construction.
+    # Cut on the ink image (wider background) inside the box the fold drew.
     fraction = _TILED_INK_MAX - (_TILED_INK_MAX - _TILED_INK_MIN) * (
         max(0, min(100, sensitivity)) / 100
     )
@@ -443,14 +277,7 @@ def _shape(folded, ink, offset, patch_shape, sensitivity):
     for label in range(1, pieces):
         if stats[label][cv2.CC_STAT_AREA] < _FILL_MIN_PIECE:
             body[labels == label] = 0
-    # Fill enclosed holes. The mark's largest solid feature is a filled disc,
-    # and a residual taken against a background estimate NARROWER than that disc
-    # reads its interior as empty -- so the disc masks as a ring, and inpainting
-    # leaves a circular ghost exactly where the logo was. Filling what the ink
-    # encloses recovers the solid shape without needing the background estimate
-    # to be wider than every feature the mark might have. Enclosed gaps are
-    # don't-care ground truth anyway: a few pixels across, and they refill from
-    # their surroundings.
+    # Fill enclosed holes: a solid disc folds as a ring against a narrow background.
     holes = body.copy()
     edged = cv2.copyMakeBorder(holes, 1, 1, 1, 1, cv2.BORDER_CONSTANT, value=0)
     flood = np.zeros((edged.shape[0] + 2, edged.shape[1] + 2), np.uint8)
@@ -460,16 +287,7 @@ def _shape(folded, ink, offset, patch_shape, sensitivity):
 
 
 def propose_tiled_mask(rgb, sensitivity, trace=None):
-    """Mask a tiled overlay whose cell is too big for the fold, or None.
-
-    The last thing tried, after recover_mark, apply_mark and every borrowed
-    mark have all declined. See the module docstring.
-
-    ``trace``, when given a dict, records the gate's own numbers (anchors,
-    lattice, votes, cells, share, lines, fills, stamps). Tests pin those rather
-    than only the outcome, so a refactor that moves the bar fails loudly
-    instead of quietly masking a different population.
-    """
+    """Last route tried: a tiled overlay whose cell is too big to fold, or None."""
     work = _work_size(rgb)
     height, width = rgb.shape[:2]
     gray = cv2.cvtColor(work, cv2.COLOR_RGB2GRAY)
@@ -479,6 +297,7 @@ def propose_tiled_mask(rgb, sensitivity, trace=None):
     pad = max(extent)
 
     seen, reports = set(), []
+    # Both: on a smooth gradient the mark is the only texture, so it is never "quiet".
     for cy, cx in list(_anchor_candidates(gray)) + _tiled_anchors(field, *extent):
         top = int(np.clip(cy - _ANCHOR_HALF_H, 0, span[0] - extent[0]))
         left = int(np.clip(cx - _ANCHOR_HALF_W, 0, span[1] - extent[1]))
@@ -497,11 +316,7 @@ def propose_tiled_mask(rgb, sensitivity, trace=None):
     if not reports:
         return None
 
-    # A lattice more than one anchor found. Anchors are cut at different
-    # features of the mark and at different copies of it, so agreeing on a
-    # pitch is agreement about the OVERLAY rather than about one patch of
-    # scenery -- the single-image form of the pitch agreement pooled_marks
-    # takes across a batch.
+    # Different anchors agreeing on a pitch is agreement about the overlay, not scenery.
     tally = Counter((r["py"], r["px"]) for r in reports)
     (py, px), votes = tally.most_common(1)[0]
     if trace is not None:

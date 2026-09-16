@@ -1,19 +1,9 @@
-# Universal entry point for the monorepo (backend + frontend).
-# Run `make help` to see the targets. Recipe lines MUST be TAB-indented.
 SHELL := /bin/bash
 
-# BASE API port, not necessarily the one served: dev, start, backend and host all
-# advance to the first free port at or above it, and announce when they do. Set
-# it to move the whole search, e.g.:  make dev PORT=8010
+# Base port: dev, start, backend and host advance to the first free port at or above it.
 PORT ?= 8000
 
-# Optional backend extras. `docmd` pulls MinerU (Doc→Markdown) and `watermark`
-# pulls torch for LaMa inpainting (Watermark Remover); torch ships NO macOS
-# x86_64 wheel — so both are skipped automatically on Intel Macs, where
-# installing them can only fail. Force any subset:
-#   make install EXTRAS=docmd               (just MinerU)
-#   make install EXTRAS="docmd watermark"   (force both on)
-#   make install EXTRAS=                    (force off)
+# Backend extras; skipped on Intel Macs (no torch wheel). Override: make install EXTRAS=docmd
 EXTRAS ?= $(shell if [ "$$(uname -s)" = "Darwin" ] && [ "$$(uname -m)" = "x86_64" ]; \
                   then echo ""; else echo "docmd watermark"; fi)
 EXTRA_FLAGS := $(foreach extra,$(strip $(EXTRAS)),--extra $(extra))
@@ -39,13 +29,7 @@ install:
 	cd backend && uv sync $(EXTRA_FLAGS)
 	cd frontend && npm install
 
-# Development: both servers, one command, one Ctrl-C. Vite proxies /api -> the backend.
-# Loopback only — the hot-reload dev server is never exposed on the LAN.
-#
-# The port is resolved ONCE, up front, and handed to both halves. dev cannot use
-# the launcher the way start/host do: Vite fixes its /api proxy target when it
-# boots, so a port chosen inside the server process is a port Vite never learns,
-# and every /api call would 502 against the busy original.
+# Loopback only; the port is resolved once, up front, since Vite fixes its /api proxy at boot.
 dev:
 	@cd backend; \
 	FREE=$$(PORT=$(PORT) uv run --frozen python -m toolkit_api.host --free-port) || exit $$?; \
@@ -58,16 +42,11 @@ dev:
 	( cd frontend && API_PORT=$$FREE npm run dev ) & \
 	wait
 
-# Production-style: one process serves the built UI and the API (loopback).
-# Same launcher as `host`, so a busy port auto-advances here too; HOST pins it to
-# loopback, which also suppresses the LAN security banner.
+# One process serves UI + API on loopback; a busy port auto-advances.
 start: build
 	cd backend && HOST=127.0.0.1 PORT=$(PORT) uv run --frozen python -m toolkit_api.host
 
-# LAN host: build the UI, then serve API + UI from ONE process bound to 0.0.0.0 so every
-# device on the same Wi-Fi can reach it at http://<this-machine>.local:$(PORT). The launcher
-# prints the real URLs, auto-advances past a busy port, and warns about LAN exposure.
-# Overrides: HOST=127.0.0.1 (local-only), PORT=<n> (base port). --frozen: never rewrite the lock.
+# Same as start but bound to 0.0.0.0 for the whole LAN; HOST=127.0.0.1 keeps it local.
 host: build
 	cd backend && PORT=$(PORT) uv run --frozen python -m toolkit_api.host
 
@@ -84,15 +63,7 @@ backend:
 frontend:
 	cd frontend && API_PORT=$(PORT) npm run dev
 
-# Tests first: `&&` short-circuits, so ordering decides what you learn when it fails.
-# Explicit `src tests` paths, not a bare `ruff check`: an explicit path overrides `exclude`,
-# so a stray ignore can't quietly shrink the gate, and a bad `cd` fails loudly with E902.
-# `ruff format --check` is enforced too, so drift fails the gate instead of piling up.
-#
-# The frontend gate used to be `npm run build` alone, which proves almost
-# nothing: Vite strips TypeScript types with esbuild WITHOUT checking them, so a
-# type-broken app builds clean. `typecheck` (TypeScript 7) is the real gate, and
-# lint/test were already written but never run in CI. Ordered cheapest-first.
+# npm run build alone does not typecheck (Vite strips types); explicit ruff paths override exclude.
 test:
 	cd backend && uv run --frozen pytest -q && uv run --frozen ruff check src tests && uv run --frozen ruff format --check src tests
 	cd frontend && npm run typecheck && npm run lint && npm run test && npm run build

@@ -1,19 +1,4 @@
-"""Inpainters: fill the masked pixels from their surroundings.
-
-Two engines behind one call shape, ``inpaint(rgb, mask) -> rgb``:
-
-- ``cv2`` — cv2.inpaint (Telea). Instant and always available; fine on thin
-  strokes, smeary on large regions.
-- ``lama`` — the big-lama TorchScript checkpoint, the same weights the
-  simple-lama-inpainting package wraps. That package itself pins numpy<2 and
-  pillow<10, neither of which exists for Python 3.14, so the few lines of
-  pre/post-processing live here instead and only torch is required (the
-  optional ``watermark`` extra). The checkpoint (~200 MB) downloads into
-  torch.hub's cache on first use.
-
-torch is imported inside LamaInpainter, never at module level: the web app
-must boot — and every other tool must work — without the extra installed.
-"""
+"""Inpainters: fill the masked pixels from their surroundings."""
 
 from __future__ import annotations
 
@@ -26,6 +11,7 @@ import numpy as np
 
 INPAINTERS = ("lama", "cv2")
 
+# The simple-lama-inpainting weights; that package pins numpy<2 (no py3.14).
 LAMA_URL = (
     "https://github.com/enesmsahin/simple-lama-inpainting/releases/download/"
     "v0.1.0/big-lama.pt"
@@ -48,16 +34,7 @@ _device: str | None = None
 
 
 def resolve_device() -> str:
-    """Where LaMa should run: the best accelerator this machine has.
-
-    CUDA first, then Apple's MPS, then CPU. Measured on an M-series Mac, the
-    same 0.3 MP inpaint took 12.65s on CPU and 1.54s on MPS — 8x — and the two
-    outputs differ by at most one grey level, so there is no quality reason to
-    stay on CPU. WATERMARK_DEVICE overrides, for pinning a specific backend.
-
-    Cached: the answer cannot change within a process, and probing imports
-    torch, which callers like /health would otherwise pay for repeatedly.
-    """
+    """The device LaMa runs on; cached because probing imports torch."""
     global _device
     override = os.environ.get(DEVICE_ENV)
     if override:
@@ -65,7 +42,7 @@ def resolve_device() -> str:
     if _device is not None:
         return _device
     if not lama_available():
-        return "cpu"  # nothing will run anyway; report the honest default
+        return "cpu"
     import torch
 
     if torch.cuda.is_available():
@@ -82,12 +59,7 @@ def inpaint_cv2(rgb: np.ndarray, mask: np.ndarray) -> np.ndarray:
     return cv2.inpaint(rgb, mask, _CV2_RADIUS, cv2.INPAINT_TELEA)
 
 
-# The loaded TorchScript model, keyed by device. A LamaInpainter is created per
-# RUN, so without this the ~200 MB checkpoint is re-read from disk every time
-# anyone presses Start -- seconds of dead time on each tweak-and-rerun, and the
-# weights are identical every time. Keyed by device because the model is moved
-# onto one at load, and a process could be asked for both (a test pinning cpu
-# via WATERMARK_DEVICE beside a real run on mps).
+# Loaded TorchScript models by device, so a rerun does not re-read the checkpoint.
 _models: dict[str, object] = {}
 
 
@@ -99,7 +71,7 @@ class LamaInpainter:
         self._model = None
 
     def __call__(self, rgb: np.ndarray, mask: np.ndarray) -> np.ndarray:
-        import torch  # deferred: see module docstring
+        import torch  # deferred: torch is an optional extra
 
         if self._model is None:
             cached = _models.get(self.device)
@@ -107,8 +79,7 @@ class LamaInpainter:
                 cached = _models[self.device] = self._load(torch)
             self._model = cached
 
-        # big-lama wants dimensions in multiples of 8; pad symmetrically and
-        # crop the result back. Inputs are float [0, 1], mask strictly binary.
+        # big-lama needs dimensions in multiples of 8; the padding is cropped back.
         h, w = rgb.shape[:2]
         pad_h, pad_w = (-h) % 8, (-w) % 8
         padded_rgb = np.pad(rgb, ((0, pad_h), (0, pad_w), (0, 0)), mode="symmetric")
@@ -134,19 +105,14 @@ class LamaInpainter:
             if not path.is_file():
                 torch.hub.download_url_to_file(LAMA_URL, str(path), progress=False)
         with warnings.catch_warnings():
-            # torch.jit warns "not supported in Python 3.14+ and may break",
-            # but the published big-lama artifact IS a TorchScript archive
-            # (there is no torch.export copy of these weights to switch to)
-            # and it demonstrably loads and runs — see test_watermark_lama.
+            # torch.jit's 3.14 deprecation warning; the checkpoint is TorchScript-only.
             warnings.simplefilter("ignore", DeprecationWarning)
             model = torch.jit.load(path, map_location=self.device)
         return model.to(self.device).eval()
 
 
 def get_inpainter(name: str):
-    """The inpaint callable for ``name`` — one instance per batch, so LaMa
-    loads once, not once per image, and the weights are then cached process-wide
-    so a second run does not re-read them either (see _models)."""
+    """The inpaint callable for ``name``."""
     if name == "cv2":
         return inpaint_cv2
     if name == "lama":

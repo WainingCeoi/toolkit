@@ -1,15 +1,4 @@
-"""Torrent Downloader: pick a BitComet, resolve, choose files, hand it the task.
-
-There is no queue endpoint, no event stream and no pause/resume/remove here on
-purpose. Once a task is sent it belongs to BitComet, which already has a UI for
-managing it and is the only thing that actually knows what the download is
-doing. The single non-resolve write left is discard(), which cancels a staging
-this app started and the user never sent -- see TorrentManager.discard.
-
-The /devices routes are the exception to "this tool stores nothing": WHICH
-BitComet to talk to is a fact about this app's configuration, not about any
-download, so BitComet cannot be the one to remember it. See devices.py.
-"""
+"""Torrent Downloader: pick a BitComet, resolve, choose files, hand it the task."""
 
 from __future__ import annotations
 
@@ -26,20 +15,13 @@ from ..devices import LOCAL_ID
 
 router = APIRouter(prefix="/torrent", tags=["torrent"])
 
-# Shown wherever BitComet is unreachable or unconfigured. Both switches are
-# named because the API answers APP_ACCESS_DISABLED with only the Web UI one
-# on, which looks exactly like a wrong password.
+# Names both switches: Web UI alone yields APP_ACCESS_DISABLED, like a bad password.
 REMOTE_ACCESS_HINT = (
     "In BitComet, Options -> Remote Access: turn on both 'via BitComet Mobile "
     "App' and 'via Web UI', and set a username and password."
 )
 
 
-# The same advice for a machine that is not this one. "Start BitComet" is not
-# actionable when BitComet is in another room, and the LAN adds two failure
-# modes loopback does not have: the peer asleep, and its remote access bound to
-# loopback only (BitComet's own default), which refuses every LAN client while
-# looking perfectly healthy from that machine's own browser.
 def _remote_hint(url: str, label: str) -> str:
     return (
         f"{label} is not answering at {url}. Check that the machine is awake, "
@@ -58,7 +40,7 @@ class DeviceOut(BaseModel):
     label: str
     url: str | None = None
     username: str = ""
-    # Never the password itself -- see Device.public().
+    # Never the password itself.
     has_password: bool = False
     is_local: bool = True
 
@@ -72,8 +54,7 @@ class DeviceIn(BaseModel):
     label: str = ""
     url: str = ""
     username: str = ""
-    # Blank on an edit means "keep the stored one", so the UI can show an empty
-    # field without wiping credentials it was never sent.
+    # Blank on an edit means "keep the stored one".
     password: str = ""
 
 
@@ -81,9 +62,7 @@ class DeviceTestIn(BaseModel):
     url: str = ""
     username: str = ""
     password: str = ""
-    # Set when testing a device already saved, so a blank password above can
-    # fall back to the stored one instead of failing a test the real connection
-    # would have passed.
+    # Set when testing a saved device: a blank password falls back to the stored one.
     id: str | None = None
 
 
@@ -91,9 +70,7 @@ class DeviceTestOut(BaseModel):
     ok: bool
     server: str | None = None
     detail: str | None = None
-    # What that BitComet will accept as a download folder. The point of testing
-    # before saving: these paths are on the peer's disk, and this is the first
-    # moment the user can see them.
+    # Download folders on that BitComet's own disk.
     save_folders: list[str] = []
 
 
@@ -101,15 +78,10 @@ class StatusOut(BaseModel):
     running: bool
     server: str | None = None
     detail: str | None = None
-    # Where BitComet's own UI lives, so the page can hand the user straight
-    # over to it after sending instead of describing how to find it.
+    # Where BitComet's own UI lives.
     url: str | None = None
-    # Which BitComet the answers above are about. None only for an injected
-    # state with no device book.
+    # None only for an injected state with no device book.
     device: DeviceOut | None = None
-    # Whether that BitComet is the one on this machine. Decides whether the
-    # page can offer a native folder picker (it browses THIS filesystem, which
-    # is the wrong one for a peer) or must offer the peer's own folder list.
     is_local: bool = True
     save_folders: list[str] = []
 
@@ -124,8 +96,7 @@ def _folders(torrents) -> list[str]:
 
 @router.get("/status", response_model=StatusOut)
 def status(state: StateDep) -> dict:
-    """Always answers, even with no engine -- it is the diagnostic endpoint, so
-    gating it behind the dependency it reports on would hide the diagnosis."""
+    """Always answers, even with no engine: this is the diagnostic endpoint."""
     book = state.devices
     device = book.active() if book is not None else None
     torrents = state.torrents
@@ -147,8 +118,6 @@ def status(state: StateDep) -> dict:
     detail = None
     if server is None:
         if torrents.client.is_local:
-            # Credentials were readable, so BitComet is installed -- it is
-            # either not running or not serving the API.
             detail = (
                 f"BitComet is not answering at {torrents.client.base_url}. "
                 f"Start it, then check: {REMOTE_ACCESS_HINT}"
@@ -168,9 +137,7 @@ def status(state: StateDep) -> dict:
     }
 
 
-# =======================================================
-# DEVICES
-# =======================================================
+# --- DEVICES ---
 def _listing(book) -> dict:
     return {
         "active": book.active().id,
@@ -185,11 +152,7 @@ def list_devices(book: DevicesDep) -> dict:
 
 @router.post("/devices", response_model=DeviceListOut)
 def add_device(payload: DeviceIn, book: DevicesDep, state: StateDep) -> dict:
-    """Save a remote BitComet and switch to it.
-
-    Switching immediately is the point of adding one: nobody types in a NAS's
-    address to leave the tool pointed somewhere else.
-    """
+    """Save a remote BitComet and switch to it."""
     try:
         device = book.add(
             payload.label, payload.url, payload.username, payload.password
@@ -216,8 +179,6 @@ def update_device(
         raise HTTPException(status_code=404, detail="No such device.") from exc
     except BitCometError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    # Rebuild only if the edit was to the device in use; otherwise a change to
-    # an idle device would needlessly drop a working connection.
     if book.active().id == device.id:
         app_state.use_device(state, device)
     return _listing(book)
@@ -231,8 +192,7 @@ def remove_device(device_id: str, book: DevicesDep, state: StateDep) -> dict:
         raise HTTPException(status_code=404, detail="No such device.") from exc
     except BitCometError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    # Removing the device in use drops the tool back to this Mac (DeviceBook
-    # does the falling back), so the manager has to follow it there.
+    # book.remove may have changed the active device; the manager must follow.
     app_state.use_device(state, book.active())
     return _listing(book)
 
@@ -249,13 +209,7 @@ def select_device(device_id: str, book: DevicesDep, state: StateDep) -> dict:
 
 @router.post("/devices/test", response_model=DeviceTestOut)
 def test_device(payload: DeviceTestIn, book: DevicesDep) -> DeviceTestOut:
-    """Try an address and credentials WITHOUT saving them.
-
-    Answers with BitComet's own words on failure rather than a bare "not
-    running": on the LAN the three plausible causes -- wrong address, wrong
-    password, remote access not reachable from the network -- are
-    indistinguishable from the outside, and only the error text separates them.
-    """
+    """Try an address and credentials without saving them."""
     password = payload.password
     if not password and payload.id and payload.id != LOCAL_ID:
         try:
@@ -268,21 +222,14 @@ def test_device(payload: DeviceTestIn, book: DevicesDep) -> DeviceTestOut:
             base_url=payload.url,
             username=payload.username,
             password=password,
-            # The remote steady-state budget, for the same reason the saved
-            # devices get it: a Test pressed while that BitComet is grinding
-            # through fresh tasks must report "reached", not time out.
             timeout=REMOTE_TIMEOUT,
-            # The SAME persisted id every other connection uses. A throwaway id
-            # here would add one paired-device entry to that BitComet's
-            # settings for every press of Test.
+            # Same persisted id as other connections: a fresh id pairs a new device.
             device_id_file=app_state.data_dir() / "bitcomet-device-id",
         )
     except BitCometError as exc:
         return DeviceTestOut(ok=False, detail=str(exc))
 
     try:
-        # save_folders() rather than probe(): it is one authenticated round
-        # trip either way, and this one comes back with something to show.
         folders = client.save_folders()
         name = client.server_name or "BitComet"
     except BitCometError as exc:
@@ -299,21 +246,9 @@ def resolve(
     file: Annotated[UploadFile | None, File()] = None,
     save_dir: Annotated[str, Form()] = "",
 ) -> dict:
-    """Stage a magnet or a .torrent and report its file list when known.
-
-    One endpoint for both because the two differ only in how long the file
-    list takes to appear: a .torrent carries it, a magnet has to fetch it.
-
-    The destination is chosen here rather than at send because BitComet fixes
-    a task's save folder when the task is created.
-
-    Deliberately a sync `def`, like every other route here, so FastAPI runs it
-    on the threadpool. It talks to BitComet over blocking `requests` with a
-    30s-per-round-trip budget for a remote device; as an `async def` those
-    calls sat on the event loop, and one asleep LAN peer froze every SSE
-    progress stream and every other request in the process along with it. The
-    upload is read through the sync file object for the same reason.
-    """
+    """Stage a magnet or a .torrent and report its file list when known."""
+    # Keep this a sync def: blocking BitComet calls in an async def stall the loop.
+    # BitComet fixes the save folder at task creation, so save_dir is taken here.
     if file is not None:
         data = file.file.read()
         try:
@@ -344,9 +279,7 @@ def poll_resolve(infohash: str, torrents: TorrentsDep) -> dict:
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Unknown torrent.") from exc
     except BitCometError as exc:
-        # A magnet's files are deselected on this path, and the torrent is
-        # running while that happens -- so a BitComet that stops answering here
-        # is reported, never smoothed over into "still waiting for metadata".
+        # Report a BitComet outage here; never smooth it into "still waiting".
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 

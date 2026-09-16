@@ -1,9 +1,4 @@
-"""Extension -> category sets, shared by Remux and Torrent Downloader.
-
-Remux owned VIDEO_EXTENSIONS/SUBTITLE_EXTENSIONS first; they moved here when
-the Torrent Downloader needed the same answer for "is this file a video?".
-One list, so the two tools can never disagree about what .m4v is.
-"""
+"""Extension -> category sets shared across tools."""
 
 from __future__ import annotations
 
@@ -46,10 +41,7 @@ CATEGORY_EXTENSIONS: dict[str, frozenset[str]] = {
     "archive": ARCHIVE_EXTENSIONS,
 }
 
-# Categories the minimum-size filter applies to. Everything else is matched on
-# extension alone: a 100 MB floor would otherwise discard every subtitle and
-# .nfo the moment those boxes were ticked, making "video over 100 MB, plus the
-# subs" impossible to express.
+# Only these get the minimum-size filter; a floor would drop every subtitle/.nfo.
 SIZED_CATEGORIES = frozenset({"video", "audio"})
 
 CATEGORY_NAMES = (*CATEGORY_EXTENSIONS, "other")

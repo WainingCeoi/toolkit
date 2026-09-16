@@ -1,23 +1,3 @@
-// Watermark Remover — auto-detect a mask, review it, inpaint it away. One job
-// per batch; the one deliverable is a zip of everything cleaned, republished
-// as each image lands so a run that dies mid-batch still hands over what it
-// got.
-//
-// The mask is reviewed, not edited. The brush came back once, for the
-// watermark that never repeats — a single large logo has no copies to fold,
-// so no single-image route can find it. That case now belongs to the stacked
-// route instead: a supplier stamps the same mark at the same place across the
-// whole batch, so stacking the batch recovers it together, and the honest
-// answer for a LONE image carrying a one-off mark is that this tool cannot
-// remove it — upload more photos from the same supplier. What is shown is
-// what runs: the proposal is exported from the canvas and sent with the run.
-//
-// Results render from the job SNAPSHOT, not from the batch held in local
-// state: the jobs context keeps snapshots alive across navigation, so leaving
-// the page mid-run and coming back must still reach the downloads. The
-// snapshot carries its own batch_id, which is also how a finished run is kept
-// from presenting itself as the outcome of a batch uploaded after it.
-
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, artifactUrl, watermarkImageUrl, watermarkMaskUrl } from '../api'
 import { useToolJob } from '../jobs'
@@ -38,18 +18,14 @@ export default function WatermarkRemover() {
   const [uploadError, setUploadError] = useState<string | null>(null)
   const [batch, setBatch] = useState<WatermarkBatch | null>(null)
 
-  // draft follows the sensitivity slider live; applied commits on release and
-  // drives the mask refetch, so dragging doesn't flood the detector.
+  // draft tracks the slider live; applied commits on release so dragging does not refetch.
   const [draft, setDraft] = useState<Record<string, number>>({})
   const [applied, setApplied] = useState<Record<string, number>>({})
   const [ready, setReady] = useState<Record<string, boolean>>({})
   const [noPattern, setNoPattern] = useState<Record<string, boolean>>({})
-  // Nobody picks a detector or an engine: detection runs in auto mode, and the
-  // inpainter is LaMa whenever torch is present, cv2 otherwise (see health).
   const [inpainter, setInpainter] = useState<'lama' | 'cv2'>('lama')
   const previews = useRef<Record<string, MaskPreviewHandle | null>>({})
 
-  // Health lamps load independently of everything else on the page.
   const [health, setHealth] = useState<WatermarkHealth | null>(null)
   useEffect(() => {
     let alive = true
@@ -74,9 +50,7 @@ export default function WatermarkRemover() {
     setReady((prev) => (prev[id] === isReady ? prev : { ...prev, [id]: isReady }))
   }, [])
 
-  // An all-black proposal means the detector declined; the run will skip
-  // that image rather than inpaint anything, and the review panel should say
-  // so.
+  // An all-black proposal means the detector declined; the run skips that image.
   const markEmpty = useCallback((id: string, empty: boolean) => {
     setNoPattern((prev) => (prev[id] === empty ? prev : { ...prev, [id]: empty }))
   }, [])
@@ -110,17 +84,13 @@ export default function WatermarkRemover() {
     const masks: Record<string, string> = {}
     const pending: string[] = []
     for (const img of batch.images) {
-      // ready is false while a proposal is in flight — including a sensitivity
-      // refetch. The canvas still holds (and would export) the mask from
-      // BEFORE the slider moved, and inpainting that would break "what is
-      // shown is what runs" the moment the new proposal lands.
+      // false while a refetch is in flight: the canvas would still export the previous mask.
       if (ready[img.id] === false) {
         pending.push(img.name)
         continue
       }
       const mask = previews.current[img.id]?.exportMask()
-      // null means no proposal ever landed. Sending nothing for that image
-      // would inpaint an empty mask and "succeed" without changing it.
+      // null means no proposal ever landed; sending nothing would "succeed" on an empty mask.
       if (mask) masks[img.id] = mask
       else pending.push(img.name)
     }
@@ -138,12 +108,8 @@ export default function WatermarkRemover() {
     previews.current = {}
   }
 
-  // Results are shown in every state, because the worker publishes them per
-  // image: a run that dies on image 8 must still hand back images 1-7, and a
-  // cancelled or still-running one has finished images worth reaching too.
+  // Shown in every state: results are published per image, so a failed run still has some.
   const result = snapshot?.result ?? null
-  // A finished job from an earlier batch must not be read as this batch's
-  // outcome (stale zip, stale filenames) once new images are staged.
   const staleForBatch = batch != null && result != null && result.batch_id !== batch.batch_id
   const showJob = snapshot != null && !staleForBatch
 
@@ -228,10 +194,7 @@ export default function WatermarkRemover() {
                 <strong>{img.name}</strong>
                 <span className="wm-dims">
                   {ready[img.id] === false && 'detecting… · '}
-                  {/* Deliberately not "no watermark found": an empty proposal
-                      also covers the image whose mark IS there and cannot be
-                      isolated safely. Which of the two it was is said in the
-                      results, where it can be said accurately. */}
+                  {/* Not "no watermark found": an empty mask may mean it cannot be isolated. */}
                   {noPattern[img.id] && 'nothing to remove — will be left alone · '}
                   {img.width}×{img.height}
                 </span>
@@ -334,12 +297,7 @@ export default function WatermarkRemover() {
                       `The run stopped early, but these ${result.done.length} image(s) finished and are safe to download.`}
                   </div>
                 )}
-                {/* Only once the run has stopped — finished, cancelled or
-                    failed. Mid-run the zip exists and is downloadable, but a
-                    button offering it while images are still landing invites
-                    taking a partial batch for the whole one. The harvest still
-                    happens: cancel or crash lands here too, with whatever was
-                    cleaned. */}
+                {/* Hidden mid-run: the zip exists but would be a partial batch. */}
                 {result.artifact_id && snapshot.state !== 'running' && (
                   <Button as="a" href={artifactUrl(result.artifact_id)}>
                     ⬇ Download cleaned images (.zip)

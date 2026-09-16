@@ -1,9 +1,4 @@
-"""Watermark Remover API: upload staging, mask serving, and the inpaint job.
-
-The engine runs for real on the cv2 path — it is fast and pure, so faking it
-would test less for no speed win. Images are tiny synthetic PNGs; masks are
-drawn as arrays and PNG-encoded, exactly what the canvas editor exports.
-"""
+"""Watermark Remover API: upload staging, mask serving, and the inpaint job."""
 
 from __future__ import annotations
 
@@ -54,16 +49,12 @@ def mask_b64(width, height, box=None):
     return base64.b64encode(imgio.encode_png(mask)).decode()
 
 
-# =========================================================================
-# Health
-# =========================================================================
+# --- Health ---
 
 
 def test_watermark_health_reports_lama_and_the_resolved_device(client):
     body = client.get("/api/watermark/health").json()
     assert set(body) == {"lama", "device"}
-    # Whatever this machine has — an accelerator is picked automatically, so
-    # pinning "cpu" here would fail on any Mac with MPS.
     assert body["device"] in {"cpu", "mps", "cuda"}
 
 
@@ -73,8 +64,6 @@ def test_watermark_device_env_pins_the_device(client, monkeypatch):
 
 
 def test_creating_the_app_never_imports_torch():
-    # The lazy-ML contract, at app level: every router (watermark included)
-    # is imported by create_app, and none of that may pull in torch.
     code = (
         "import sys; from toolkit_api.main import create_app; create_app(); "
         "sys.exit(1 if 'torch' in sys.modules else 0)"
@@ -85,9 +74,7 @@ def test_creating_the_app_never_imports_torch():
     assert result.returncode == 0, result.stderr
 
 
-# =========================================================================
-# Upload / staging
-# =========================================================================
+# --- Upload / staging ---
 
 
 def test_batch_stages_images_and_reports_dimensions(client):
@@ -140,9 +127,7 @@ def test_batch_sanitizes_traversal_filenames_to_basenames(client):
     assert resp.json()["images"][0]["name"] == "escape.png"
 
 
-# =========================================================================
-# Working copy + auto-mask endpoints
-# =========================================================================
+# --- Working copy + auto-mask endpoints ---
 
 
 def test_working_copy_is_served_as_png_at_native_size(client):
@@ -178,22 +163,11 @@ def test_unknown_batch_and_image_are_404(client):
     assert client.get("/api/watermark/nope/nada/mask").status_code == 404
 
 
-# =========================================================================
-# Run
-# =========================================================================
+# --- Run ---
 
 
 def test_run_inpaints_only_the_masked_pixels(client):
-    # Flat gray with a lighter square; the mask covers the square. Inpainting
-    # must pull the square toward gray and leave far-away pixels untouched.
-    #
-    # The square is 32 grey levels above the ground, not the 127 it used to be,
-    # because this tool is for SEMI-TRANSPARENT overlays and the run now refuses
-    # an image when the fill would rewrite it beyond recognition (see
-    # would_destroy_content). A solid white block tripped that guard, which is
-    # the guard working: erasing it really would be a drastic rewrite. This test
-    # is about compositing only masked pixels, so it uses a mark of the kind the
-    # tool is actually meant to remove.
+    # The square is faint (+32) so the destruction guard does not refuse it.
     rgb = np.full((60, 80, 3), 128, np.uint8)
     rgb[20:36, 30:50] = 160
     buffer = io.BytesIO()
@@ -222,17 +196,14 @@ def test_run_inpaints_only_the_masked_pixels(client):
         "error": None,
     }
 
-    # The result carries everything the results view needs on its own, so it
-    # still renders after the page has been unmounted and remounted. The zip is
-    # the ONE deliverable -- there are no per-file artifacts to fall back on.
     assert snap["result"]["batch_id"] == batch["batch_id"]
     zip_download = client.get(f"/api/artifacts/{snap['result']['artifact_id']}")
     assert snap["result"]["filename"] == "cleaned_images.zip"
     with zipfile.ZipFile(io.BytesIO(zip_download.content)) as archive:
         assert archive.namelist() == ["square.png"]
         cleaned = np.asarray(Image.open(io.BytesIO(archive.read("square.png"))))
-    assert cleaned[28, 40].mean() < 145  # square filled from its gray surround
-    assert np.array_equal(cleaned[:10, :10], rgb[:10, :10])  # far corner intact
+    assert cleaned[28, 40].mean() < 145
+    assert np.array_equal(cleaned[:10, :10], rgb[:10, :10])
 
 
 def test_run_processes_only_images_that_got_a_mask(client):
@@ -278,7 +249,6 @@ def test_a_wrong_size_mask_fails_that_item_and_spares_the_rest(client):
 
 
 def test_colliding_output_stems_are_deduped_in_the_zip(client):
-    # a.png and a.jpg both clean to "a.png" — the zip must keep two entries.
     jpeg = io.BytesIO()
     Image.new("RGB", (20, 10), "gray").save(jpeg, format="JPEG")
     batch = upload(
@@ -297,8 +267,6 @@ def test_colliding_output_stems_are_deduped_in_the_zip(client):
 
 
 def test_a_crash_midway_still_hands_back_what_finished(client, app_state, monkeypatch):
-    # The real report: 7 of 8 images cleaned, the 8th took the run down, and
-    # the 7 were lost. Results are published per image, so they survive.
     batch = upload(
         client,
         ("first.png", png_bytes((20, 10))),
@@ -306,10 +274,7 @@ def test_a_crash_midway_still_hands_back_what_finished(client, app_state, monkey
     ).json()
 
     def exploding_replace(artifact_id, src):
-        # The second image's zip update, outside the per-file try/except.
-        # replace_FILE, not replace_bytes: the run spools its PNGs to disk and
-        # streams the zip from them rather than holding every output in memory
-        # beside LaMa's inpainting peak, so the republish moves a file now.
+        # replace_file is the per-image zip republish, outside the per-file try/except.
         raise MemoryError("out of memory inpainting a huge image")
 
     monkeypatch.setattr(app_state.artifacts, "replace_file", exploding_replace)
@@ -334,8 +299,6 @@ def test_a_crash_midway_still_hands_back_what_finished(client, app_state, monkey
 
 
 def test_results_are_published_before_the_batch_ends(client, app_state):
-    # Not just on failure: a long batch should be able to hand back image 1
-    # while image 2 is still running.
     batch = upload(client, ("a.png", png_bytes((20, 10)))).json()
     image = batch["images"][0]
     seen = []
@@ -360,15 +323,10 @@ def test_results_are_published_before_the_batch_ends(client, app_state):
         },
     )
     wait_for_job(client, resp.json()["job_id"])
-    # The worker had already published before returning, so the registry saw a
-    # result while the job was still "running".
     assert seen and seen[0]["done"] == ["a.png"]
 
 
 def test_an_empty_mask_is_skipped_not_written_back(client):
-    # The detector declines on images with no recoverable watermark, which
-    # arrives here as an all-black mask. Inpainting nothing and calling the
-    # result "cleaned" would hand back a no-op dressed as a success.
     batch = upload(client, ("plain.png", png_bytes((20, 10)))).json()
     image = batch["images"][0]
     resp = client.post(
@@ -387,11 +345,6 @@ def test_an_empty_mask_is_skipped_not_written_back(client):
 
 
 def test_an_empty_mask_on_a_visible_repeat_is_protected(client, monkeypatch):
-    # An empty proposal covers two opposite cases, and the API has to separate
-    # them exactly as the folder pipeline does: nothing was found, or a mark is
-    # demonstrably there and no route could isolate one worth using. The
-    # screenshot in the real sample is the second, and it was being reported as
-    # the first.
     from toolkit_api.routers import watermark as router
 
     monkeypatch.setattr(router, "repeating_evidence", lambda rgb: True)
@@ -474,9 +427,7 @@ def test_run_validation_errors(client):
     assert "not valid base64" in bad_base64.json()["detail"]
 
 
-# =========================================================================
-# Batch store lifecycle
-# =========================================================================
+# --- Batch store lifecycle ---
 
 
 def test_expired_batches_are_swept_on_access(tmp_path):
@@ -487,8 +438,6 @@ def test_expired_batches_are_swept_on_access(tmp_path):
 
 
 def test_using_a_batch_keeps_it_alive(tmp_path):
-    # Expiry is measured from last use, not from creation: a correction
-    # session is allowed to take longer than the TTL.
     store = WatermarkBatches(tmp_path / "wm", ttl=0.05)
     batch = store.create([("a.png", png_bytes(), 64, 48)])
     for _ in range(4):
@@ -499,14 +448,12 @@ def test_using_a_batch_keeps_it_alive(tmp_path):
 
 
 def test_a_pinned_batch_survives_its_own_expiry(tmp_path):
-    # A run reads its images lazily; the batch must not be swept between two
-    # images of that run just because it aged out mid-flight.
     store = WatermarkBatches(tmp_path / "wm", ttl=0.0)
     batch = store.create([("a.png", png_bytes(), 64, 48)])
     with store.pin(batch["id"]):
         store.create([("b.png", png_bytes(), 64, 48)])  # sweeps on create
         assert batch["images"][0]["path"].is_file()
-    assert store.get(batch["id"]) is None  # ...and goes as soon as it is idle
+    assert store.get(batch["id"]) is None
 
 
 def test_startup_clears_leftovers_from_a_previous_process(tmp_path):
@@ -519,9 +466,6 @@ def test_startup_clears_leftovers_from_a_previous_process(tmp_path):
 
 
 def test_startup_never_deletes_anything_it_did_not_create(tmp_path):
-    # The root is derived from SUB_DB_PATH, which the user can point anywhere,
-    # so a blanket rmtree of it could take a real folder with it. Only
-    # batch-id-shaped directories are ever swept.
     root = tmp_path / "wm"
     (root / "My Holiday Photos").mkdir(parents=True)
     (root / "My Holiday Photos" / "beach.jpg").write_bytes(b"precious")

@@ -1,22 +1,10 @@
-// Hand-written mirror of the backend's Pydantic models and job result dicts.
-//
-// IMPORTANT: nothing enforces that this file agrees with the backend. It is a
-// mirror, maintained by hand, and it can drift. The durable fix is to give
-// JobOut.result a real Pydantic type per tool (it is currently `dict`, see
-// backend/src/toolkit_api/schemas.py) and generate this file from
-// /openapi.json. Until then, changing a worker's result dict means changing
-// the matching type here.
-//
-// Field names are snake_case because they come off the wire that way; they are
-// deliberately NOT camelCased, so a reader can grep a name straight across into
-// the Python source.
+// Hand-maintained mirror of the backend models; update both sides together.
 
 // --------------------------------------------------------------- job envelope
 
 export type JobState = 'running' | 'done' | 'failed' | 'cancelled'
 export type JobItemState = 'pending' | 'running' | 'done' | 'failed'
 
-/** One tracked unit of work inside a job (a file, a video, a manifest). */
 export interface JobItem {
   name: string
   pct: number
@@ -32,63 +20,36 @@ interface JobBase {
   created_at: string
 }
 
-/**
- * A job snapshot, discriminated on `state`.
- *
- * This union is the point of the whole migration: reading `.result` while the
- * job is running, or `.error` when it succeeded, is now a compile error rather
- * than a silent `undefined` rendered into the DOM.
- *
- * `cancelled` carries `R | null` on purpose and is not merged into `done`:
- * workers are free to bail out and return nothing once they observe the cancel
- * flag, and several do — see the `return None` paths in
- * backend/src/toolkit_api/routers/depsync.py.
- *
- * `failed` also carries `R | null`: a worker may publish partial results with
- * job.set_result() as it goes (Watermark Remover does, per image), and those
- * survive the failure. Most tools publish nothing, hence the null.
- *
- * `running` likewise — a job that publishes as it goes has results to show
- * before it is finished.
- */
+/** cancelled, failed and running carry `R | null`: workers may publish partial results. */
 export type Job<R> =
   | (JobBase & { state: 'running'; result: R | null; error: null })
   | (JobBase & { state: 'done'; result: R; error: null })
   | (JobBase & { state: 'cancelled'; result: R | null; error: null })
   | (JobBase & { state: 'failed'; result: R | null; error: string })
 
-/** Every job-starting endpoint answers with this and nothing else. */
 export interface JobStarted {
   job_id: string
 }
 
-/** POST /jobs/{id}/cancel. False means the job had already finished. */
+/** `cancelling` is false when the job had already finished. */
 export interface JobCancel {
   cancelling: boolean
 }
 
 // ---------------------------------------------------------- job result shapes
 
-/**
- * NOTE: "a failure" has three different shapes across the API. They are typed
- * exactly as the backend sends them rather than smoothed over here, because
- * inventing a common shape in the frontend would hide the inconsistency
- * instead of surfacing it. Reconciling them is a backend change.
- */
+// Failure shapes differ per tool on purpose; they are typed as sent, not unified here.
 
-/** Cache Purge and File Gatherer: objects keyed by name. */
 export interface NamedFailure {
   name: string
   error: string
 }
 
-/** Remux: same idea, but the key is `title`. */
 export interface TitledFailure {
   title: string
   error: string
 }
 
-/** Doc→PDF and Doc→Markdown: a positional (name, error) tuple, not an object. */
 export type TupleFailure = [name: string, error: string]
 
 export interface PurgeResult {
@@ -111,21 +72,18 @@ export interface RemuxResult {
   out_folder: string
 }
 
-/** Shared by Doc→PDF and Doc→Markdown — identical result shape. */
 export interface DocConvertResult {
   done: string[]
   failed: TupleFailure[]
-  /** Absent entirely when nothing converted, so there is no archive to offer. */
+  /** Absent when nothing converted. */
   artifact_id?: string
 }
 
-/** A magnet fetch that found a link. Note: carries no `url`. */
 export interface MagnetHit {
   success: true
   result: string
 }
 
-/** A magnet fetch that did not. Note: carries `url`, and `reason` not `error`. */
 export interface MagnetMiss {
   success: false
   url: string
@@ -139,24 +97,12 @@ export interface MagnetScrapeResult {
   total: number
   successful_count: number
   failed_count: number
-  /**
-   * Duplicate magnets the backend's auto-applied unique filter dropped from
-   * `successful` (first-seen order kept). Absent on the empty-URL-list result.
-   */
+  /** Dropped by the backend's unique filter; absent on the empty-URL-list result. */
   duplicate_count?: number
-  /**
-   * Present only on the automatic path, where pagination looks for a cutoff,
-   * and only ever `true` — the false case is MagnetCutoffMiss below. Typed as
-   * the literal so `cutoff_found === false` discriminates the union.
-   */
+  /** Literal `true` so `cutoff_found === false` narrows to MagnetCutoffMiss. */
   cutoff_found?: true
 }
 
-/**
- * The automatic path's early return when pagination never found the cutoff
- * video. It shares none of the fields above, which is why MagnetResult is a
- * union and the page must narrow on `cutoff_found` before touching `urls`.
- */
 export interface MagnetCutoffMiss {
   cutoff_found: false
   warning: string
@@ -165,7 +111,6 @@ export interface MagnetCutoffMiss {
 
 export type MagnetResult = MagnetScrapeResult | MagnetCutoffMiss
 
-/** One dependency bump found in a manifest. */
 export interface Bump {
   name: string
   table: string
@@ -174,10 +119,6 @@ export interface Bump {
   major: boolean
 }
 
-/**
- * A scanned manifest. Deliberately NOT the same type as ApplyTargetResult:
- * scanning never writes, so it has no `written` count and no `skipped` list.
- */
 export interface ScanTarget {
   rel: string
   kind: string
@@ -249,7 +190,7 @@ export interface RemuxSubtitlesResult {
   matches: SubtitleMatch[]
 }
 
-/** Mirrors StartIn in backend/src/toolkit_api/routers/remux.py. */
+/** Mirrors StartIn in routers/remux.py. */
 export interface RemuxStartPayload {
   selected: string[]
   include_video?: boolean
@@ -273,24 +214,18 @@ export interface GatherStartPayload {
   custom?: string
 }
 
-/** Photos Library Filter: files and bytes, for the kept/excluded totals. */
 export interface PhotoFilterCount {
   files: number
   bytes: number
 }
 
-/** One exclude rule and what it took out of the mirror. */
 export interface PhotoFilterRule {
   rule: string
   files: number
   bytes: number
 }
 
-/**
- * The report a Photos Library Filter job returns — the same shape for a dry
- * run (plan + verify, nothing written) and a real run, told apart by
- * `dry_run`. Mirrors photofilter.summary() plus the router's envelope.
- */
+/** Mirrors photofilter.summary() plus the router envelope; dry runs share the shape. */
 export interface PhotoFilterResult {
   dry_run: boolean
   source: string
@@ -298,7 +233,7 @@ export interface PhotoFilterResult {
   seconds: number
   kept: PhotoFilterCount
   excluded: PhotoFilterCount
-  /** Every rule sent, biggest saving first; a rule that matched nothing is still listed. */
+  /** Biggest saving first; a rule that matched nothing is still listed. */
   rules: PhotoFilterRule[]
   /** Live WAL-mode databases the plan snapshots (VACUUM INTO) instead of copying. */
   snapshots: string[]
@@ -317,7 +252,7 @@ export interface PhotoFilterResult {
   }
 }
 
-/** Mirrors PhotoFilterIn in backend/src/toolkit_api/routers/photofilter.py. */
+/** Mirrors PhotoFilterIn in routers/photofilter.py. */
 export interface PhotoFilterPayload {
   source: string
   dest: string
@@ -326,8 +261,7 @@ export interface PhotoFilterPayload {
 }
 
 export interface PurgeScanResult {
-  /** Names this scan when deleting. The server keeps the file list; the client
-   *  never gets to say which paths to remove. Single-use and time-limited. */
+  /** Single-use, time-limited handle; the server owns the file list. */
   scan_id: string
   files: string[]
   errors: string[]
@@ -369,11 +303,7 @@ export interface Subscription {
   loaded: boolean
   counts: SubsCounts
   warnings: string[]
-  /**
-   * `list[dict]` on the backend with no declared shape, and the page renders it
-   * by indexing arbitrary column names. `unknown` values force the page to
-   * stringify rather than assume — which is what it already does.
-   */
+  /** Undeclared shape on the backend; values are `unknown` on purpose. */
   preview: Record<string, unknown>[]
   urls: Record<string, string>
 }
@@ -409,7 +339,7 @@ export interface DownloadedBlob {
 
 // --- Watermark Remover ------------------------------------------------------
 
-/** One staged image inside a watermark batch (mirrors WatermarkImageOut). */
+/** Mirrors WatermarkImageOut. */
 export interface WatermarkImage {
   id: string
   name: string
@@ -424,15 +354,7 @@ export interface WatermarkBatch {
   images: WatermarkImage[]
 }
 
-/**
- * Which mask proposer to use.
- *
- * `auto` (the only mode the page uses) recovers a repeating watermark and
- * masks its instances, falling back to the `texture` detector only for an
- * image that demonstrably carries a repeating mark no pattern could be
- * recovered for. `pattern` and `texture` run just that one detector; the
- * `X-Watermark-Detector` response header says which actually ran.
- */
+/** `auto` recovers a repeating mark, falling back to `texture`; the others run one detector. */
 export type WatermarkDetector = 'auto' | 'texture' | 'pattern'
 
 /** Mirrors WatermarkHealthOut. */
@@ -451,30 +373,15 @@ export interface WatermarkRunPayload {
 }
 
 export interface WatermarkResult {
-  /**
-   * The batch these results came from. The snapshot outlives the page's local
-   * state, so this is what tells the results view whether it is looking at the
-   * outcome of the batch currently staged or of a PREVIOUS one.
-   */
+  /** Tells the page a stale snapshot from the batch currently staged. */
   batch_id: string
   done: string[]
   failed: TupleFailure[]
-  /**
-   * Left untouched: no mask was proposed for them, so nothing was inpainted.
-   * Covers both "no watermark" and "a once-per-photo mark with too little
-   * company in the batch to recover it".
-   */
+  /** No mask was proposed, so nothing was inpainted. */
   skipped: string[]
-  /**
-   * Left untouched on purpose: a watermark WAS found, but removing it would
-   * have destroyed the picture under it (text or line art the mark sits on).
-   */
+  /** A mark was found, but removing it would destroy the picture under it. */
   protected: string[]
-  /**
-   * The one deliverable: a zip of everything cleaned so far, republished under
-   * the same id as each image lands — so a run that dies mid-batch still hands
-   * over what it got. Absent until the first image is cleaned.
-   */
+  /** Zip of everything cleaned so far, republished under one id; absent until the first. */
   artifact_id?: string
   filename?: string
 }
@@ -482,7 +389,7 @@ export interface WatermarkResult {
 // --- Torrent Downloader ---------------------------------------------------
 
 export interface TorrentFileRow {
-  index: number // 1-based, the torrent's own file order; sent back verbatim
+  index: number // 1-based, sent back verbatim
   path: string
   size: number
   category: string
@@ -496,8 +403,7 @@ export interface TorrentResolve {
   state: string
 }
 
-// One BitComet this app can hand a task to: the one on this Mac, or one
-// reachable over the LAN. Mirrors DeviceOut in routers/torrent.py.
+/** Mirrors DeviceOut in routers/torrent.py. */
 export interface TorrentDevice {
   id: string
   label: string
@@ -533,13 +439,10 @@ export interface TorrentStatus {
   running: boolean
   server: string | null
   detail: string | null
-  url: string | null // BitComet's own Web UI, for handing the user over to it
-  /** Which BitComet the fields above describe. */
+  url: string | null // BitComet's own Web UI
   device?: TorrentDevice | null
-  /** False for a BitComet on the LAN: its folders are on ITS disk, so the
-   *  native folder picker (which browses this Mac) is the wrong control. */
+  /** False for a LAN BitComet: the native folder picker browses the wrong machine. */
   is_local?: boolean
-  /** The folders that BitComet will accept as a download destination. */
   save_folders?: string[]
 }
 
@@ -548,8 +451,7 @@ export interface TorrentSendPayload {
   selected: number[]
 }
 
-// The handover receipt. There is no progress here and no row to poll: the task
-// is BitComet's from this point on.
+/** Handover receipt; there is nothing to poll afterwards. */
 export interface TorrentSent {
   infohash: string
   task_id: string

@@ -1,11 +1,4 @@
-"""LaMa inpainting, for real: torch plus the big-lama checkpoint (~200 MB).
-
-Everything here is behind the slow marker, deselected by default (the first
-run downloads the checkpoint into torch.hub's cache). Run with:
-
-    uv sync --extra watermark
-    uv run pytest -m slow
-"""
+"""Real LaMa inpainting, slow-marked; the first run downloads the checkpoint."""
 
 from __future__ import annotations
 
@@ -38,8 +31,6 @@ def test_lama_erases_a_synthetic_watermark_better_than_it_found_it():
 
 
 def test_lama_pads_odd_sizes_and_crops_them_back():
-    # 8-multiple padding must be invisible to the caller: a 201×157 image
-    # comes back 201×157.
     _clean, marked, true_mask = synthetic_pair(size=(201, 157))
     cleaned = remove_watermark(marked, true_mask, LamaInpainter())
     assert cleaned.shape == marked.shape

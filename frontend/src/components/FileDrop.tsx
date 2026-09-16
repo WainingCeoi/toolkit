@@ -1,5 +1,3 @@
-// Upload zone: click or drag files in, list them, remove one, clear on run.
-
 import { useRef, useState } from 'react'
 
 function fmtSize(bytes: number): string {
@@ -18,8 +16,6 @@ export default function FileDrop({ accept, files, onChange, hint }: FileDropProp
   const input = useRef<HTMLInputElement>(null)
   const [drag, setDrag] = useState(false)
 
-  // FileList is null on an input the user dismissed without choosing; the JS
-  // version relied on Array.from(null) never being reached in practice.
   function addFiles(list: FileList | null) {
     if (!list) return
     onChange([...files, ...Array.from(list)])

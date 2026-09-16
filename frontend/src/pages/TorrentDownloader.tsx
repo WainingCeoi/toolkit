@@ -1,9 +1,3 @@
-// Torrent Downloader — pick which BitComet gets the job, add magnets or
-// .torrent files, keep only the files worth keeping, and hand the task over.
-// There is no queue on this page: once a torrent is sent it is BitComet's, and
-// BitComet's own window is where it is paused, resumed, watched and removed.
-// Mirrors backend/src/toolkit_api/routers/torrent.py.
-
 import { useEffect, useRef, useState } from 'react'
 import { api } from '../api'
 import { useToolActive, useToolBusy } from '../toolHost'
@@ -39,47 +33,22 @@ const NO_OVERRIDES: ReadonlyMap<number, boolean> = new Map()
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 const errMsg = (e: unknown, fallback: string) => (e as Error).message || fallback
 
-// A send that timed out gets this many passes before it lands in Failed.
-// Passes, not per-torrent retries: the whole queue is sent once, whatever
-// timed out is harvested, and the survivors go again together — so torrent #1
-// retrying never holds torrent #2's first attempt hostage.
+// Whole-queue passes a timed-out send gets before it lands in Failed.
 const SEND_PASSES = 3
-// The wait before pass 2 and pass 3. Short first — a hiccup clears fast —
-// then long enough for a BitComet that has just started a batch of tasks to
-// finish allocating and hash-checking them, which is what the timeouts
-// actually are (see REMOTE_TIMEOUT in the backend).
+// Waits before pass 2 and 3; the long one lets BitComet finish hash-checking a fresh batch.
 const RETRY_WAITS_MS = [5_000, 15_000]
-// Within a pass, sends keep a FULL WINDOW in the air rather than going one at
-// a time: this many fly at once, and every answer immediately admits the next
-// (9 in flight means 1 more goes, 8 means 2). Sequential sending spent the
-// whole batch on round-trip latency even when BitComet was healthy; the full
-// window keeps ten in the air while it answers, and stops feeding it the
-// moment it slows down — see windowedRun for the mechanics.
+// Sends in flight at once; each answer admits the next (see windowedRun).
 const SEND_WINDOW = 10
-// RESOLVING runs through the same pump, and it is the window that matters
-// more: a magnet has to be staged RUNNING to learn its file list (see
-// resolve_magnet in the backend), so every magnet that leaves this page is
-// immediately in BitComet fetching from the swarm. Resolving a thirty-magnet
-// paste all at once therefore hands BitComet thirty simultaneous metadata
-// fetches plus thirty pollers from this page — the batch-send overload, one
-// step earlier. The paste is held ON THIS SIDE instead, with BitComet kept at
-// exactly RESOLVE_WINDOW magnets fetching: each one whose metadata lands (or
-// whose deadline kills it) releases its slot to the next in the queue. That
-// slot lifetime is what makes the fetch count the thing that gates.
+// Magnets fetching in BitComet at once; the rest of a paste is held here until a slot frees.
 const RESOLVE_WINDOW = 10
 
-// A torrent that failed, with the link needed to try it again somewhere else.
-// The magnet is the whole point of keeping the entry — a dead tracker or a
-// sleeping NAS is a reason to retry later, not to lose what was pasted — and
-// deliberately the ONLY payload: failure reasons are prose nobody acts on, so
-// they are not carried, let alone shown.
 interface Failure {
   id: string
   magnet: string | null
 }
 
 interface DeviceForm {
-  id: string | null // null = adding a new one
+  id: string | null
   label: string
   url: string
   username: string
@@ -88,7 +57,6 @@ interface DeviceForm {
 
 const BLANK_DEVICE: DeviceForm = { id: null, label: '', url: '', username: '', password: '' }
 
-// A magnet is too long to show whole in an error line; its btih is enough.
 function magnetLabel(uri: string): string {
   return uri.match(/btih:([a-z0-9]+)/i)?.[1]?.slice(0, 12) ?? uri.slice(0, 24)
 }
@@ -111,9 +79,7 @@ function FileList({
             checked={selected.has(file.index)}
             onChange={() => onToggle(file.index)}
           />
-          {/* Middle-truncated, not end-truncated: the tail carries the
-              extension and the quality/episode tag, which is exactly what
-              tells two otherwise identical rows apart. Full path on hover. */}
+          {/* Middle-truncated: the tail carries the extension and episode tag. */}
           <span className="tor-path">{truncateMiddle(file.path, 56)}</span>
           <span className="tor-cat">{file.category}</span>
           <span className="tor-size">{formatBytes(file.size)}</span>
@@ -139,66 +105,36 @@ export default function TorrentDownloader() {
   const [magnets, setMagnets] = useState('')
   const [pendingFiles, setPendingFiles] = useState<File[]>([])
   const [staging, setStaging] = useState(false)
-  // How much of the paste is still held on THIS side, waiting for a resolve
-  // window slot — the part of the queue BitComet has not been shown yet.
   const [heldCount, setHeldCount] = useState(0)
 
   // --- shared filter + destination (step 2) ---
   const [categories, setCategories] = useState<Set<string>>(new Set(['video']))
   const [minMb, setMinMb] = useState(100)
-  // Mirrors DEFAULT_SAVE_DIR in backend/src/toolkit_api/torrents.py. Prefilled
-  // so downloads land in ~/Downloads with no extra click; the backend expands
-  // the tilde. Browsing swaps in an absolute path. For a BitComet on the LAN
-  // this is replaced by one of THAT machine's own folders — see the effect
-  // below, and ensure_save_folder for why a local path cannot be used there.
   const [saveDir, setSaveDir] = useState(DEFAULT_SAVE_DIR)
 
   // --- resolved torrents under review (step 3) ---
   const [resolved, setResolved] = useState<TorrentResolve[]>([])
   const [resolvingHashes, setResolvingHashes] = useState<Set<string>>(new Set())
-  // Collapsed by default. A review list is scanned far more often than it is
-  // corrected — the filter usually got it right — so the summary is what the
-  // row shows, and the file table opens only for the one being questioned.
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [failures, setFailures] = useState<Failure[]>([])
-  // Per-torrent file ticks, keyed by infohash so two torrents' index-1 files
-  // never collide, then by the rule they were made against so a filter change
-  // discards them.
+  // Ticks per infohash, tagged with the rule they were made under; a filter change drops them.
   const [overrides, setOverrides] = useState<
     Map<string, { key: string; map: Map<number, boolean> }>
   >(new Map())
 
-  // The magnet each infohash arrived as, so a failure can hand back the LINK
-  // the user actually pasted — trackers and all — rather than a reconstructed
-  // one. A ref, not state: nothing renders from it directly, and re-rendering
-  // the page every time a magnet is staged would be pure churn.
+  // The pasted magnet per infohash, handed back on failure; a ref since nothing renders it.
   const sources = useRef<Map<string, string>>(new Map())
 
   // --- handed over ---
-  // How many torrents this visit sent, and nothing else. Deliberately not a
-  // list and not a queue: a receipt carries no progress and is never polled,
-  // because the moment a task is sent BitComet is the only thing that knows
-  // what it is doing.
   const [sentCount, setSentCount] = useState(0)
-  // A batch (including its retry passes) runs one at a time; these keep the
-  // buttons honest while it does. `sending` is the row in flight right now,
-  // `retryNote` narrates the harvest so a 15s wait reads as patience, not a
-  // hang.
   const [batching, setBatching] = useState(false)
   const [sending, setSending] = useState<Set<string>>(new Set())
   const [retryNote, setRetryNote] = useState<string | null>(null)
 
-  // None of this tool's work goes through the job registry — resolving and
-  // sending are async loops living in this component — so the dock cannot see
-  // it and would let the tab close mid-flight, unmounting the only thing
-  // driving them while magnets kept being staged into BitComet.
+  // Resolving and sending live in this component, not the job registry; keep the tab open.
   useToolBusy(staging || batching || resolvingHashes.size > 0)
 
-  // Re-probed every time the tab becomes visible, not once per mount. Under
-  // keep-alive this page stays mounted for the whole session, so a one-shot
-  // check froze `bitcometDown` at whatever was true the first time: open the
-  // tool with BitComet closed, start it as the error note instructs, come
-  // back, and Resolve stayed disabled with the same note forever.
+  // Keyed on tab visibility, not mount: keep-alive keeps this page mounted all session.
   const tabActive = useToolActive()
   useEffect(() => {
     if (!tabActive) return
@@ -219,23 +155,16 @@ export default function TorrentDownloader() {
     }
   }, [tabActive])
 
-  // A destination is a path on a PARTICULAR machine: `~/Downloads` means
-  // nothing on a NAS, and `/volume1/downloads` means nothing here. So each
-  // device keeps its own, and switching swaps the box rather than carrying a
-  // path across to a filesystem it does not exist on.
+  // A save path belongs to one machine, so each device keeps its own.
   const dirsByDevice = useRef<Map<string, string>>(new Map())
   const deviceId = status?.device?.id ?? null
 
   useEffect(() => {
     if (status === null || deviceId === null) return
     const folders = status.save_folders ?? []
-    // What that device would pick for itself: its own first registered folder
-    // when it is remote (nothing here can browse it), the usual default here.
     const fallback = status.is_local === false ? (folders[0] ?? '') : DEFAULT_SAVE_DIR
     setSaveDir(dirsByDevice.current.get(deviceId) ?? fallback)
-    // Keyed on the device alone. Depending on `status` as well would re-run on
-    // every re-probe and stamp over a folder the user was halfway through
-    // typing; the values read from it are only ever needed at a switch.
+    // Keyed on the device alone: re-running on every status probe would clobber a typed folder.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [deviceId])
 
@@ -256,10 +185,6 @@ export default function TorrentDownloader() {
     setFailures((prev) => [...prev, { id, magnet }])
   }
 
-  // The best magnet available for a torrent: the one pasted if this page still
-  // has it, otherwise the minimal form its infohash allows. A .torrent upload
-  // never had a magnet, and after a failure the infohash is the only handle
-  // left on it — so reconstructing beats offering nothing to copy.
   function magnetFor(infohash: string, name?: string | null): string {
     return sources.current.get(infohash) ?? magnetLink(infohash, name)
   }
@@ -272,9 +197,7 @@ export default function TorrentDownloader() {
     })
   }
 
-  // =======================================================
-  // DEVICES
-  // =======================================================
+  // --- DEVICES ---
   async function applyDevices(run: () => Promise<TorrentDeviceList>) {
     setDeviceBusy(true)
     setDeviceError(null)
@@ -282,8 +205,6 @@ export default function TorrentDownloader() {
       setDevices(await run())
       setForm(null)
       setTested(null)
-      // Every device change re-points the backend at a different BitComet, so
-      // the status on screen is about the wrong machine until this lands.
       await refreshStatus()
     } catch (e) {
       setDeviceError(errMsg(e, 'Could not change the BitComet device.'))
@@ -335,23 +256,13 @@ export default function TorrentDownloader() {
       label: device.label,
       url: device.url ?? '',
       username: device.username,
-      // Left blank on purpose: the browser is never sent the stored password,
-      // and blank means "keep it" all the way through to the device book.
+      // Blank means "keep the stored password"; it is never sent to the browser.
       password: '',
     })
   }
 
-  // =======================================================
-  // RESOLVE
-  // =======================================================
-  // Selection for one torrent: shared rule + that torrent's own live ticks.
-  //
-  // Read through refs, not the enclosing render's values. A send batch runs up
-  // to three passes with 5s and 15s waits between them, and the review list
-  // stays interactive throughout — so a tick changed during a wait belongs to a
-  // later render than the one whose `sendBatch` is still running. Closing over
-  // that render's `overrides` meant the retry re-sent the click-time selection
-  // and the card then closed as sent, leaving no sign the edit was dropped.
+  // --- RESOLVE ---
+  // A ref so a retry pass sends the ticks as they are now, not as they were at click time.
   const liveSelection = useRef({ overrides, categories, minMb })
   liveSelection.current = { overrides, categories, minMb }
 
@@ -393,11 +304,7 @@ export default function TorrentDownloader() {
       setResolved((prev) => addTorrent(prev, out))
       if (!out.ready) {
         setResolvingHashes((prev) => new Set(prev).add(out.infohash))
-        // AWAITED, deliberately: this call runs inside the resolve window, and
-        // a magnet is not done with its slot when the add returns — it is done
-        // when its metadata lands or it dies. Fire-and-forget here would let
-        // the whole paste into BitComet in one burst, which is the exact thing
-        // the window exists to prevent.
+        // Awaited: the window slot is held until the metadata lands, not until the add returns.
         await pollUntilReady(out.infohash)
       }
     } catch (e) {
@@ -410,8 +317,6 @@ export default function TorrentDownloader() {
       const out = await api.torrentResolveFile(file, saveDir.trim())
       setResolved((prev) => addTorrent(prev, out))
     } catch (e) {
-      // No magnet to hand back: this one only ever existed as a file, and a
-      // failed parse never produced an infohash to build one from.
       pushFailure(file.name)
     }
   }
@@ -424,9 +329,7 @@ export default function TorrentDownloader() {
     setStaging(true)
     setMagnets('')
     setPendingFiles([])
-    // Files first: their metadata is in the file, so each clears its window
-    // slot in one round trip and the magnets take over the window. Each job
-    // catches its own failures, so one bad magnet never sinks the rest.
+    // Files first: each frees its window slot in one round trip.
     const work = [
       ...files.map((file) => () => stageFile(file)),
       ...lines.map((uri) => () => stageMagnet(uri)),
@@ -448,7 +351,6 @@ export default function TorrentDownloader() {
     }
   }
 
-  // Drop a resolved torrent from the review list and forget its ticks.
   function closeCard(infohash: string) {
     setResolved((prev) => prev.filter((x) => x.infohash !== infohash))
     setOverrides((prev) => {
@@ -463,9 +365,6 @@ export default function TorrentDownloader() {
     })
   }
 
-  // One attempt at one torrent. 'retry' means it failed in the way that
-  // clears up on its own (timeout, unreachable) and a later pass may try
-  // again; anything else is final — success, or a failure worth reporting.
   async function sendOne(t: TorrentResolve, final: boolean): Promise<'ok' | 'retry' | 'failed'> {
     const selected = selectedFor(t)
     if (selected.size === 0) return 'ok'
@@ -481,8 +380,7 @@ export default function TorrentDownloader() {
     } catch (e) {
       if (!final && retryableSend(e)) return 'retry'
       pushFailure(t.name ?? t.infohash.slice(0, 12), magnetFor(t.infohash, t.name))
-      // The row stays in the review list on purpose: the selection is intact,
-      // so once BitComet is back a manual Send needs no re-pasting.
+      // The row stays in the review list so a manual Send needs no re-pasting.
       return 'failed'
     } finally {
       setSending((prev) => {
@@ -493,13 +391,9 @@ export default function TorrentDownloader() {
     }
   }
 
-  // One pass over the queue with the window kept full: SEND_WINDOW in the air,
-  // each answer admitting the next. Returns what is worth retrying.
   async function sendPass(queue: TorrentResolve[], final: boolean): Promise<TorrentResolve[]> {
     const again: TorrentResolve[] = []
     let answered = 0
-    // Narrated only when the window actually matters — for one or two sends
-    // the counter would be noise.
     const narrate = queue.length > SEND_WINDOW
     if (narrate) setRetryNote(`sending ${SEND_WINDOW} at a time — 0 of ${queue.length} answered`)
     await windowedRun(
@@ -516,13 +410,7 @@ export default function TorrentDownloader() {
     return again
   }
 
-  // Send everything, then HARVEST what timed out and send it again — up to
-  // SEND_PASSES passes. This exists because of a measured batch of 34 sends
-  // where most "failures" were read timeouts against a BitComet that was
-  // merely grinding through the tasks it had just been handed: the work
-  // itself had usually landed, and a retry that finds it landed simply
-  // succeeds (send is idempotent — see retryableSend). Only what still fails
-  // on the last pass reaches the Failed panel.
+  // A timed-out send usually landed anyway; send is idempotent, so retry passes are safe.
   async function sendBatch(targets: TorrentResolve[]) {
     setBatching(true)
     try {
@@ -546,9 +434,7 @@ export default function TorrentDownloader() {
     }
   }
 
-  // Cancelling a staging, not managing a task. A magnet is added RUNNING so it
-  // can fetch its metadata, so simply closing the card would leave it
-  // downloading in BitComet with every file still enabled.
+  // A staged magnet already runs in BitComet; closing the card alone would leave it downloading.
   async function discardOne(t: TorrentResolve) {
     closeCard(t.infohash)
     try {
@@ -580,7 +466,6 @@ export default function TorrentDownloader() {
     })
   }
 
-  // Tick or untick every file at once, as an override over the shared rule.
   function setAllFiles(t: TorrentResolve, on: boolean) {
     const key = ruleKey(t.infohash, categories, minMb)
     setOverrides((prev) => {
@@ -601,8 +486,6 @@ export default function TorrentDownloader() {
 
   const bitcometDown = status !== null && !status.running
   const nothingToResolve = parseMagnetLines(magnets).length === 0 && pendingFiles.length === 0
-  // The destination is needed to resolve, not to add: BitComet fixes a task's
-  // save folder when the task is created and cannot move it afterwards.
   const noDestination = !saveDir.trim()
   const readyCount = resolved.filter((t) => t.ready && selectedFor(t).size > 0).length
   const active = status?.device ?? devices?.devices.find((d) => d.id === devices.active) ?? null
@@ -889,9 +772,7 @@ export default function TorrentDownloader() {
             </p>
           </div>
 
-          {/* The native picker browses THIS Mac, which is the wrong filesystem
-              for a BitComet on the LAN — so a remote device gets that device's
-              own registered folders instead of a Browse button. */}
+          {/* The folder picker browses this Mac, the wrong filesystem for a remote BitComet. */}
           {remote ? (
             <div className="field">
               <label htmlFor="savedir">Save to (on {active?.label ?? 'that device'})</label>
@@ -996,9 +877,7 @@ export default function TorrentDownloader() {
                           Send
                         </Button>
                       )}
-                      {/* Always available, fetching or not: a magnet is already
-                          running in BitComet while it looks for its metadata,
-                          so this is the only way to call one off. */}
+                      {/* Shown while fetching too: the only way to call off a running magnet. */}
                       <Button size="sm" variant="ghost" onClick={() => void discardOne(t)}>
                         Discard
                       </Button>
@@ -1050,15 +929,9 @@ export default function TorrentDownloader() {
             </Button>
           </div>
 
-          {/* The links and nothing else. The reasons were per-row prose that
-              nobody acts on — a failed magnet is retried, not diagnosed — and
-              they buried the one thing worth keeping. One magnet per line in a
-              copy box is exactly the shape the paste field above takes, so
-              failed → copy → paste → resolve is a straight round trip. */}
           {copyableFailures.length > 0 && (
             <CodeBox text={copyableFailures.map((f) => f.magnet).join('\n')} />
           )}
-          {/* A failed .torrent file has no magnet to offer; name it, at least. */}
           {failures
             .filter((f) => f.magnet === null)
             .map((f, i) => (
@@ -1069,11 +942,6 @@ export default function TorrentDownloader() {
         </div>
       )}
 
-      {/* One LINE, not a list. The per-task receipt rows grew to a screenful
-          on a 34-torrent batch while saying the same thing 34 times, and this
-          page deliberately has nothing further to show about a sent task --
-          progress belongs to BitComet's own window. The count is the receipt;
-          the button is the handover. */}
       {sentCount > 0 && (
         <div className="note ok" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <span className="grow">

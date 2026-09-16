@@ -1,21 +1,4 @@
-"""Upgrade a project's dependencies across ecosystems, then commit.
-
-Point it at a folder; it walks the tree (skipping node_modules/.venv/.git/…) for
-every ``pyproject.toml`` (uv) and ``package.json`` (npm), and for each:
-
-- **uv**: runs ``uv sync -U``, reads the resolved versions from ``uv.lock``, and
-  raises the lagging ``>=`` floors (leaving ==, ~=, ranges, markered deps).
-- **npm**: runs ``npm install`` + ``npm outdated``, and bumps each dependency's
-  range to the latest published version, preserving its ^/~ operator.
-
-Rewrites are surgical text edits (never a re-serialize) so comments and
-formatting survive. After each rewrite the lockfile is re-resolved (``uv lock`` /
-``npm install --package-lock-only``) so the manifest and its lock always land in
-the same commit agreeing with each other. Every changed file across every
-manifest is committed together. Pure logic, no FastAPI; the router feeds
-``on_message``/``is_cancelled`` in from a Job so sync progress streams and can be
-cancelled.
-"""
+"""Dependency upgrader for uv (pyproject.toml) and npm (package.json) projects."""
 
 from __future__ import annotations
 
@@ -34,8 +17,7 @@ from packaging.requirements import InvalidRequirement, Requirement
 from packaging.utils import canonicalize_name
 from packaging.version import InvalidVersion, Version
 
-# Directories never worth descending into: dependency stores, build output,
-# caches, VCS. Anything starting with "." is also pruned.
+# Pruned during the walk, along with any dot-directory.
 _SKIP_DIRS = {
     "node_modules",
     "venv",
@@ -48,7 +30,7 @@ _SKIP_DIRS = {
     "coverage",
     "htmlcov",
 }
-_MAX_MANIFESTS = 40  # a sane ceiling; a bigger monorepo gets a truncation note
+_MAX_MANIFESTS = 40  # ceiling on manifests scanned
 
 
 @dataclass(frozen=True)
@@ -84,14 +66,11 @@ class Manifest:
     rel: str  # display path relative to the root, e.g. "backend/pyproject.toml"
 
 
-# --------------------------------------------------------------------------- #
-# Discovery                                                                    #
-# --------------------------------------------------------------------------- #
+# --- Discovery ---
 
 
 def _validate_folder(folder: str) -> tuple[Path | None, str | None]:
-    """A folder must be a real, absolute directory. Empty/relative input is
-    rejected so a stray ``""`` or ``"."`` can't resolve to the server's CWD."""
+    """A real, absolute directory only: "" or "." would resolve to the server's CWD."""
     if not folder or not folder.strip():
         return None, "❌ No folder given."
     base = Path(folder).expanduser()
@@ -146,9 +125,7 @@ def find_manifests(folder: str) -> tuple[list[Manifest], str | None]:
     return found[:_MAX_MANIFESTS], None
 
 
-# --------------------------------------------------------------------------- #
-# Subprocess streaming (uv sync / npm install)                                #
-# --------------------------------------------------------------------------- #
+# --- Subprocess streaming (uv sync / npm install) ---
 
 
 def _terminate(proc: subprocess.Popen) -> None:
@@ -167,12 +144,7 @@ def _stream(
     is_cancelled=None,
     poll: float = 0.2,
 ) -> tuple[bool, str]:
-    """Run ``cmd`` in ``folder``, streaming output lines to ``on_message``.
-
-    A reader thread drains stdout so the loop can poll ``is_cancelled`` on a
-    fixed cadence and kill the process promptly (downloads can stall output for
-    seconds). Returns (ok, combined_output).
-    """
+    """Run ``cmd`` in ``folder``, streaming output lines to ``on_message``."""
     proc = subprocess.Popen(
         cmd,
         cwd=folder,
@@ -184,6 +156,7 @@ def _stream(
     lines: list[str] = []
     q: queue.Queue[str | None] = queue.Queue()
 
+    # A reader thread keeps the cancel poll on a fixed cadence when output stalls.
     def _reader() -> None:
         assert proc.stdout is not None
         for line in proc.stdout:
@@ -215,12 +188,7 @@ _LOCK_TIMEOUT = 300
 
 
 def _lock_refresh(cmd: list[str], folder: str, tool: str) -> tuple[bool, str]:
-    """Run a lockfile-only resolve in ``folder``. Returns (ok, output).
-
-    A timeout is reported as a failure rather than raised: apply rolls back on a
-    False, whereas an escaping TimeoutExpired would abort the request with the
-    manifest already rewritten and nothing restored.
-    """
+    """Lockfile-only resolve; a timeout returns False so apply can roll back."""
     exe = shutil.which(cmd[0])
     if exe is None:
         return False, f"❌ {tool} is not installed or not on PATH."
@@ -237,9 +205,7 @@ def _lock_refresh(cmd: list[str], folder: str, tool: str) -> tuple[bool, str]:
     return proc.returncode == 0, f"{proc.stdout}\n{proc.stderr}"
 
 
-# --------------------------------------------------------------------------- #
-# uv (pyproject.toml + uv.lock)                                                #
-# --------------------------------------------------------------------------- #
+# --- uv (pyproject.toml + uv.lock) ---
 
 
 def uv_available() -> bool:
@@ -254,15 +220,7 @@ def run_uv_sync(folder, on_message=None, is_cancelled=None) -> tuple[bool, str]:
 
 
 def uv_lock_refresh(folder: str) -> tuple[bool, str]:
-    """Re-resolve uv.lock against the just-rewritten pyproject.toml.
-
-    Required, not cosmetic: uv.lock records the *declared* specifiers under
-    ``[package.metadata] requires-dist``, so raising a floor makes the lock
-    stale even when every resolved version stays identical — and when the
-    resolution is unchanged the file is byte-identical, so a commit would carry
-    the manifest alone and leave the lock behind. ``uv lock`` rewrites that
-    metadata without touching the virtualenv.
-    """
+    """Re-resolve uv.lock: it stores the declared floors, so a bump makes it stale."""
     return _lock_refresh(["uv", "lock"], folder, "uv")
 
 
@@ -275,10 +233,7 @@ def resolved_versions(folder: str) -> tuple[dict[str, str], str | None]:
         data = tomllib.loads(lock.read_text(encoding="utf-8"))
     except (OSError, tomllib.TOMLDecodeError) as exc:
         return {}, f"❌ Could not read uv.lock: {exc}"
-    # A forked resolution can list the same package at several versions, each
-    # under its own resolution-markers. We can't tell which one this machine
-    # installed, so drop any package that resolved to more than one — leaving
-    # those floors alone rather than bumping to an arbitrary fork.
+    # A forked resolution can list several versions; those floors are left alone.
     by_name: dict[str, set[str]] = {}
     for pkg in data.get("package", []):
         name, version = pkg.get("name"), pkg.get("version")
@@ -308,11 +263,7 @@ def _declared_entries(data: dict) -> list[tuple[str, str]]:
 
 
 def _uv_bump(table: str, req_str: str, resolved: dict[str, str]) -> Bump | None:
-    """A Bump for one requirement, or None if it should be left alone.
-
-    Only a single-clause ``>=`` with a resolved version strictly greater than the
-    floor qualifies. Markered deps are skipped (their version is env-specific).
-    """
+    """A Bump for one requirement, or None if it should be left alone."""
     try:
         req = Requirement(req_str)
     except InvalidRequirement:
@@ -332,9 +283,7 @@ def _uv_bump(table: str, req_str: str, resolved: dict[str, str]) -> Bump | None:
         floor, target = Version(spec.version), Version(installed)
     except InvalidVersion:
         return None
-    # A local build tag (e.g. torch "2.1.0+cpu") is machine-specific and makes an
-    # INVALID ">=" specifier; bump to the public version only, never on the local
-    # segment alone (a "+cpu" build is not an upgrade over 2.1.0).
+    # A local tag ("2.1.0+cpu") makes an invalid ">="; bump to the public version only.
     if target.local is not None:
         installed = target.public
         target = Version(installed)
@@ -371,9 +320,7 @@ def compute_uv_bumps(pyproject_path: Path, resolved: dict[str, str]) -> list[Bum
     return bumps
 
 
-# The tables compute_uv_bumps scans; apply only ever edits lines inside one of
-# these, so an identical "pkg>=x" in [build-system], [tool.uv], or a comment is
-# never touched.
+# apply only edits lines inside these tables; "pkg>=x" elsewhere is never touched.
 _SCANNED_SECTIONS = {
     "project",
     "project.optional-dependencies",
@@ -389,9 +336,7 @@ def _section_header(stripped: str) -> str | None:
 
 
 def apply_uv_bumps(pyproject_path: Path, bumps: list[Bump]) -> None:
-    """Rewrite the lagging floors in place, scoped to the three dependency
-    tables. Only the exact quoted requirement strings change — comments, other
-    tables, alignment, and every other byte stay as-is."""
+    """Rewrite the lagging floors in place, byte-for-byte except the quoted specs."""
     replacements = {b.raw: b.raw_new for b in bumps}  # dedup: same req, two tables
     lines = pyproject_path.read_text(encoding="utf-8").split("\n")
     section: str | None = None
@@ -419,14 +364,10 @@ def apply_uv_bumps(pyproject_path: Path, bumps: list[Bump]) -> None:
     pyproject_path.write_text("\n".join(lines), encoding="utf-8")
 
 
-# --------------------------------------------------------------------------- #
-# npm (package.json + package-lock.json)                                       #
-# --------------------------------------------------------------------------- #
+# --- npm (package.json + package-lock.json) ---
 
 _NPM_TABLES = ("dependencies", "devDependencies", "optionalDependencies")
-# Ranges we know how to bump: a bare ^, ~, or >= (or none) in front of an
-# x.y.z version. Anything fancier (1.x, *, ">=1 <2", "workspace:*", git/url,
-# dist-tags) is left alone.
+# Bumpable ranges: optional ^, ~ or >= before x.y.z; anything fancier is left alone.
 _NPM_RANGE = re.compile(r"^([~^]|>=)?\s*(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.+-]+)?)$")
 
 
@@ -442,11 +383,7 @@ def run_npm_install(folder, on_message=None, is_cancelled=None) -> tuple[bool, s
 
 
 def npm_outdated(folder: str) -> tuple[dict, str | None]:
-    """Parse ``npm outdated --json`` → {name: {current, wanted, latest}}.
-
-    npm exits 1 when packages are outdated — that is expected, not a failure, so
-    the output is parsed regardless of the return code.
-    """
+    """Parse ``npm outdated --json``; exit 1 just means something is outdated."""
     npm = shutil.which("npm")
     if npm is None:
         return {}, "❌ npm is not installed or not on PATH."
@@ -456,9 +393,6 @@ def npm_outdated(folder: str) -> tuple[dict, str | None]:
             cwd=folder,
             capture_output=True,
             text=True,
-            # Bounded like every other registry call here: this one reaches the
-            # network, and without a timeout an unresponsive registry hangs the
-            # caller indefinitely rather than failing the manifest.
             timeout=_LOCK_TIMEOUT,
         )
     except subprocess.TimeoutExpired:
@@ -473,12 +407,7 @@ def npm_outdated(folder: str) -> tuple[dict, str | None]:
 
 
 def npm_installed(folder: str) -> dict[str, str]:
-    """Direct-dependency name → installed version, read from package-lock.json.
-
-    This is the latest version already permitted by each declared range (npm
-    install resolves to it), so it catches floors that lag even when npm
-    outdated stays silent because the range already allows the newest release.
-    """
+    """Direct-dependency name → installed version, read from package-lock.json."""
     lock = Path(folder) / "package-lock.json"
     if not lock.is_file():
         return {}
@@ -506,9 +435,7 @@ def npm_installed(folder: str) -> dict[str, str]:
 
 
 def npm_latest(folder: str) -> tuple[dict[str, str], str | None]:
-    """name → latest publishable version, merging ``npm outdated`` (which knows
-    the true latest, even beyond the current range) over the installed versions
-    (the latest already inside each range)."""
+    """name → latest version: ``npm outdated`` merged over the installed versions."""
     outdated, err = npm_outdated(folder)
     if err:
         return {}, err
@@ -523,8 +450,7 @@ def npm_latest(folder: str) -> tuple[dict[str, str], str | None]:
 
 
 def npm_lock_refresh(folder: str) -> tuple[bool, str]:
-    """Resolve package-lock.json for the current package.json without installing
-    node_modules — fast, and all apply needs to commit a consistent lock."""
+    """Resolve package-lock.json without installing node_modules."""
     return _lock_refresh(["npm", "install", "--package-lock-only"], folder, "npm")
 
 
@@ -538,8 +464,7 @@ def _semver_release(version: str) -> tuple[int, int, int]:
 
 
 def _npm_bump(table: str, name: str, declared, latest: str) -> Bump | None:
-    """Bump ``name``'s range to ``latest`` (preserving its ^/~/>= operator), or
-    None if the range is fancier than we safely rewrite or already current."""
+    """Bump ``name``'s range to ``latest`` keeping its operator, or None."""
     if not isinstance(declared, str) or not isinstance(latest, str):
         return None
     match = _NPM_RANGE.match(declared.strip())
@@ -582,8 +507,7 @@ def compute_npm_bumps(package_json_path: Path, latest: dict[str, str]) -> list[B
 
 
 def apply_npm_bumps(package_json_path: Path, bumps: list[Bump]) -> None:
-    """Rewrite each `"name": "range"` value in place, tolerant of the JSON
-    spacing. Only the matched key's version range changes."""
+    """Rewrite each `"name": "range"` value in place, tolerant of JSON spacing."""
     text = package_json_path.read_text(encoding="utf-8")
     for bump in bumps:
         pattern = re.compile(
@@ -600,9 +524,7 @@ def apply_npm_bumps(package_json_path: Path, bumps: list[Bump]) -> None:
     package_json_path.write_text(text, encoding="utf-8")
 
 
-# --------------------------------------------------------------------------- #
-# git                                                                          #
-# --------------------------------------------------------------------------- #
+# --- git ---
 
 
 COMMIT_SUBJECT = "chore(deps): update dependencies"
@@ -623,13 +545,7 @@ def git_root(folder: str) -> str | None:
 def commit_paths(
     repo_root: str, message: str, paths: list[Path]
 ) -> tuple[str | None, list[str], str | None]:
-    """Commit exactly ``paths``, together, in one commit. (sha, rels, error).
-
-    Each path is staged individually — so a freshly-created (untracked) lock is
-    included and a gitignored one is skipped rather than aborting. The commit is
-    path-limited to those staged files, so any other staged or unstaged work in
-    the repo is neither committed nor touched.
-    """
+    """Commit exactly ``paths``, together, in one commit. (sha, rels, error)."""
     rels: list[str] = []
     for path in paths:
         if not path.is_file():
@@ -674,17 +590,14 @@ def commit_paths(
     return sha.stdout.strip() or None, rels, None
 
 
-# --------------------------------------------------------------------------- #
-# Per-manifest orchestration (used by the router)                             #
-# --------------------------------------------------------------------------- #
+# --- Per-manifest orchestration (used by the router) ---
 
 _LOCKS = {"uv": "uv.lock", "npm": "package-lock.json"}
 _NPM_RETRY_ROUNDS = 3
 
 
 def scan_manifest(manifest: Manifest, on_message=None, is_cancelled=None) -> dict:
-    """Sync one manifest and compute its bumps. Returns a wire-ready dict with
-    ``rel``, ``kind``, ``bumps`` (list of dicts), and ``error`` (str|None)."""
+    """Sync one manifest and compute its bumps as a wire-ready dict."""
     folder = str(manifest.path.parent)
     out = {"rel": manifest.rel, "kind": manifest.kind, "bumps": [], "error": None}
     if manifest.kind == "uv":
@@ -719,8 +632,7 @@ def _eresolve_culprits(log: str, candidates: set[str]) -> set[str]:
     """Which of the packages we bumped does npm name in its ERESOLVE report."""
     found = set()
     for name in candidates:
-        # npm writes each package as "<name>@<spec>"; anchoring on the preceding
-        # character keeps "eslint" from matching "eslint-plugin-react@...".
+        # Anchored so "eslint" does not match "eslint-plugin-react@...".
         if re.search(r'(?:^|[\s/"])' + re.escape(name) + r"@", log):
             found.add(name)
     return found
@@ -729,14 +641,7 @@ def _eresolve_culprits(log: str, candidates: set[str]) -> set[str]:
 def _npm_write_with_retry(
     package_json_path: Path, folder: str, bumps: list[Bump], original: str
 ) -> tuple[list[Bump], list[dict], str | None]:
-    """Write the npm bumps and refresh the lock, backing out any package npm
-    reports as an unresolvable peer conflict and retrying with the rest.
-
-    Upgrading everything to latest can produce a graph npm rightly refuses — a
-    new major of a tool whose plugins still pin the old one (eslint 10 vs
-    plugins on eslint 9). Rather than failing the whole manifest, drop the
-    conflicting packages and upgrade the remainder. (applied, skipped, error).
-    """
+    """Write npm bumps, refresh the lock, and retry without any ERESOLVE culprits."""
     remaining = list(bumps)
     skipped: list[dict] = []
     for _ in range(_NPM_RETRY_ROUNDS):
@@ -760,8 +665,7 @@ def _npm_write_with_retry(
 
 
 def write_manifest(manifest: Manifest) -> dict:
-    """Recompute and write one manifest, then re-resolve its lockfile. No commit
-    — the caller commits every changed file from every manifest together."""
+    """Recompute and write one manifest, then re-resolve its lockfile; no commit."""
     folder = str(manifest.path.parent)
     result = {
         "rel": manifest.rel,

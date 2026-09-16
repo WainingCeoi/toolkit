@@ -1,10 +1,4 @@
-"""Conversion engine: parse vmess/vless/trojan links, swap in optimized IP
-endpoints, and render Raw / Clash / Surge subscriptions.
-
-Node objects are plain dicts with snake_case keys so they serialize straight to
-JSON for storage. This module is framework-agnostic and is the single source of
-truth for all parsing and rendering.
-"""
+"""Parse vmess/vless/trojan links, swap in optimized IPs, render subscriptions."""
 
 from __future__ import annotations
 
@@ -348,16 +342,7 @@ def _build_node_name(base_name: str, suffix: str) -> str:
 def expand_nodes(
     base_nodes: list[dict], endpoints: list[dict], options: dict | None = None
 ) -> dict:
-    """Cross every base node with every endpoint, swapping in the optimized server.
-
-    With ``keep_original_host`` (default), the original SNI/Host headers are kept so
-    TLS still validates against the real domain while traffic goes to the optimized IP.
-
-    Output nodes are named ``"<left> | NN"`` with a running, zero-padded counter
-    (e.g. ``US | 01``, ``US | 02``). ``<left>`` is the name prefix when one is given,
-    otherwise the original node name. The counter is global across the whole expansion
-    so every generated node keeps a unique name.
-    """
+    """Cross every base node with every endpoint, swapping in the optimized server."""
     options = options or {}
     keep_original_host = options.get("keep_original_host", True) is not False
     name_prefix = str(options.get("name_prefix") or "").strip()
@@ -442,8 +427,7 @@ def _render_vmess_uri(node: dict) -> str:
         "fp": node.get("fp") or "",
         "alpn": ",".join(node.get("alpn") or []),
     }
-    # Carry skip-cert-verify through the raw export too (clash/surge already do);
-    # otherwise a skip-cert-verify node silently breaks in raw/base64.
+    # Without allowInsecure the raw export of a skip-cert-verify node breaks.
     if node.get("allow_insecure"):
         payload["allowInsecure"] = "1"
     return "vmess://" + _b64encode_utf8(
@@ -549,9 +533,7 @@ def _clash_proxy(node: dict) -> dict:
             proxy["alpn"] = list(node["alpn"])
         if node.get("fp"):
             proxy["client-fingerprint"] = node["fp"]
-        # REALITY needs its public-key/short-id or mihomo can't complete the
-        # handshake. Emit reality-opts (from the parsed query params) rather than
-        # a plain-TLS proxy that silently fails to connect.
+        # REALITY needs public-key/short-id or mihomo cannot complete the handshake.
         if node.get("security") == "reality":
             params = node.get("params") or {}
             pbk = str(params.get("pbk", "")).strip()
@@ -614,8 +596,7 @@ def render_clash_subscription(nodes: list[dict]) -> str:
 
 
 def _sanitize_surge_name(name: str) -> str:
-    # Surge uses "," and "=" as field delimiters, so any present in a node name are
-    # swapped for their full-width equivalents to avoid corrupting the proxy line.
+    # "," and "=" are Surge field delimiters; swap them for full-width forms.
     return (
         str(name or "proxy")
         .replace("\r", " ")

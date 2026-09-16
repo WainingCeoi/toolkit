@@ -16,8 +16,6 @@ from toolkit_engine import gather, purge
 
 @pytest.fixture
 def tool_client(app_state):
-    # create_app already wires every /api router — don't re-include them here
-    # (that would hide a wiring regression in main.py).
     app = create_app(state=app_state)
     with TestClient(app) as c:
         yield c
@@ -46,8 +44,6 @@ def test_normalize_pattern():
 
 @pytest.mark.parametrize(
     "token",
-    # The last four are the ones an enumerated deny-list missed: each selects
-    # every name of at least one character, exactly like a bare '*'.
     ["*", "*.*", "**", "*.", ".*", "?", "?*", "*?", "*.???", "**?"],
 )
 def test_purge_normalize_pattern_rejects_catch_alls(token):
@@ -96,11 +92,10 @@ def test_gather_moves_files_and_autonumbers_duplicates(tool_client, tmp_path):
     moved_names = sorted(p.name for p in tgt.iterdir())
     assert moved_names == ["dup.mkv", "dup_1.mkv", "ep1.mkv", "ep2.mp4"]
     assert not (src / "a" / "ep1.mkv").exists()
-    assert (src / "a" / "notes.txt").exists()  # non-matching file stays put
+    assert (src / "a" / "notes.txt").exists()
 
 
 def test_gather_no_match_does_not_create_target(tool_client, tmp_path):
-    # Source has only a non-matching file, so the Video scan finds nothing.
     src = tmp_path / "src"
     src.mkdir()
     (src / "notes.txt").write_text("not a video")
@@ -120,7 +115,6 @@ def test_gather_no_match_does_not_create_target(tool_client, tmp_path):
     assert snap["state"] == "done"
     assert snap["result"]["moved"] == []
     assert snap["result"]["failed"] == []
-    # The empty target folder must NOT be littered on a no-match run.
     assert not tgt.exists()
 
 
@@ -137,7 +131,6 @@ def test_gather_cancel_keeps_partial_report(
     release = threading.Event()
 
     def fake_move_files(files, target, on_progress=None):
-        # Report one moved file, then block until the job is cancelled.
         started.set()
         release.wait(3.0)
         return ["a.mkv"], []
@@ -161,7 +154,6 @@ def test_gather_cancel_keeps_partial_report(
 
     snap = wait_for_job(tool_client, job_id)
     assert snap["state"] == "cancelled"
-    # The partial report of already-moved files must survive cancellation.
     assert snap["result"] is not None
     assert snap["result"]["moved"] == ["a.mkv"]
     assert snap["result"]["failed"] == []
@@ -222,7 +214,7 @@ def test_purge_scan_and_delete_end_to_end(tool_client, tmp_path):
     assert sorted(Path(f).name for f in body["files"]) == ["a.log", "b.tmp", "c.log"]
     assert body["total_bytes"] > 0
     assert body["errors"] == []
-    assert body["rejected_tokens"] == ["*"]  # catch-all ignored, not applied
+    assert body["rejected_tokens"] == ["*"]
 
     resp = tool_client.post("/api/purge/delete", json={"scan_id": body["scan_id"]})
     assert resp.status_code == 200
@@ -234,17 +226,12 @@ def test_purge_scan_and_delete_end_to_end(tool_client, tmp_path):
         assert not Path(f).exists()
     assert (folder / "keep.txt").exists()
 
-    # Single-use: the record described a state of the disk that no longer
-    # exists, so replaying it is refused rather than repeated.
+    # A scan record is single-use.
     again = tool_client.post("/api/purge/delete", json={"scan_id": body["scan_id"]})
     assert again.status_code == 409
 
 
 def test_purge_delete_only_removes_what_the_scan_recorded(tool_client, tmp_path):
-    # The client names a scan, never a path, so there is no request shape that
-    # points the delete at a file the server did not itself select. This is the
-    # property that replaced confining a client file list against a client
-    # folder -- a check `folder: "/"` satisfied for every path on the machine.
     folder = tmp_path / "cache"
     folder.mkdir()
     (folder / "a.log").write_text("junk")
@@ -278,7 +265,6 @@ def test_purge_delete_cancel_keeps_partial_report(
     release = threading.Event()
 
     def fake_delete_files(paths, on_progress=None):
-        # Report one deleted file, then block until the job is cancelled.
         started.set()
         release.wait(3.0)
         return [paths[0]], []
@@ -301,16 +287,12 @@ def test_purge_delete_cancel_keeps_partial_report(
 
     snap = wait_for_job(tool_client, job_id)
     assert snap["state"] == "cancelled"
-    # The partial report of already-deleted files must survive cancellation.
     assert snap["result"] is not None
     assert snap["result"]["deleted"] == [str(tmp_path / "a.log")]
     assert snap["result"]["failed"] == []
 
 
 def test_purge_delete_ignores_a_client_supplied_file_list(tool_client, tmp_path):
-    # Belt and braces for the shape change: even if a caller sends the old
-    # folder+files body, those fields are not part of the request model, so the
-    # named path cannot reach the deleter.
     folder = tmp_path / "cache"
     folder.mkdir()
     (folder / "a.log").write_text("junk")
@@ -332,8 +314,6 @@ def test_purge_delete_ignores_a_client_supplied_file_list(tool_client, tmp_path)
 
 
 def test_purge_delete_reports_per_file_failures(tool_client, tmp_path, monkeypatch):
-    # A real delete failure on one path must land in failed[] with {name, error}
-    # while the other succeeds — the destructive op's partial-failure contract.
     folder = tmp_path / "cache"
     folder.mkdir()
     good = folder / "a.log"
@@ -364,8 +344,6 @@ def test_purge_delete_reports_per_file_failures(tool_client, tmp_path, monkeypat
 
 
 def test_gather_reports_per_file_move_failures(tool_client, tmp_path, monkeypatch):
-    # One of two matches fails to move — failed[] must carry {name, error} and
-    # the run still completes with the other moved.
     src = tmp_path / "src"
     src.mkdir()
     (src / "a.mkv").write_bytes(b"a")

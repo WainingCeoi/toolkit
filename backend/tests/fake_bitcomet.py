@@ -1,17 +1,4 @@
-"""In-process HTTP server speaking BitComet's WebUI dialect, for tests.
-
-A real server on an ephemeral port rather than a monkeypatched requests
-session: it exercises the actual wire format -- the AES login envelope, the
-two-step token handshake, the error_code envelope, 401s -- which is where the
-bugs live. No BitComet install needed.
-
-It deliberately reproduces the quirks that otherwise fail SILENTLY: task ids
-must arrive as strings, file indexes are 0-based, "disabled" is the only way
-to deselect a file, an unregistered save_folder is refused, torrent_links/add
-answers with no task id at all, and a magnet learns its file list only while
-it is RUNNING. Each one is enforced here so a regression fails a test instead
-of a download.
-"""
+"""In-process HTTP server speaking BitComet's WebUI dialect, for tests."""
 
 from __future__ import annotations
 
@@ -28,7 +15,6 @@ TORRENT_MAX_SIZE = 20 * 1024 * 1024
 
 
 def _magnet_infohash(link: str) -> str:
-    """The btih a magnet carries, which becomes the task's guid."""
     try:
         return parse_magnet(link)[0]
     except ValueError:
@@ -75,16 +61,8 @@ class FakeBitComet:
         self.tasks: dict[str, dict] = {}
         self.deleted: list[tuple[str, bool]] = []
         self.logins = 0
-        # BitComet's own cap on an uploaded .torrent, reported through
-        # /api/config/new_task/get. Settable so a test can prove the client
-        # reads it rather than carrying its own copy of the number.
         self.torrent_max_size = TORRENT_MAX_SIZE
-        # What each magnet's swarm is holding: infohash -> [(path, size)].
-        # It reaches the task only once that task is running (see
-        # _deliver_metadata), which is the whole shape of the magnet flow.
         self.metadata: dict[str, list[tuple[str, int]]] = {}
-        # Token state. revoke_tokens() models a restart (a fresh login fixes
-        # it); reject_every_token models credentials that will never work.
         self.live_tokens: set[str] = set()
         self.invite_tokens: set[str] = set()
         self.reject_every_token = False
@@ -93,9 +71,7 @@ class FakeBitComet:
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
         self._thread = threading.Thread(
             target=self._server.serve_forever,
-            # serve_forever polls at 0.5s by default, and shutdown() waits for
-            # one full tick -- with a server per test that is most of the
-            # suite's wall clock spent doing nothing.
+            # shutdown() waits a full poll tick; the 0.5s default dominates the suite.
             kwargs={"poll_interval": 0.02},
             daemon=True,
         )
@@ -135,14 +111,7 @@ class FakeBitComet:
         self.metadata[infohash.lower()] = list(files)
 
     def _deliver_metadata(self, task: dict) -> None:
-        """Hand a magnet its files -- but only while the task is RUNNING.
-
-        This is the measured behaviour that breaks the obvious design. A task
-        added with start_later=True is "stopped", a stopped task never contacts
-        a peer, and a magnet that never contacts a peer never learns what is
-        inside it: its file list stays empty for as long as the task exists.
-        There is no metadata-only mode to ask for instead.
-        """
+        """Give a magnet its files only while RUNNING; a stopped task never learns."""
         if task["files"] or task["status"] != "running":
             return
         infohash = task["task_guid"].removeprefix("bt_")
@@ -156,7 +125,6 @@ class FakeBitComet:
         files = task["files"]
         selected = [f for f in files if f["priority"] != "disabled"]
         return {
-            # The API hands the id back as an int here; the client must coerce.
             "task_id": int(task["task_id"]),
             "task_guid": task["task_guid"],
             "task_name": task["task_name"],
@@ -164,9 +132,6 @@ class FakeBitComet:
             "total_size": sum(f["size"] for f in files),
             "selected_size": sum(f["size"] for f in selected),
             "selected_downloaded_size": sum(f["downloaded_size"] for f in selected),
-            # Live numbers are read off the task rather than hardcoded, so a
-            # test can model a download in flight -- BitComet computes these
-            # itself, and the dashboard uses them instead of deriving its own.
             "download_rate": task.get("download_rate", 0),
             "upload_rate": task.get("upload_rate", 0),
             "permillage": task.get("permillage", 0),
@@ -180,7 +145,7 @@ class FakeBitComet:
 
     def _task(self, payload: dict) -> dict:
         task_id = payload.get("task_id")
-        # An int here is the classic silent bug; the real API refuses it too.
+        # The real API refuses an int task_id too.
         if not isinstance(task_id, str):
             raise _RejectedError("INVALID_TASK_ID", "invalid task_id")
         if task_id not in self.tasks:
@@ -266,10 +231,6 @@ class FakeBitComet:
     def _login(self, payload: dict) -> dict:
         self.logins += 1
         client_id = payload.get("client_id") or ""
-        # Opening the envelope with the client_id sent beside it proves the
-        # blob is well-formed and keyed the way BitComet expects. It cannot
-        # prove the byte LAYOUT, since encrypt/decrypt are symmetric -- that is
-        # what the explicit layout assertions in the test module are for.
         try:
             creds = json.loads(decrypt(payload.get("authentication", ""), client_id))
         except (ValueError, IndexError) as exc:  # bad base64, HMAC, padding or JSON
@@ -329,27 +290,18 @@ class FakeBitComet:
 
     def _links_add(self, payload: dict) -> dict:
         self._check_save_folder(payload)
-        # One newline-joined string, never a list. Sending a JSON array is how
-        # this was broken before, and BitComet answers "torrent_links missing"
-        # -- so the field reads as ABSENT, not malformed. Rejecting a list the
-        # same way is the point of this fake: a test must fail here rather than
-        # every magnet failing in front of the user.
+        # A newline-joined string; BitComet answers "missing" to a JSON list.
         raw = payload.get("torrent_links")
         if not isinstance(raw, str) or not raw.strip():
             raise _RejectedError("FATALL_ERROR", "torrent_links missing")
         links = [line.strip() for line in raw.split("\n") if line.strip()]
 
         for link in links:
-            # A magnet carries no metadata yet, so a fresh task has no files
-            # and gains them only once it is running -- see _deliver_metadata.
             task_id = self.add_task(link, [], _magnet_infohash(link))
             self.tasks[task_id]["status"] = (
                 "stopped" if payload.get("start_later") else "running"
             )
-        # NO task_id and NO task_ids: the real endpoint is asynchronous and
-        # answers before the tasks exist. Anything reading an id out of this
-        # reply gets nothing, silently, and loses the task forever -- the only
-        # way back to it is matching "bt_<infohash>" in the task list.
+        # The real endpoint is asynchronous and answers with no task id at all.
         return {"error_code": "OK", "error_message": "adding task in batch started."}
 
     def _set_priority(self, payload: dict) -> dict:
@@ -374,10 +326,7 @@ class FakeBitComet:
         verb = payload.get("action")
         if verb not in {"start", "stop", "hash_check", "tracker_update"}:
             raise _RejectedError("INVALID_ACTION", f"action invalid: {verb}")
-        # BitComet answers "skipped" when every task is already in the state
-        # asked for -- start on a running task, stop on a stopped one. It is a
-        # successful no-op, and a client that treats it as an error breaks
-        # re-committing a selection, so the fake has to reproduce it.
+        # BitComet answers "skipped" when every task already has the wanted state.
         changed = False
         for task_id in self._selected_task_ids(payload):
             if task_id in self.tasks and verb in {"start", "stop"}:

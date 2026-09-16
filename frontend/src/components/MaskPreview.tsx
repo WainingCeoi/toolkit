@@ -1,30 +1,10 @@
-// Canvas mask preview: the image with the proposed mask tinted red on top.
-//
-// This was a brush-and-eraser editor, twice. It is a preview again because
-// the mask is not something to correct by hand: the detector either recovers
-// a mark and masks it precisely, or reports that it recovered nothing and the
-// image is left alone. The case that justified the brush's return — a one-off
-// logo that never repeats, which no single-image route can find — is now the
-// stacked route's job: the mark sits at the same place in every photo of the
-// supplier's batch, so the batch recovers it together (see watermark/stacked
-// on the backend). A mask hand-drawn over a watermark detection could not
-// find is a mask over whatever the person could see, and inpainting that
-// damaged photographs while leaving the watermark in place.
-//
-// The mask still lives on an offscreen canvas at native image resolution, so
-// nothing is ever resampled, and it is still exported and sent with the run:
-// what is inpainted is exactly the mask that was shown here, not a proposal
-// recomputed later from possibly different inputs.
+// Canvas mask preview; the mask is kept at native resolution offscreen and exported as-shown.
 
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef } from 'react'
 import { maskToOverlay, overlayToMask } from '../mask'
 
 export interface MaskPreviewHandle {
-  /**
-   * The shown mask as bare base64 PNG (white = remove), or null while the
-   * proposal is still loading — exporting the blank canvas would be a mask
-   * that removes nothing, and the run would silently no-op.
-   */
+  /** Bare base64 PNG (white = remove), or null while the proposal is still loading. */
   exportMask(): string | null
 }
 
@@ -44,12 +24,9 @@ const MaskPreview = forwardRef<MaskPreviewHandle, MaskPreviewProps>(
     const viewRef = useRef<HTMLCanvasElement>(null)
     const image = useRef<HTMLImageElement | null>(null)
     const overlay = useRef<HTMLCanvasElement | null>(null)
-    // A proposal has landed, so the overlay means something. Until then an
-    // export would be a blank "remove nothing" mask.
     const loaded = useRef(false)
     const loadToken = useRef(0)
-    // Held in refs so a parent passing inline callbacks cannot re-trigger the
-    // mask fetch on every render.
+    // Refs keep inline parent callbacks out of the effect deps.
     const readyCb = useRef(onReady)
     readyCb.current = onReady
     const emptyCb = useRef(onEmpty)
@@ -78,8 +55,6 @@ const MaskPreview = forwardRef<MaskPreviewHandle, MaskPreviewProps>(
     }, [width, height])
 
     useEffect(() => {
-      // Only the newest load may write: a slow proposal must not land on top
-      // of the one the sensitivity slider asked for afterwards.
       const token = ++loadToken.current
       readyCb.current?.(false)
       const img = new Image()
@@ -106,10 +81,7 @@ const MaskPreview = forwardRef<MaskPreviewHandle, MaskPreviewProps>(
       }
       img.src = maskUrl
       return () => {
-        // Abandon this load; a later one (or none) wins. Bumping the LIVE
-        // counter is the point — a value captured when the effect ran could not
-        // invalidate the load that is still in flight, which is the one race
-        // this guards. Not a stale-ref bug, so the rule is silenced here.
+        // Bumping the live counter is the point, not a stale-ref bug.
         // eslint-disable-next-line react-hooks/exhaustive-deps
         loadToken.current++
       }

@@ -1,8 +1,3 @@
-// 🧲 Magnet Scraper — auto/manual magnet scraping and de-duplication.
-// Automatic walks the configured site's pagination until CUTOFF_VIDEO is
-// found (then advances it); Manual scrapes a pasted URL list; Remove
-// duplicated de-dupes a magnet list locally (sync, no job).
-
 import { useEffect, useState, type CSSProperties } from 'react'
 import { api } from '../api'
 import { useToolJob } from '../jobs'
@@ -28,11 +23,9 @@ function splitLines(raw: string): string[] {
     .filter(Boolean)
 }
 
-// Shared result block for auto + manual scrapes (snapshot.result).
 function ScrapeResult({ result }: { result: MagnetResult | null }) {
   if (!result) return null
 
-  // Automatic mode only: pagination never located the cutoff video.
   if (result.cutoff_found === false) {
     return (
       <>
@@ -80,9 +73,6 @@ function ScrapeResult({ result }: { result: MagnetResult | null }) {
       {failed.length > 0 && (
         <div className="field">
           <span className="label">⚠️ Failed URLs</span>
-          {/* The bare URLs, one per line — the reasons used to ride along and
-              made the box useless for its one job: copying the failures back
-              into Manual mode for another try. */}
           <CodeBox text={failed.map((f) => f.url).join('\n')} />
         </div>
       )}
@@ -101,7 +91,7 @@ export default function MagnetScraper() {
   // Manual mode
   const [manualRaw, setManualRaw] = useState('')
 
-  // Remove duplicated (sync call — result persists while switching modes)
+  // Remove duplicated
   const [dedupeRaw, setDedupeRaw] = useState('')
   const [dedupeResult, setDedupeResult] = useState<DedupeResult | null>(null)
   const [dedupeError, setDedupeError] = useState<string | null>(null)
@@ -109,7 +99,6 @@ export default function MagnetScraper() {
 
   const { start, snapshot, running, error, setError } = useToolJob<MagnetResult>('/tools/magnet-scraper')
 
-  // Config lamps load independently of any job.
   useEffect(() => {
     api
       .magnetConfig()
@@ -127,8 +116,7 @@ export default function MagnetScraper() {
   }
 
   function startManual() {
-    // An empty list is allowed through: the backend answers with its exact
-    // "Please enter at least one URL" message.
+    // An empty list goes through; the backend supplies the validation message.
     start(() => api.magnetManual(splitLines(manualRaw)))
   }
 

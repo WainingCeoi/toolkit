@@ -1,6 +1,3 @@
-// File Gatherer — recursively gather files by type into one target folder.
-// Mirrors backend/src/toolkit_api/routers/gather.py (POST /gather/start -> job).
-
 import { useMemo, useState, type CSSProperties } from 'react'
 import { api } from '../api'
 import { useToolJob } from '../jobs'
@@ -9,9 +6,7 @@ import JobPanel from '../components/JobPanel'
 import Button from '../components/Button'
 import type { GatherResult as GatherResultData } from '../types/api'
 
-// Client-side mirror of the engine presets — used ONLY for the live
-// "Matching: …" caption; the backend builds the real pattern list from the
-// category names + custom string we send it.
+// Mirrors the backend's presets; keep them in sync.
 const FILE_TYPE_PRESETS: Record<string, string[]> = {
   Video: ['*.mkv', '*.mp4', '*.mov', '*.ts', '*.flv', '*.avi', '*.webm', '*.m4v', '*.wmv', '*.mpg', '*.mpeg'],
   Audio: ['*.mp3', '*.flac', '*.aac', '*.wav', '*.m4a', '*.ogg', '*.opus', '*.wma'],
@@ -22,7 +17,6 @@ const FILE_TYPE_PRESETS: Record<string, string[]> = {
 }
 const CATEGORY_NAMES = Object.keys(FILE_TYPE_PRESETS)
 
-// 'srt'/'.srt' -> '*.srt'; tokens with * or ? are kept as real globs.
 function normalizePattern(token: string): string | null {
   const t = token.trim()
   if (!t) return null
@@ -99,7 +93,6 @@ export default function FileGatherer() {
 
   const categories = CATEGORY_NAMES.filter((c) => selected[c])
 
-  // Live pattern preview, assembled exactly the way the backend will.
   const patterns = useMemo(() => {
     const out: string[] = []
     for (const c of categories) out.push(...FILE_TYPE_PRESETS[c])

@@ -1,8 +1,3 @@
-// Dependency Upgrader — scan a project (incl. subfolders) for uv (pyproject.toml)
-// and npm (package.json) manifests, review the outdated deps per manifest, then
-// upgrade + commit each. Scan runs as a tracked job (the syncs are slow +
-// cancellable); apply is a quick synchronous write, gated on your review.
-
 import { useState, type CSSProperties } from 'react'
 import { api } from '../api'
 import { useToolJob } from '../jobs'
@@ -11,7 +6,7 @@ import JobPanel from '../components/JobPanel'
 import Button from '../components/Button'
 import type { Bump, DepApplyResult, DepScanResult } from '../types/api'
 
-// Mirrors depsync.COMMIT_SUBJECT — the server falls back to it if this is blank.
+// Mirrors depsync.COMMIT_SUBJECT; keep them in sync.
 const DEFAULT_COMMIT_MESSAGE = 'chore(deps): update dependencies'
 
 const mono: CSSProperties = { font: '11px var(--mono)', color: 'var(--faint)' }
@@ -71,11 +66,7 @@ export default function DepUpgrade() {
 
   const result = snapshot?.state === 'done' ? snapshot.result : null
 
-  // Returning to the page restores the last scan from the jobs context, but the
-  // folder fields reset on unmount. Both are recovered from the restored root so
-  // the review isn't wrongly flagged "folder changed" and stays applyable —
-  // derived here rather than written back by an effect, which would have to
-  // render once with the wrong values before correcting them.
+  // Seeded from the restored scan rather than synced by an effect, so a remount is not stale.
   const [folder, setFolder] = useState(() => result?.root ?? '')
   const scannedFolder = scannedThisMount ?? result?.root ?? null
 
@@ -88,16 +79,12 @@ export default function DepUpgrade() {
     setError(null)
     setApplyResult(null)
     setApplyError(null)
-    // Mark the folder scanned only once the job actually starts — a rejected
-    // scan must leave any prior scan flagged stale, not retarget Apply.
+    // Only once the job starts: a rejected scan must not retarget Apply.
     const id = await start(() => api.depsScan(folder))
     if (id) setScannedThisMount(folder)
   }
 
   async function runApply() {
-    // Unreachable while the Apply button is gated on canApply, which
-    // requires a completed scan; the guard is what lets the call site stay
-    // honest about scannedFolder being nullable rather than asserting.
     if (scannedFolder === null) return
     setApplying(true)
     setApplyError(null)

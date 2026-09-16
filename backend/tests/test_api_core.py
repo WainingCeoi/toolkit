@@ -40,7 +40,7 @@ def test_disabled_tools_are_hidden_from_the_manifest(client, monkeypatch):
     slugs = {t["slug"] for c in categories for t in c["tools"]}
     assert "doc-to-markdown" not in slugs
     assert "remux" not in slugs
-    assert "cache-purge" in slugs  # everything else still listed
+    assert "cache-purge" in slugs
     assert sum(len(c["tools"]) for c in categories) == 11
 
 
@@ -64,9 +64,6 @@ def test_health_reports_dependency_booleans(client):
 
 
 def test_health_mineru_uses_docmd_detection_not_just_path(client, monkeypatch):
-    # MinerU is installed in the venv but not on PATH: shutil.which misses it,
-    # while docmd.find_mineru() (the tool's own detector) finds it. Health must
-    # agree with the tool, else the home lamp reads "not found" while it runs.
     real_which = shutil.which
     monkeypatch.setattr(
         shutil, "which", lambda name: None if name == "mineru" else real_which(name)
@@ -157,9 +154,7 @@ def test_artifact_roundtrip(client, app_state):
 
 
 def test_all_api_routers_are_wired(app_state):
-    # Guards against a router silently dropped from create_app's include list.
-    # Included routers are nested wrappers in app.routes, so read the flattened
-    # path list from the OpenAPI schema.
+    # app.routes nests included routers; the OpenAPI schema has the flat list.
     app = create_app(state=app_state)
     paths = set(app.openapi()["paths"].keys())
     expected = {
@@ -194,8 +189,6 @@ def test_all_api_routers_are_wired(app_state):
         "/api/subs/history",
         "/api/deps/scan",
         "/api/deps/apply",
-        # The torrent tool dispatches to BitComet and hands management over to
-        # it, so there is no queue, event stream or pause/resume route here.
         "/api/torrent",
         "/api/torrent/status",
         "/api/torrent/resolve",
@@ -228,8 +221,6 @@ def test_registry_evicts_oldest_finished_over_cap():
         job = reg.submit("quick", [], lambda job: {})
         _wait_finished(reg, job.id)  # finished before the next submit
         ids.append(job.id)
-    # Eviction runs on submit: after 5 submits with cap 3, only the newest 3
-    # finished jobs remain; the oldest two are dropped.
     present = [i for i in ids if reg.get(i) is not None]
     assert present == ids[-3:]
 
@@ -242,7 +233,6 @@ def test_registry_never_evicts_a_running_job():
         for _ in range(5):
             job = reg.submit("quick", [], lambda job: {})
             _wait_finished(reg, job.id)
-        # The running job outlives every finished job past the cap.
         assert reg.get(running.id) is not None
         assert reg.get(running.id).state == "running"
     finally:
@@ -250,23 +240,16 @@ def test_registry_never_evicts_a_running_job():
 
 
 def test_disabled_tools_are_not_mounted_at_all(app_state, monkeypatch):
-    # Dropping a tool from the sidebar while its endpoints kept answering made
-    # the setting read as a kill switch it was not -- worst for exactly the
-    # tools someone reaches for it to switch off, which delete and move files.
     from fastapi.testclient import TestClient
 
     monkeypatch.setenv("TOOLKIT_DISABLED_TOOLS", "cache-purge")
     with TestClient(create_app(state=app_state)) as disabled_client:
         assert disabled_client.post("/api/purge/scan", json={}).status_code == 404
         assert disabled_client.post("/api/purge/delete", json={}).status_code == 404
-        # An unrelated tool is untouched.
         assert disabled_client.post("/api/remux/scan", json={}).status_code != 404
 
 
 def test_cancelling_a_queued_job_stops_it_ever_running():
-    # Every worker busy, so the next submit can only sit in the queue. A cancel
-    # arriving in that window has to mean the work never starts -- for purge
-    # that is the difference between deleting files and not.
     reg = JobRegistry(max_workers=1)
     release = threading.Event()
     started = threading.Event()
@@ -282,9 +265,6 @@ def test_cancelling_a_queued_job_stops_it_ever_running():
 
 
 def test_artifact_store_sweeps_stale_files_but_keeps_used_ones():
-    # A long-lived `make host` server used to only ever accumulate: nothing
-    # deleted an artifact before shutdown, including ones whose job had been
-    # evicted and which no client could ask for again.
     store = ArtifactStore(ttl=0.05)
     try:
         stale = store.put_bytes("old.txt", b"old", "text/plain")
@@ -301,10 +281,6 @@ def test_artifact_store_sweeps_stale_files_but_keeps_used_ones():
 
 @pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
 def test_pool_recovers_from_a_worker_thread_dying():
-    # A worker killed by something that is not an Exception (SystemExit out of
-    # a library) used to take its pool slot with it: the dead thread still
-    # counted against the cap, so enough deaths left every later job queued
-    # behind nobody, reporting 'running' for the life of the process.
     reg = JobRegistry(max_workers=1)
 
     def suicidal(job):
@@ -314,15 +290,12 @@ def test_pool_recovers_from_a_worker_thread_dying():
     _wait_finished(reg, doomed.id)
     assert reg.get(doomed.id).state == "failed"
 
-    # The pool refills on the next submit, and ordinary work still runs.
     survivor = reg.submit("quick", [], lambda job: {"ok": True})
     _wait_finished(reg, survivor.id)
     assert reg.get(survivor.id).state == "done"
 
 
 def test_worker_pool_is_bounded_by_max_workers():
-    # The bound is on threads, not just on concurrent execution: a burst of
-    # submits must not create a thread each.
     reg = JobRegistry(max_workers=2)
     release = threading.Event()
     before = threading.active_count()

@@ -1,9 +1,3 @@
-// Photos Library Filter — mirror SRC.photoslibrary → DEST.photoslibrary minus
-// its caches, safe while Photos is running. The dry run (plan + verify,
-// nothing written) and the real run are both tracked jobs that return the
-// same report; the page renders whichever came back last. Mirrors
-// backend/src/toolkit_api/routers/photofilter.py.
-
 import { useState, type CSSProperties } from 'react'
 import { api } from '../api'
 import { useToolJob } from '../jobs'
@@ -14,9 +8,7 @@ import Button from '../components/Button'
 import { formatBytes } from '../torrent'
 import type { PhotoFilterResult } from '../types/api'
 
-// Mirror of photofilter.DEFAULT_RULES — what the textarea starts with. The
-// backend applies exactly the text it is sent, so this copy is the one that
-// runs; keep it saying the same thing as the engine's.
+// Mirrors photofilter.DEFAULT_RULES; this copy is what runs, so keep them in sync.
 const DEFAULT_RULES = `# Photos Library Filter rules (rsync-style)
 # Everything not listed here is kept. Do NOT exclude resources/renders/: it holds
 # the edit recipes (UUID.plist) and rendered edits that the database expects to
@@ -36,8 +28,7 @@ resources/caches/
 private/**/caches/
 `
 
-// A first run into a stale mirror can delete tens of thousands of thumbnails;
-// the report keeps the count exact and the list readable.
+// A first run can delete tens of thousands of files; the count stays exact, the list is capped.
 const LIST_LIMIT = 200
 
 const caption: CSSProperties = { font: '11px var(--mono)', color: 'var(--faint)', margin: '6px 0 0' }

@@ -1,6 +1,5 @@
 {
-  // Build-time config files. These run under Node, not the browser, so they
-  // get Node globals (process.env.API_PORT in vite.config.ts) and no DOM lib.
+  // Build-time config files: Node globals, no DOM lib.
   "compilerOptions": {
     "target": "ES2022",
     "lib": ["ES2023"],

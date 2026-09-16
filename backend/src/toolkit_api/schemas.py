@@ -1,8 +1,4 @@
-"""Shared Pydantic schemas (jobs, tools manifest, health).
-
-Per-tool request/response models live next to their router so each tool
-stays self-contained; the cross-tool contracts live here.
-"""
+"""Shared Pydantic schemas (jobs, tools manifest, health)."""
 
 from __future__ import annotations
 

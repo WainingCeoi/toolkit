@@ -1,6 +1,3 @@
-// Live view of one job: message line, per-item LED bars, terminal states.
-// Pure render over the snapshot the jobs context keeps fresh via SSE.
-
 import { useState, type ReactNode } from 'react'
 import { api } from '../api'
 import Button from './Button'
@@ -17,8 +14,6 @@ export function LedBar({ pct, state }: { pct: number; state: JobItemState }) {
 }
 
 interface JobPanelProps {
-  // Renders any tool's job, so the result shape is irrelevant here — this
-  // component only ever reads the envelope.
   snapshot: Job<unknown> | null
   children?: ReactNode
 }
@@ -52,7 +47,7 @@ export default function JobPanel({ snapshot, children }: JobPanelProps) {
       {state === 'cancelled' && (
         <div className="note warn">Run cancelled — showing partial results.</div>
       )}
-      {children /* tool-specific result rendering */}
+      {children}
     </div>
   )
 }

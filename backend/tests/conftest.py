@@ -1,11 +1,4 @@
-"""Shared fixtures: an app with injected (real-but-temp) state + a client.
-
-The Store is real SQLite on a tmp path — it's fast and pure, so faking it
-would test less for no speed win. Everything heavyweight (ffmpeg, Chrome,
-LibreOffice, MinerU) stays untouched: those engines are exercised through
-their pure command-builders, and routers are tested through validation
-paths and small real inputs.
-"""
+"""Shared fixtures: an app with injected temp state, plus a client."""
 
 from __future__ import annotations
 
@@ -22,15 +15,8 @@ from toolkit_api.main import create_app
 from toolkit_api.state import AppState
 from toolkit_api.watermarks import WatermarkBatches
 
-# starlette's TestClient imports its HTTP client under the bare name `httpx`.
-# This project depends on httpx2 — pydantic's maintained successor — and
-# starlette uses only the API surface the two share, so aliasing the module is
-# enough to bridge them. conftest is imported before any test module, so every
-# `from fastapi.testclient import TestClient` below sees the alias already set.
-#
-# This cannot be solved by upgrading instead: starlette >= 1.0 speaks httpx2
-# natively, but the docmd extra pulls mineru, which pins gradio 6.8.0, which
-# caps starlette < 1.0. Drop that pin and this alias can go.
+# starlette's TestClient imports `httpx`; this project ships httpx2, whose API
+# it shares, so alias it before any test module imports TestClient.
 sys.modules.setdefault("httpx", httpx2)
 
 
@@ -40,8 +26,6 @@ def app_state(tmp_path):
         store=Store(tmp_path / "sub.db"),
         jobs=JobRegistry(),
         artifacts=ArtifactStore(),
-        # On tmp_path, so a test that saves a BitComet device never touches the
-        # developer's real book -- and every test starts with only "This Mac".
         devices=DeviceBook(tmp_path / "torrents.db"),
         watermarks=WatermarkBatches(tmp_path / "watermark"),
     )

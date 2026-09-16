@@ -41,8 +41,6 @@ describe('applyFilter', () => {
   })
 
   it('does not apply the size floor to subtitles', () => {
-    // Mirrors the backend rule: a 100MB floor must never be able to discard a
-    // 45KB subtitle the user explicitly asked for.
     expect(applyFilter(FILES, new Set(['video', 'subtitle']), 100 * MB)).toEqual([1, 3])
   })
 
@@ -67,8 +65,6 @@ describe('formatters', () => {
   })
 })
 
-// The page layers user ticks over the rule's output rather than syncing state
-// in an effect. These cover that composition, which is where the bugs would be.
 function resolve(
   files: TorrentFileRow[],
   ruleSelected: Set<number>,
@@ -97,8 +93,6 @@ describe('rule + override composition', () => {
   })
 
   it('treats an explicit false as a choice, not as absent', () => {
-    // `overrides.get() ?? rule.has()` must not collapse false into the
-    // fallback -- unticking a rule-selected row has to stick.
     const overrides = new Map([[1, false]])
     expect(overrides.get(1) ?? rule.has(1)).toBe(false)
   })
@@ -130,8 +124,6 @@ describe('addTorrent / updateTorrent', () => {
   })
 
   it('skips a torrent whose infohash is already under review', () => {
-    // Pasting the same magnet twice, or a magnet plus its .torrent, must not
-    // create two review sections for one download.
     const once = addTorrent([], torrent('a', FILES, { name: 'first' }))
     const twice = addTorrent(once, torrent('a', FILES, { name: 'second' }))
     expect(twice).toHaveLength(1)
@@ -160,8 +152,6 @@ describe('selectionFor + ruleKey (per-torrent)', () => {
   })
 
   it('keys the rule by infohash so two torrents differ', () => {
-    // Same categories + size, different torrent -> different key, so ticks on
-    // one never bleed onto the other.
     expect(ruleKey('a', cats, 100)).not.toBe(ruleKey('b', cats, 100))
     expect(ruleKey('a', cats, 100)).toBe(ruleKey('a', cats, 100))
   })
@@ -183,7 +173,6 @@ describe('truncateMiddle', () => {
     const cut = truncateMiddle(long, 30)
     expect(cut).toHaveLength(30)
     expect(cut).toContain('…')
-    // The two things that identify a file: what it starts as, and what it is.
     expect(cut.startsWith('Some.Very.Long')).toBe(true)
     expect(cut.endsWith('.mkv')).toBe(true)
   })
@@ -195,16 +184,13 @@ describe('truncateMiddle', () => {
   })
 
   it('gives up rather than emitting an ellipsis with nothing around it', () => {
-    // Below a head + ellipsis + tail there is nothing meaningful to show, and
-    // the untruncated string is shorter than the mangled one anyway.
     expect(truncateMiddle('abcdefgh', 4)).toBe('abcdefgh')
   })
 
   it('distinguishes two names that differ only in their tail', () => {
     const a = 'The.Show.S01E01.1080p.WEB.h264-ALPHA.mkv'
     const b = 'The.Show.S01E01.1080p.WEB.h264-BRAVO.mp4'
-    // End-truncation renders these identically — 24 characters of shared
-    // prefix — which is exactly what keeping the tail is for.
+    // Shared 24-char prefix: end-truncation would render these identically.
     expect(a.slice(0, 24)).toBe(b.slice(0, 24))
     expect(truncateMiddle(a, 24)).not.toBe(truncateMiddle(b, 24))
   })
@@ -239,13 +225,10 @@ describe('retryableSend', () => {
   })
 
   it('retries a network-level failure that never got an answer', () => {
-    // fetch rejects with TypeError before any Response exists.
     expect(retryableSend(new TypeError('Failed to fetch'))).toBe(true)
   })
 
   it('does not retry a request BitComet answered and rejected', () => {
-    // A 400 (bad selection) or 404 (torrent gone) repeats identically no
-    // matter how many times it is resent.
     expect(retryableSend(new ApiError('this torrent has no file 7', 400))).toBe(false)
     expect(retryableSend(new ApiError('BitComet no longer has this torrent.', 404))).toBe(false)
   })
@@ -254,7 +237,6 @@ describe('retryableSend', () => {
 describe('windowedRun', () => {
   const tick = () => new Promise<void>((r) => setTimeout(r, 0))
 
-  // A task per item that starts visibly and finishes only when told to.
   function harness(count: number) {
     const started: number[] = []
     const finish = new Map<number, () => void>()
@@ -267,8 +249,7 @@ describe('windowedRun', () => {
     return { items, run, started, finish }
   }
 
-  // Resolve everything currently launched, repeatedly, until the run settles —
-  // top-ups mint new resolvers mid-flight, so one sweep is never enough.
+  // Top-ups mint new resolvers mid-flight, so one sweep is never enough.
   async function drain(done: Promise<void>, finish: Map<number, () => void>) {
     let settled = false
     void done.then(() => {
@@ -293,12 +274,10 @@ describe('windowedRun', () => {
     const done = windowedRun(items, run, 10)
     expect(started).toHaveLength(10)
 
-    // 9 in flight -> 1 more goes.
     finish.get(0)!()
     await tick()
     expect(started).toHaveLength(11)
 
-    // 8 in flight -> 2 more go.
     finish.get(1)!()
     finish.get(2)!()
     await tick()
@@ -311,8 +290,7 @@ describe('windowedRun', () => {
   it('never exceeds the window', async () => {
     const { items, run, started, finish } = harness(25)
     const done = windowedRun(items, run, 10)
-    // Release one at a time; launched-minus-released is the live in-flight
-    // count, and it must stay pinned at the window, never past it.
+    // launched minus released is the live in-flight count.
     let released = 0
     let settledFlag = false
     void done.then(() => {

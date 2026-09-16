@@ -5,12 +5,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-# Repo root, three levels up from src/lib/subgen/config.py — the database lives
-# in <repo>/data/ so it sits at the Toolkit project root, not under src/.
+# The default DB lives under <repo>/data; toolkit_api.main points it at backend/data.
 REPO_ROOT = Path(__file__).resolve().parents[3]
-
-# Settings are read from the environment on each access (via module __getattr__)
-# so tests can override them per-case without import-order surprises.
 
 
 def __getattr__(name: str):

@@ -31,13 +31,7 @@ def get_store(request: Request):
 
 
 def get_torrents(request: Request):
-    """The current TorrentManager, held for the life of the request.
-
-    Yielded rather than returned so the in-flight count can be released at the
-    end: a device switch replaces the manager and wants to close the one it
-    replaced, which must not happen while this request is still talking through
-    it. Whoever finishes last does the closing.
-    """
+    """Yield the current TorrentManager; the last user of a replaced one closes it."""
     state = request.app.state.state
     with state.torrents_lock:
         manager = state.torrents
@@ -56,7 +50,6 @@ def get_torrents(request: Request):
                 state.torrents_users[key] = remaining
             else:
                 state.torrents_users.pop(key, None)
-            # Replaced while we were using it, and we were the last one.
             orphaned = remaining <= 0 and manager is not state.torrents
         if orphaned:
             manager.close()

@@ -1,21 +1,4 @@
-"""Server-side record of what a Cache Purge scan actually found.
-
-Delete used to take the folder *and* the file list from the client and confine
-one against the other. Both came from the same request, so the confinement was
-satisfied by construction — `folder: "/"` let every absolute path through, and
-nothing required the paths to have come from a scan at all. The extension
-filtering only ever existed in /scan.
-
-So the list stops being something the client can state. A scan records its
-result here and hands back an opaque id; delete takes the id and removes
-exactly the recorded paths. The client chooses *which scan* to act on, never
-*which files*.
-
-Entries expire: a preview that has been sitting around is no longer a
-description of the disk, and deleting against it would destroy contents nobody
-reviewed. Re-scanning is cheap, so an expired id asks for one rather than
-guessing.
-"""
+"""Server-side record of each Cache Purge scan; delete takes a scan id, not paths."""
 
 from __future__ import annotations
 
@@ -43,19 +26,12 @@ class PurgeScans:
                 "files": list(files),
                 "created": time.monotonic(),
             }
-            # Oldest-first bound, so a client that scans in a loop can't grow
-            # this without limit.
             while len(self._scans) > self.max_scans:
                 self._scans.pop(next(iter(self._scans)))
         return scan_id
 
     def take(self, scan_id: str) -> dict | None:
-        """Consume a scan. Returns None if it is unknown or expired.
-
-        Single-use on purpose: once its files are deleted the record describes
-        a state of the disk that no longer exists, so a repeat delete has
-        nothing to say. A retry after a partial failure re-scans.
-        """
+        """Consume a scan (single-use); None if unknown or expired."""
         with self._lock:
             self._sweep()
             return self._scans.pop(scan_id, None)

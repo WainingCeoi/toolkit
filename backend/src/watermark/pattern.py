@@ -1,34 +1,4 @@
-"""Find a repeating watermark by recovering the pattern itself, then matching it.
-
-The texture detector in detect.py asks "does this pixel stand out from its
-surroundings", which is all you can ask of a single pixel — and it is why thin
-image detail (tent seams, wires, railings) reads as watermark. On the images
-this tool is actually for, the watermark has a much stronger property: it
-repeats, identically, on a grid. Nothing in the photograph does.
-
-So instead of judging pixels, recover the mark:
-
-1. High-pass the image, leaving stroke-scale structure only.
-2. Find the period it repeats on, from the autocorrelation.
-3. Median-fold every smooth tile onto one. The mark sits at the same phase in
-   each tile so it survives; the photo differs in each tile so it cancels.
-   This is the "raise the contrast" step done statistically -- SNR grows with
-   the number of tiles, which is how a mark far too faint to see in any single
-   place becomes legible.
-4. Cross-correlate that recovered template back over the whole image, snapping
-   to each grid site, and mask only where it genuinely matches.
-
-The mask is therefore the union of pattern instances and nothing else, so a
-tent seam is never marked no matter how sharp it is.
-
-Returns None whenever the evidence is weak -- no period, too few tiles, a
-template no stronger than a deliberately misaligned fold of the same tiles,
-too few confident matches -- and the caller falls back to the texture detector.
-
-This runs only when the caller asks for it, because those gates cannot tell a
-watermark from any other structure consistent across the frame: a clean test
-photo passed them by locking onto its own sky gradient. See detect.py.
-"""
+"""Recover a repeating watermark by folding its tiles, then match it back."""
 
 from __future__ import annotations
 
@@ -37,9 +7,7 @@ from collections.abc import Callable, Iterable, Sequence
 import cv2
 import numpy as np
 
-# Longest side the search runs at. The period has to stay comfortably larger
-# than the high-pass scale to be findable, and cross-correlation over a full
-# 36 MP frame is far slower than the answer is worth.
+# Longest side the search runs at; full-frame correlation is far too slow.
 WORK_MAX = 2000
 
 # Removes illumination and large-scale content, keeps watermark strokes.
@@ -47,102 +15,65 @@ HIGHPASS_SIGMA = 18
 
 # Period search bounds, in working pixels.
 MIN_PERIOD = 45
-# How far off-axis a peak may sit and still count as the horizontal/vertical
-# period; the grids in practice are axis-aligned to within a few pixels.
+# How far off-axis a peak may sit and still count as the row/column period.
 AXIS_TOLERANCE = 8
 # Harmonics summed when scoring a candidate pitch.
 _HARMONICS = 4
-# Autocorrelation peaks considered when fitting the lattice, how far off a whole
-# number a peak's lattice coordinates may sit, and how many peaks a candidate
-# basis must explain before it is believed.
+# Peaks considered, off-integer tolerance, and peaks a basis must explain.
 _PEAK_COUNT = 60
 _LATTICE_TOL = 0.18
 _MIN_SUPPORT = 5
 
-# --- PATCH: new constants -------------------------------------------------
 _REFINE_SCHEDULE = ((2, 10), (3, 7), (6, 5), (8, 3))
 _SCORE_ORDER = 3
-# Largest lag, as a share of each dimension, where enough of the image still
-# overlaps itself for the correlation to carry evidence.
+# Largest lag, as a share of each dimension, that still carries evidence.
 _MAX_LAG_SHARE = 0.35
 # The quietest share of the photo, which is where the overlay is measurable.
 _QUIET_PCT = 45.0
 
-# Evidence gates. Below any of these, the caller falls back.
-#
-# MIN_TILES is high because the fold is a median: too few tiles and the
-# photograph does not cancel, so the "recovered mark" is just leftover scenery.
+# Evidence gates; below any of these the route answers None.
+# The fold is a median: with too few tiles the scenery does not cancel.
 MIN_TILES = 9
 MIN_NCC = 0.30
 MIN_INSTANCES = 6
-# The recovered mark must be this much stronger than a deliberately misaligned
-# fold of the same tiles. Folding noise always produces *something*; the
-# question is whether aligning on the estimated period produced more than
-# aligning on nothing, and a clean photo answers no.
+# The mark must be this much stronger than a misaligned fold of the same tiles.
 MIN_SIGNIFICANCE = 2.0
 
-# Sensitivity maps onto how much of the recovered mark's footprint to take:
-# the strongest strokes only, out to its faint lettering. Kept tight because
-# every site is stamped, so a loose footprint multiplies across the whole grid.
+# Sensitivity -> share of the mark's footprint stamped; every site multiplies it.
 _FOOTPRINT_MAX_PCT = 97.0
 _FOOTPRINT_MIN_PCT = 72.0
 
-# Share of the tile the located crop spans. Wide enough to carry the lettering
-# beside the logo — the stamp comes from this crop, so anything outside it is
-# never masked — but not the whole tile, which is mostly empty and would give
-# cross-correlation far less to lock onto.
+# Share of the tile the matched crop spans; the whole tile is mostly empty.
 _CROP_FRACTION = 0.62
 
-# A location with no prior reason to hold an instance must correlate better
-# than one the grid predicts.
+# A site the grid did not predict must correlate better than one it did.
 _MIN_NCC_UNPROMPTED = 0.45
 
-# A correlation peak is only believed where the image itself has something under
-# it, as a share of the template's own variation. Normalised correlation divides
-# by the window's standard deviation, so over a FLAT window -- a blown-out sky,
-# the white background of a product render -- it divides ~0 by ~0 and OpenCV
-# hands back 1.0. Measured on a render sample: every one of its correlation
-# peaks scored 1.000 over windows of standard deviation 0.0000, while genuine
-# instances elsewhere sat at 2.4-3.9 against a template deviation of 2.07. Those
-# perfect scores are arithmetic, not evidence, and without this they anchor the
-# grid walk in empty sky.
+# Normalised correlation scores 1.0 over a flat window (0/0), so peaks need substance.
 _MIN_WINDOW_STD_SHARE = 0.25
 
-# How near a lattice node a confident match must land to count as being ON the
-# grid, as a share of the cell, and how many of them must be. See apply_mark:
-# this is what separates an overlay from a lattice fitted to the photograph's own
-# texture, and nothing else does. Measured, the two populations are far apart
-# (0.769-1.000 against 0.333-0.538), so this sits between them, not on either.
+# Share of a cell a match may sit off a node, and share of matches that must be
+# on one: the only gate that tells an overlay from a lattice fitted to scenery.
 _NODE_TOLERANCE = 0.2
 _MIN_ON_LATTICE = 0.65
 
-# A stamped pixel is kept only where the image's response exceeds this multiple
-# of its own neighbourhood's response. Deliberately near 1: the stamp already
-# asserts the pixel is part of the mark's shape, so this only has to reject
-# stamps that landed somewhere genuinely featureless.
+# A stamped pixel is kept only where the image deviates from its own neighbourhood.
 _EVIDENCE_RATIO = 1.0
 _EVIDENCE_WINDOW = 81
 _EVIDENCE_FLOOR = 1.0
-# If this little of the stamped area survives that check, the repeat was an
-# artefact of the period estimate rather than ink on the photo.
+# Less of the stamp surviving than this means the repeat was a period artefact.
 _MIN_EVIDENCE_SHARE = 0.2
-# The percentile the filled shape is cut at -- the mark's ink outline, tighter
-# than any slider setting widens the stamp (see the fill in apply_mark).
+# Percentile the filled shape is cut at: the mark's ink outline.
 _FILL_PCT = 90.0
-# Pieces of the filled shape smaller than this are the fold's residue, not the
-# mark's ink, and are not completed (see the fill in apply_mark).
+# Filled pieces smaller than this are the fold's residue, not ink.
 _FILL_MIN_PIECE = 40
-# How far the filled shape is pulled inside the ink's blurred edge, in px at the
-# working size. The removal mask is dilated by more than this before inpainting.
+# Pull the fill inside the ink's blurred edge; the removal mask is dilated by more.
 _FILL_ERODE_PX = 3
-# Footprint the evidence share is measured over — the mark's strong core, fixed
-# so the gate does not move when sensitivity widens the footprint being masked.
+# Fixed footprint the evidence gate is measured over, so sensitivity cannot move it.
 _GATE_PCT = 90.0
 
 # --- the sparse route (see pooled_marks) ----------------------------------
-# Half-extents of the patch cut around a candidate anchor. Big enough to hold a
-# whole instance of the large marks this path exists for, since it is both the
-# subject that gets matched and the shape that gets stamped.
+# Half-extents of the patch cut around an anchor; it is both matched and stamped.
 _ANCHOR_HALF_H = 34
 _ANCHOR_HALF_W = 78
 # Candidate anchors tried per image, and the response filter that ranks them.
@@ -160,30 +91,20 @@ _MAX_SITES = 40
 # must agree, before the batch is believed to share one overlay.
 _MIN_POOL_IMAGES = 3
 _PITCH_TOL = 0.04
-# A run establishes one lattice vector. The pitch ACROSS it is voted for over this
-# range, reading the correlation surface within _CROSS_SNAP px of each predicted
-# site, and is believed only if the winner stands _CROSS_PROMINENCE robust
-# deviations above the rest of the vote. Measured: 5.65 and 22.9-26.6 where a
-# second pitch exists, against 0.90-3.68 on the clean batches that got as far as
-# being asked -- the bar sits between the weakest true reading and the strongest
-# false one, and _fold_on_grid then has to agree before the grid is used at all.
+# Range the pitch across a run is voted over, and the snap around each predicted site.
 _CROSS_MAX = 500
 _CROSS_SNAP = 6
-# Candidates that fit in the frame at all, below which the vote has too little to
-# be judged against; and the margin by which a doubled pitch must beat the voted
-# one before it is believed to be the true one (see _true_pitch).
+# Fewest candidates the vote needs, the margin a doubled pitch must beat the voted
+# one by (see _true_pitch), and how prominent the winner must be (robust deviations).
 _CROSS_MIN_CANDIDATES = 60
 _SUBHARMONIC_EDGE = 1.25
 _CROSS_PROMINENCE = 4.5
-# What counts as the mark's ink when a folded cell is trimmed down to it: a share
-# of the mark's own peak, plus this much slack around the result. The trimmed mark
-# must also leave a quarter of the cell empty in both axes, which is the second
-# and independent test that the voted grid is real (see _fold_on_grid).
+# Ink: a share of the mark's own peak, plus slack; the trimmed mark must leave a
+# quarter of the cell empty in both axes (see _fold_on_grid).
 _INK_SHARE = 0.25
 _INK_MARGIN = 6
 _INK_CELL_SHARE = 0.75
-# Cells stacked when folding on the grid. A median settles long before this many,
-# and stacking every cell of every image made peak memory grow with the batch.
+# Cells stacked per fold; unbounded stacking made peak memory grow with the batch.
 _FOLD_MAX_TILES = 48
 
 
@@ -203,14 +124,7 @@ def _local_texture(gray: np.ndarray, win: int = 51) -> np.ndarray:
 
 
 def _masked_autocorrelation(hp: np.ndarray, weight: np.ndarray) -> np.ndarray:
-    """Autocorrelation of ``hp`` measured only where ``weight`` is set.
-
-    Restricting it to the quiet parts of the photo is what makes the period
-    findable: over a whole frame, the ground's texture swamps the overlay and
-    the estimate comes back wrong. Multiplying by the weight would bias the
-    result by the weight's own shape, so it is divided out again — the standard
-    masked-correlation normalisation.
-    """
+    """Masked autocorrelation of ``hp`` where ``weight`` is set, weight divided out."""
     signal = np.fft.rfft2(hp * weight)
     mask_spectrum = np.fft.rfft2(weight)
     numerator = np.fft.irfft2(signal * np.conj(signal), s=hp.shape)
@@ -224,13 +138,7 @@ def _masked_autocorrelation(hp: np.ndarray, weight: np.ndarray) -> np.ndarray:
 
 
 def _pitch(profile: np.ndarray) -> int | None:
-    """The repeat pitch in a 1-D autocorrelation profile, or None.
-
-    Scored by the mean height at the candidate's own harmonics (d, 2d, 3d…).
-    A real pitch peaks at all of them; the steep shoulder near zero lag, which
-    otherwise wins on raw height alone, does not. The profile is detrended
-    first so that shoulder is not competing in the first place.
-    """
+    """The repeat pitch in a 1-D autocorrelation profile, or None."""
     limit = len(profile) - 1
     if limit < 2 * MIN_PERIOD:
         return None
@@ -256,12 +164,7 @@ def _pitch(profile: np.ndarray) -> int | None:
 
 
 def _rect_period(hp: np.ndarray, texture: np.ndarray) -> tuple[int, int] | None:
-    """The (vertical, horizontal) period the overlay repeats on, or None.
-
-    A rectangular period is enough even for the common half-offset brick
-    layout: that grid simply repeats on twice the vertical pitch, and folding
-    on the doubled period just puts two instances in the tile.
-    """
+    """The (vertical, horizontal) period the overlay repeats on, or None."""
     quiet = (texture < np.percentile(texture, _QUIET_PCT)).astype(np.float32)
     if quiet.mean() < 0.05:
         return None
@@ -306,11 +209,7 @@ def _peaks(prominence: np.ndarray, count: int) -> list[tuple[float, float]]:
     yy, xx = np.mgrid[0:height, 0:width]
     work[(yy - cy) ** 2 + (xx - cx) ** 2 < MIN_PERIOD**2] = -np.inf
     work[:cy, :] = -np.inf  # autocorrelation is symmetric; one half is enough
-    # Far lags have too little of the image overlapping itself to mean
-    # anything, and the masked estimate is forced to zero out there. Left in,
-    # the step down to that zero reads as an enormous ridge once the smooth
-    # trend is subtracted, and every "peak" lands on the cliff instead of on
-    # the overlay.
+    # Past the usable reach the estimate is zero, and that cliff would win as a peak.
     reach_y, reach_x = int(height * _MAX_LAG_SHARE), int(width * _MAX_LAG_SHARE)
     work[cy + reach_y :, :] = -np.inf
     work[:, : cx - reach_x] = -np.inf
@@ -330,19 +229,7 @@ def _peaks(prominence: np.ndarray, count: int) -> list[tuple[float, float]]:
 
 
 def _fit_lattice(peaks: list[tuple[float, float]]) -> np.ndarray | None:
-    """A 2x2 basis whose integer combinations explain the peaks, or None.
-
-    The overlay's grid is frequently NOT axis-aligned — measured on sample
-    photos, the strongest peak sat at 16 degrees in one and 76 in another — so
-    the repeat cannot be described by a row pitch and a column pitch. Two
-    arbitrary vectors can describe any of them.
-
-    Candidate pairs are scored by how many of the other peaks they explain as
-    near-integer combinations, then by being short. Shortness matters as much
-    as support: a doubled or tripled vector explains the peaks just as well,
-    but folding on it puts several instances in one tile, and the crop taken
-    from that tile then straddles them and matches nothing cleanly.
-    """
+    """A 2x2 basis whose integer combinations explain the peaks, or None."""
     best_basis, best_key = None, None
     for a_index, first in enumerate(peaks):
         for second in peaks[a_index + 1 :]:
@@ -359,16 +246,14 @@ def _fit_lattice(peaks: list[tuple[float, float]]) -> np.ndarray | None:
                 if np.all(np.abs(coords - np.round(coords)) <= _LATTICE_TOL):
                     supported.append((np.round(coords), peak))
             length = np.hypot(*first) + np.hypot(*second)
-            key = (len(supported), -length)
+            key = (len(supported), -length)  # shorter wins; a doubled vector fits too
             if len(supported) >= _MIN_SUPPORT and (best_key is None or key > best_key):
                 best_basis, best_key = (basis, supported), key
 
     if best_basis is None:
         return None
     basis, supported = best_basis
-    # Refit from every supported peak at once, which puts the vectors on a
-    # sub-pixel footing. Rounding a pitch to whole pixels drifts a little in
-    # each tile, and over a dozen tiles that smears the fold.
+    # Refit from every supported peak, putting the vectors on a sub-pixel footing.
     integer_coords = np.array([c for c, _p in supported]).T  # 2 x N
     observed = np.array([[p[1], p[0]] for _c, p in supported]).T  # 2 x N
     gram = integer_coords @ integer_coords.T
@@ -475,12 +360,7 @@ def _fit_rectifying_lattice(ac: np.ndarray) -> np.ndarray | None:
 
 
 def _warp_to_lattice(basis: np.ndarray, shape: tuple[int, int]):
-    """An affine that makes the lattice axis-aligned, plus the resulting cell.
-
-    Once warped, the overlay repeats on whole rows and columns, so the folding,
-    matching and stamping code needs to know nothing about oblique grids — it
-    all happens in this rectified space and the mask is warped back at the end.
-    """
+    """An affine that makes the lattice axis-aligned, plus the resulting cell."""
     cell_x = int(round(np.hypot(basis[0, 0], basis[1, 0])))
     cell_y = int(round(np.hypot(basis[0, 1], basis[1, 1])))
     if cell_x < MIN_PERIOD or cell_y < MIN_PERIOD:
@@ -493,8 +373,7 @@ def _warp_to_lattice(basis: np.ndarray, shape: tuple[int, int]):
     offset = -mapped.min(axis=1)
     out_w = int(np.ceil(mapped[0].max() + offset[0]))
     out_h = int(np.ceil(mapped[1].max() + offset[1]))
-    # A pathological shear can blow the rectified frame up; refuse rather than
-    # allocate hundreds of megabytes for a guess.
+    # A pathological shear can blow the rectified frame up; refuse it.
     if out_w <= 0 or out_h <= 0 or out_w * out_h > 4 * width * height:
         return None
     forward = np.hstack([linear, offset.reshape(2, 1)])
@@ -526,8 +405,7 @@ def _fold_template(
                 tiles.append(cell)
             else:
                 busy_tiles.append(cell)
-    # Prefer quiet tiles; a photo with no quiet region still gets a chance,
-    # since the median over many busy tiles cancels content too, just slower.
+    # Busy tiles still cancel under the median, just slower.
     if len(tiles) < MIN_TILES:
         tiles = tiles + busy_tiles
     if len(tiles) < MIN_TILES:
@@ -535,9 +413,7 @@ def _fold_template(
     stack = np.stack(tiles)
     template = np.median(stack, axis=0).astype(np.float32)
 
-    # Significance: fold the same tiles again, each rolled by a different
-    # arbitrary offset, so no real pattern can survive. Whatever strength that
-    # leaves is what this many tiles of this photo produce by chance.
+    # Null: the same tiles rolled by arbitrary offsets, so no real pattern survives.
     rng = np.random.default_rng(0)  # fixed, so a given image always agrees
     scrambled = np.stack(
         [
@@ -561,14 +437,7 @@ def _fold_template(
 
 
 def _crop_to_mark(template: np.ndarray) -> tuple[np.ndarray, int, int]:
-    """The busiest part of the tile, plus where it sits in the tile.
-
-    Matching wants a distinctive subject, so it gets the crop around the mark's
-    strongest feature — a logo, usually. Masking wants the mark's whole extent,
-    including the fainter lettering beside that logo, so the caller stamps the
-    full tile positioned by this offset. Stamping the crop instead left the
-    text behind.
-    """
+    """The busiest part of the tile, plus where it sits in the tile."""
     energy = cv2.GaussianBlur(np.abs(template), (0, 0), sigmaX=6)
     _min_v, _max_v, _min_l, max_loc = cv2.minMaxLoc(energy)
     cx, cy = max_loc
@@ -584,33 +453,7 @@ def _crop_to_mark(template: np.ndarray) -> tuple[np.ndarray, int, int]:
 
 
 class Mark:
-    """A recovered watermark, reusable on other images of the same batch.
-
-    Everything needed to mask an instance without recovering it again: the
-    lattice it repeats on, the tile-sized template folded out of it, the crop
-    that correlation locks onto, and where that crop sits in the tile.
-
-    This exists because recovering a mark and applying one have completely
-    different requirements. Recovery needs a correct primitive lattice, at least
-    MIN_TILES tiles of the frame, and a quiet enough photograph for a median
-    over those tiles to cancel the scenery. Applying one needs none of that --
-    only that the mark be present. So an image whose own recovery is refused can
-    still be masked precisely from a sibling's mark, which is the common case in
-    a batch: one watermarking tool ran over all of them.
-
-    ``pooled`` marks come from the sparse route (see pooled_marks) rather than
-    from folding one image, and the per-image instance count is not what
-    established them.
-
-    ``grid`` is the lattice the mark may be spent on -- every site of it gets
-    stamped, whether or not the copy there correlates. A folded mark always has
-    one, because folding cannot happen without a period in both axes. A pooled
-    mark has one only when the batch agreed on a pitch across the run as well as
-    along it (see _cross_pitch); without that it knows one axis, and a single
-    vector describes a line rather than a grid. ``cell`` is a different quantity
-    and stays separate: it is how far apart two copies can be told apart, which
-    for a pooled mark is its own footprint rather than the lattice step.
-    """
+    """A recovered watermark, reusable on other images of the same batch."""
 
     __slots__ = (
         "basis",
@@ -639,9 +482,9 @@ class Mark:
         self.patch = patch
         self.crop_top = crop_top
         self.crop_left = crop_left
-        self.cell = cell
+        self.cell = cell  # how far apart two copies can be told apart
         self.pooled = pooled
-        self.grid = grid
+        self.grid = grid  # lattice stamped at every site; None when unknown
 
 
 def _work_size(rgb: np.ndarray) -> np.ndarray:
@@ -665,20 +508,13 @@ def _rectify(hp: np.ndarray, basis: np.ndarray | None):
 
 
 def recover_mark(rgb: np.ndarray) -> Mark | None:
-    """Recover the repeating mark in this image, or None if it cannot be.
-
-    None here does NOT mean "no watermark" -- see Mark. It means this image
-    cannot produce a template, most often because the photograph is busy
-    everywhere (the fold's median never cancels it) or because too few tiles of
-    the lattice fit in the frame.
-    """
+    """Recover the repeating mark in this image, or None if it cannot be."""
     work = _work_size(rgb)
     gray = cv2.cvtColor(work, cv2.COLOR_RGB2GRAY)
     hp = _highpass(gray)
     texture = _local_texture(gray)
 
-    # Rectify onto the overlay's own grid first. Everything downstream then
-    # works in rows and columns, whatever angle the real lattice sits at.
+    # Rectify onto the overlay's own grid first; downstream works in rows and columns.
     basis = None
     quiet = (texture < np.percentile(texture, _QUIET_PCT)).astype(np.float32)
     if quiet.mean() >= 0.05:
@@ -700,11 +536,8 @@ def recover_mark(rgb: np.ndarray) -> Mark | None:
             texture, forward, (out_w, out_h), flags=cv2.INTER_LINEAR
         )
     else:
-        # No usable lattice — either none was fitted, or the one fitted could not
-        # be warped onto. Fall back to a plain row/column pitch, which still
-        # serves the axis-aligned case. The basis is dropped rather than carried:
-        # nothing downstream rectified with it, so keeping it would describe a
-        # frame this mark was never measured in.
+        # No usable lattice: fall back to a plain row/column pitch. The basis is
+        # dropped, since nothing downstream was rectified with it.
         basis = None
         period = _rect_period(hp, texture)
         if period is None:
@@ -725,11 +558,7 @@ def recover_mark(rgb: np.ndarray) -> Mark | None:
 
 
 def _window_std(hp: np.ndarray, shape: tuple[int, int]) -> np.ndarray:
-    """Standard deviation of ``hp`` under every placement of a shape-sized window.
-
-    Laid out to index like a matchTemplate score map, so a peak can be checked
-    against the variation actually present beneath it (see _MIN_WINDOW_STD_SHARE).
-    """
+    """Window std of ``hp`` at every placement, indexed like a matchTemplate map."""
     high, wide = shape
     mean = cv2.blur(hp, (wide, high))
     mean_square = cv2.blur(hp * hp, (wide, high))
@@ -741,12 +570,7 @@ def _window_std(hp: np.ndarray, shape: tuple[int, int]) -> np.ndarray:
 def apply_mark(
     rgb: np.ndarray, mark: Mark, sensitivity: int, own: bool = True
 ) -> np.ndarray | None:
-    """Mask every instance of ``mark`` in this image, or None if there are none.
-
-    ``own`` False means the mark came from a different image, which raises the
-    bar: it must correlate confidently in at least MIN_INSTANCES places before
-    the grid walk is allowed to extend it anywhere.
-    """
+    """Mask every instance of ``mark`` in this image, or None if there are none."""
     height, width = rgb.shape[:2]
     work = _work_size(rgb)
     gray = cv2.cvtColor(work, cv2.COLOR_RGB2GRAY)
@@ -768,8 +592,7 @@ def apply_mark(
         return None
 
     score = cv2.matchTemplate(hp, patch, cv2.TM_CCOEFF_NORMED)
-    # Discard peaks with nothing beneath them before anything reads this map,
-    # the anchor included.
+    # Discard peaks with nothing beneath them before anything reads this map.
     floor = _MIN_WINDOW_STD_SHARE * float(patch.std())
     substance = _window_std(hp, patch.shape)[: score.shape[0], : score.shape[1]]
     score = np.where(substance >= floor, score, -1.0).astype(np.float32)
@@ -778,9 +601,7 @@ def apply_mark(
     if score.max() < least:
         return None
 
-    # Anchor on the best match, then visit every grid site from there. Sites
-    # are snapped to their local correlation peak, which absorbs the drift
-    # left by rounding the period to whole pixels.
+    # Anchor on the best match; snapping absorbs the drift of a whole-pixel period.
     _min_v, _max_v, _min_l, max_loc = cv2.minMaxLoc(score)
     anchor_x, anchor_y = max_loc
     snap_y, snap_x = max(1, py // 4), max(1, px // 4)
@@ -791,17 +612,8 @@ def apply_mark(
         * max(0, min(100, sensitivity))
         / 100
     )
-    # Blur before thresholding: on a noisy template, judging bare pixels picks
-    # specks out of the noise instead of the mark's body, and a speckled stamp
-    # inpaints as a rash rather than a removed logo.
-    #
-    # Thresholded over the WHOLE TILE, not over the crop. The crop exists to
-    # give cross-correlation a distinctive subject; it spans _CROP_FRACTION of
-    # the tile in each axis, so barely a third of the tile's area, and the mark
-    # does not fit inside it — measured on the samples, the lettering beside the
-    # logo runs straight out of the crop, so no threshold could ever stamp it
-    # and it survived removal in full. Masking wants the mark's whole extent, so
-    # the stamp is the whole tile, offset back to where the crop began.
+    # Blur before thresholding (bare pixels pick specks), and threshold the WHOLE
+    # tile: the mark's lettering runs outside the crop that correlation matched.
     energy = cv2.GaussianBlur(np.abs(template), (0, 0), sigmaX=2.0)
 
     def _stamp_at(percentile: float) -> np.ndarray:
@@ -810,68 +622,28 @@ def apply_mark(
         return cv2.morphologyEx(binary, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
 
     stamp = _stamp_at(footprint_pct)
-    # The evidence-share gate below is judged on this FIXED reference footprint
-    # rather than on the stamp actually being returned. The gate asks "is the
-    # recovered repeat really ink on the photo"; measured on the stamp itself it
-    # instead re-measures the caller's own footprint choice, because a looser
-    # footprint necessarily reaches further into the tile's empty background and
-    # drives the survival share down. That coupling made a *higher* sensitivity
-    # return None — the slider at 100 reported "no watermark" on an image the
-    # same code found the mark in at 50, and the pipeline skips a None.
+    # The evidence gate uses this fixed footprint, so sensitivity cannot move the gate.
     gate_stamp = _stamp_at(_GATE_PCT)
 
     mask = np.zeros(gray.shape, np.uint8)
     sites: set[tuple[int, int]] = set()
 
-    # Every place the recovered mark genuinely correlates. This catches the
-    # instances directly, and does not care whether the estimated pitch is the
-    # true one or a multiple of it.
+    # Every place the mark confidently correlates, whatever the estimated pitch.
     neighbourhood = np.ones((max(3, snap_y), max(3, snap_x)), np.float32)
     peaks = (score >= _MIN_NCC_UNPROMPTED) & (score >= cv2.dilate(score, neighbourhood))
     for y, x in zip(*np.nonzero(peaks), strict=True):
         sites.add((int(y), int(x)))
 
-    # THE CORROBORATION, and now the only thing correlation is asked to decide:
-    # is this mark present in this image at all. It is judged on confidently
-    # correlating copies ALONE, before the lattice below is walked.
-    #
-    # Measured, this separates widely: 25, 39 and 75 confident copies on photos
-    # carrying the mark, and 7 and 19 where a sibling's mark was borrowed,
-    # against 0 to 5 for images carrying a completely different overlay and 0 for
-    # every clean control frame. Walking the lattice without this in front of it
-    # put a mask on three images with the wrong overlay and on a clean control.
-    #
-    # A pooled mark answers to MIN_RUN instead. MIN_INSTANCES asks one image to
-    # establish on its own that a repeat is real, and a pooled mark was already
-    # established elsewhere and more strongly: three photographs agreeing on the
-    # pitch to a spread of 0.000. What is left for this image to show is that the
-    # mark is HERE, which its confident matches do. Relaxing it costs nothing at
-    # the clean-frame end either, since a clean batch never reaches a pooled mark
-    # -- it is refused at pitch agreement, before any per-image count is read.
+    # Presence is judged on confident copies alone, before the lattice is walked.
+    # A pooled mark was already proven across the batch, so it answers to MIN_RUN.
     least_sites = MIN_RUN if mark.pooled else MIN_INSTANCES
     if len(sites) < least_sites:
         return None
 
-    # The lattice this mark may be spent on. A folded mark rectified onto its own
-    # grid, so the frame's rows and columns ARE that grid; a pooled mark carries
-    # one only if the batch voted a pitch across its run as well as along it.
+    # A folded mark was rectified onto its grid, so the frame's rows/columns are it.
     grid = mark.grid if mark.pooled else (py, px)
 
-    # And they must sit ON the lattice, which is the other half of the same
-    # bargain: if the grid is trusted enough to be stamped everywhere below, the
-    # evidence for it has to be that the confident matches fall on its nodes.
-    #
-    # This is what tells a real overlay from a lattice fitted to scenery, and it
-    # is the only thing that does. Every other gate asks whether the repeat is
-    # STRONG, and a brick wall or a dithered ground is strong; this asks whether
-    # it is ARRANGED. Measured over 16 watermarked frames and the 6 clean frames
-    # that were being masked, they do not overlap: 0.769-1.000 where a mark is
-    # present, 0.333-0.538 where the "pattern" was the photograph's own texture.
-    #
-    # It matters more since the walk stopped vetoing copies individually. A
-    # wrongly fitted lattice used to cost a few stamps at whatever sites happened
-    # to correlate; now it would cost the whole frame, so the lattice itself has
-    # to be right rather than merely plausible.
+    # The matches must sit ON the lattice: scenery repeats strongly but not arranged.
     if grid is not None:
         rows = np.array([y for y, _x in sites], np.float64)
         columns = np.array([x for _y, x in sites], np.float64)
@@ -881,28 +653,8 @@ def apply_mark(
         if float(np.mean(on_node)) < _MIN_ON_LATTICE:
             return None
 
-    # Now spend the lattice. The overlay was laid on a regular grid, so once that
-    # grid is established every copy's position is KNOWN -- there is nothing left
-    # for an individual copy to prove, and requiring it to was throwing most of
-    # the watermark away. Measured over the sample, with every other gate
-    # untouched: requiring each copy to clear MIN_NCC masked 274 of 654 interior
-    # copies (41.9%) and 1 of 81 copies clipped by the frame edge (1.2%);
-    # stamping every site of the same lattice reaches 584/654 (89.3%) and 79/81
-    # (97.5%), and no clean control gained a single pixel.
-    #
-    # The copies this recovers are precisely the ones that could never have
-    # proved themselves. The overlay is fainter than the photograph's own grain
-    # -- peak amplitude 4-8 grey levels against a median high-pass of 4-9 -- so a
-    # copy with a colour boundary running under it correlates at 0.13-0.25 where
-    # one on smooth sky reaches 0.39. And a copy hanging off the frame edge has
-    # no score at all: cv2.matchTemplate only evaluates where the whole template
-    # fits, which leaves a 69x33px band around every frame, 9.1% of its area,
-    # structurally unreachable at any sensitivity.
-    #
-    # Sites are still snapped to a local correlation peak WHERE ONE EXISTS, which
-    # absorbs the drift left by rounding the pitch to whole pixels; where none
-    # does, the lattice position stands on its own. The range runs past the frame
-    # on both sides so a clipped copy is stamped too -- _paint clips it.
+    # Stamp every site of the grid: a faint or edge-clipped copy can never prove
+    # itself. Sites snap to a local peak where one exists; _paint clips the edges.
     if grid is not None:
         step_y, step_x = grid
         rows = range(-(anchor_y // step_y) - 2, (hp.shape[0] - anchor_y) // step_y + 3)
@@ -928,9 +680,7 @@ def apply_mark(
                 sites.add((site_y, site_x))
 
     def _paint(target: np.ndarray, shape: np.ndarray) -> None:
-        """Stamp ``shape`` at every site. A site is where the CROP matched, and
-        the crop began (crop_top, crop_left) into the tile, so the tile-sized
-        stamp starts that far back — which can be off the top or left edge."""
+        """Stamp ``shape`` at every site, offset back by where the crop began."""
         for sy, sx in sites:
             top, left = sy - crop_top, sx - crop_left
             src_y, src_x = max(0, -top), max(0, -left)
@@ -946,21 +696,12 @@ def apply_mark(
 
     _paint(mask, stamp)
 
-    # Confirm each stamped pixel against the image itself. The grid says where
-    # instances *should* be; this keeps only the pixels where the photo really
-    # does deviate from its surroundings, so a stamp landing on clean sky
-    # contributes nothing. It tightens true instances and erases phantom ones.
-    # Judged LOCALLY, against the response typical of each pixel's own
-    # surroundings. A global cut would repeat the very mistake the texture
-    # detector had to fix: the median response over a photo with any texture in
-    # it sits far above a faint overlay on smooth sky, so a global threshold
-    # deletes exactly the marks this mode exists to find.
+    # Keep a stamped pixel only where the photo deviates from its own neighbourhood;
+    # a global cut would delete exactly the faint marks on smooth sky.
     deviation = np.abs(hp)
     baseline = cv2.blur(deviation, (_EVIDENCE_WINDOW, _EVIDENCE_WINDOW))
     supported = deviation >= _EVIDENCE_RATIO * (baseline + _EVIDENCE_FLOOR)
 
-    # If almost nothing of the reference footprint survived, the "pattern" was an
-    # artefact of the period estimate rather than something present in the photo.
     gate = np.zeros(gray.shape, np.uint8)
     _paint(gate, gate_stamp)
     reference = gate > 0
@@ -970,59 +711,20 @@ def apply_mark(
     if int(np.count_nonzero(reference & supported)) < _MIN_EVIDENCE_SHARE * gate_area:
         return None
 
-    # Every site gets the mark's whole shape, UNCONDITIONALLY. Two weaker rules
-    # were built and each failed against the annotated sample in turn. Per-pixel
-    # evidence shredded the copies over glass and foliage into fragments that
-    # inpainted as legible ghosts. Per-site evidence -- fill only where enough of
-    # the ink has support -- then left precisely the copies the user circled:
-    # the ones on bright cloud and white canvas, where a faint white mark has
-    # the least contrast of all, so the sites that most need the known shape
-    # are structurally the ones least able to earn it. But presence was never
-    # this site's question to answer. The grid was corroborated image-wide by
-    # confident matches sitting ON its nodes, and the mark's shape was folded
-    # from the batch's cleanest copies; a site over clean sky costs nothing to
-    # fill (the inpaint repaints sky with sky), and a site over the mark is the
-    # entire point. The per-pixel trim still applies to the sensitivity-widened
-    # HALO, which is how the slider keeps meaning.
-    # The filled shape is cut TIGHTER than the sensitivity-controlled stamp.
-    # The slider widens the stamp into the mark's halo on purpose -- per-pixel
-    # trimming used to pare that halo back to whatever had evidence. Fill with
-    # the loose stamp and the halo lands whole at every site: measured, mean
-    # false positives went 0.013 -> 0.071. The fill exists to complete the
-    # mark's INK where a busy background hid it, so it uses the ink's own
-    # outline; the trimmed halo still contributes wherever evidence backs it.
+    # The fill is unconditional per site (per-site evidence lost the faintest copies)
+    # and cut tighter than the stamp, so the sensitivity halo is not filled whole.
     fill = _stamp_at(max(footprint_pct, _FILL_PCT))
-    # Only the mark's BODY is worth completing. The folded template's residue
-    # crosses any percentile somewhere, and those specks -- a few pixels each,
-    # scattered over the tile -- would otherwise be stamped at every site of
-    # every image. The ink is a few large pieces; residue is not, and the cut
-    # between them is wide.
     pieces, labels, stats, _mids = cv2.connectedComponentsWithStats(fill, 8)
     for label in range(1, pieces):
         if stats[label][cv2.CC_STAT_AREA] < _FILL_MIN_PIECE:
             fill[labels == label] = 0
-    # The blurred cut leaves a halo ring, and repeating that ring at every site
-    # of every image is where the fill's false area lives -- so it is eroded
-    # off. But only where there is a body to erode INTO: the mark's lettering
-    # is thinner than the erosion itself, and a flat erode deleted the text
-    # outright, leaving stamps that were all logo and no letters -- the exact
-    # half-removed look this pass exists to end. The opening residue is the
-    # thin structure the erosion destroys, and it is added back whole; being
-    # thin is why its halo is small.
+    # Erode the halo ring off, but add back the thin lettering the erosion destroys.
     kernel = np.ones((_FILL_ERODE_PX,) * 2, np.uint8)
     eroded = cv2.erode(fill, kernel)
     thin = cv2.subtract(fill, cv2.dilate(eroded, kernel))
     fill = cv2.max(eroded, thin)
 
-    # Deliberately NOT limited to the span of the confident matches. That was
-    # tried, to keep a walked site beyond the overlay's edge from being filled
-    # on busy ground -- and it excluded exactly the copies the fill exists for,
-    # because "no confident match here" is what being on busy ground MEANS: on
-    # the sky-over-grass fixtures every confident match sits in the sky, so the
-    # hull cut away the entire grass half and recall fell straight back to the
-    # per-pixel figure. The overlay tools this detector answers tile the whole
-    # frame; a partial overlay costs some needless fill on busy ground, bounded
-    # by the destruction guard downstream.
+    # Not clipped to the confident matches' span; busy ground is where they are absent.
     trimmed = mask.copy()
     trimmed[~supported] = 0
     for site_y, site_x in sites:
@@ -1043,8 +745,7 @@ def apply_mark(
         return None
 
     if rectify is not None:
-        # Back out of the rectified frame. Nearest-neighbour: this is a binary
-        # mask, and it gets dilated before inpainting anyway.
+        # Back out of the rectified frame; nearest-neighbour, it is a binary mask.
         forward = rectify[0]
         mask = cv2.warpAffine(
             mask,
@@ -1066,17 +767,12 @@ def _propose_own_folded(rgb: np.ndarray, sensitivity: int) -> np.ndarray | None:
 
 
 def propose_pattern_mask(rgb: np.ndarray, sensitivity: int) -> np.ndarray | None:
-    """Mask the instances of a repeating watermark, or None if there is no
-    convincing repeating pattern to mask."""
+    """Mask the instances of a repeating watermark, or None."""
     own = _propose_own_folded(rgb, sensitivity)
     if own is not None:
         return own
-    # Last resort: a cell too big to fold. Only reached once the fold has
-    # already declined, so nothing that is masked today changes. See tiled.py.
-    #
-    # Imported at call time, not module scope: tiled.py imports this module for
-    # its anchors and constants, so the dependency can only close once
-    # something actually reaches the route (as detect._worth_removing does).
+    # Last resort: a cell too big to fold. Imported at call time because tiled.py
+    # imports this module.
     from .tiled import propose_tiled_mask
 
     return propose_tiled_mask(rgb, sensitivity)
@@ -1085,34 +781,12 @@ def propose_pattern_mask(rgb: np.ndarray, sensitivity: int) -> np.ndarray | None
 def shareable_marks(
     load: Callable[[], Iterable[np.ndarray]], sensitivity: int = 50
 ) -> list[Mark]:
-    """Every mark this batch can reuse across itself.
-
-    One watermarking tool usually ran over a whole batch, so an image whose own
-    recovery is refused is very often carrying a mark that a sibling recovered
-    perfectly well. Recovery is the fragile half — it needs a correct primitive
-    lattice, MIN_TILES tiles in frame, and a photograph quiet enough for a median
-    to cancel — while applying a mark needs only that the mark be there.
-
-    Two passes, cheapest first:
-
-    1. Fold each image on its own. A mark qualifies only if it masked its OWN
-       image, which is what tells a real overlay from a lattice fitted to
-       scenery: offering every recovered mark instead put a mask on a clean
-       control frame. It must also carry a lattice basis, since one from the
-       axis-aligned fallback has no frame to rectify a sibling into.
-    2. Only if some image came back empty, pool sparse instances across the
-       batch (see pooled_marks) for the marks too large for any one frame to
-       fold. This costs a dozen correlations per image, so it is skipped
-       entirely when the first pass already covered everything.
-
-    ``load`` is called once per pass and must yield the batch afresh each time;
-    images are consumed one at a time and only the marks are kept, so a batch of
-    36 MP photos costs one of them in memory rather than all of them.
-    """
+    """Marks this batch can reuse across itself; ``load`` is called once per pass."""
     marks: list[Mark] = []
     unresolved = False
     for rgb in load():
         mark = recover_mark(rgb)
+        # A mark must carry a basis and have masked its own image to be offered.
         if mark is not None and mark.basis is not None:
             if apply_mark(rgb, mark, sensitivity) is not None:
                 marks.append(mark)
@@ -1124,18 +798,7 @@ def shareable_marks(
 
 
 def _anchor_candidates(gray: np.ndarray) -> list[tuple[int, int]]:
-    """Places an instance plausibly sits: strong local response, quiet surroundings.
-
-    An anchor needs no semantics -- it only has to land within a fraction of a
-    cell of some copy, and the correlation below is forgiving to about half one.
-    A mark laid over smooth sky IS a local response peak in a quiet region, which
-    is enough to enumerate candidates and let the evidence decide between them.
-
-    (A local vision model was tried for this and cannot do it: two sizes of gemma4
-    answered "Adobe Stock" at the same four grid cells for three different photos,
-    and neither could read the real mark from a 5x magnified crop where it is
-    plainly legible. It hallucinates a stock-photo brand rather than declining.)
-    """
+    """Where an instance plausibly sits: strong local response, quiet surroundings."""
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (_ANCHOR_KERNEL,) * 2)
     response = cv2.max(
         cv2.morphologyEx(gray, cv2.MORPH_TOPHAT, kernel),
@@ -1177,13 +840,7 @@ def _matched_sites(hp: np.ndarray, template: np.ndarray, least: float) -> np.nda
 
 
 def _best_run(points: np.ndarray) -> tuple[list[tuple[int, int]], float, np.ndarray]:
-    """The largest evenly spaced collinear subset of ``points``, its pitch, and
-    the step between consecutive members.
-
-    The step is kept as well as its length because it is one lattice vector, and
-    the pitch across it (see _cross_pitch) can only be looked for once the
-    direction it runs along is known.
-    """
+    """Largest evenly spaced collinear run in ``points``, plus its pitch and step."""
     best: list[int] = []
     pitch = 0.0
     stride = np.zeros(2, np.float64)
@@ -1215,15 +872,7 @@ def _best_run(points: np.ndarray) -> tuple[list[tuple[int, int]], float, np.ndar
 
 
 def _anchored_run(rgb: np.ndarray) -> dict | None:
-    """Instances of a sparse mark in one image, found without folding.
-
-    The fold needs MIN_TILES cells in frame. A mark on a ~300px cell puts about
-    six copies in a photograph, so it never gets there -- but the copies are still
-    plainly present, and cutting a patch around one of them correlates at the
-    others at 0.92-0.94. This finds them: try each candidate anchor, keep whichever
-    produces the longest evenly spaced run of matches. Scenery does not repeat on
-    a grid, so a run is evidence; how much is decided across the batch.
-    """
+    """Instances of a sparse mark in one image, found without folding."""
     work = _work_size(rgb)
     gray = cv2.cvtColor(work, cv2.COLOR_RGB2GRAY)
     hp = _highpass(gray)
@@ -1242,41 +891,12 @@ def _anchored_run(rgb: np.ndarray) -> dict | None:
 
 
 def pooled_marks(images: Iterable[np.ndarray]) -> list[Mark]:
-    """One mark pooled from sparse instances across the whole batch, or none.
-
-    This is the last resort, for the mark too large and too sparse for any single
-    image to recover: about six copies of a ~300px cell in frame, where the fold
-    needs nine. Locating them per image works (see _anchored_run) -- what a single
-    image cannot do is PROVE them. Measured on three such photos, a clean control
-    frame beat all three of them on both available gates: 0.972 against 0.41-0.46
-    on evidence share, and 2.29-3.23 against 1.34-2.97 on fold significance.
-    Three samples are simply too few for either test to mean anything.
-
-    The batch is the only place more samples exist, and pooling them supplies the
-    discriminator too. A real overlay repeats at the SAME pitch in every image it
-    was stamped on -- measured 294.0, 294.0, 294.0 across three photos, a spread
-    of 0.000 -- while coincidental runs in clean frames pick arbitrary pitches
-    that cannot agree: 321/236/173 and 311/306/213, spreads of 0.61 and 0.35.
-    Agreement across images is the one thing a single clean photograph cannot
-    manufacture, and it is why this runs per batch and never per image.
-
-    KNOWN RISK, stated plainly because it is the only gate that survived scrutiny
-    (see _pool_group for the two that did not): pitch agreement distinguishes a
-    watermark from coincidence, but not from a repeating structure that genuinely
-    recurs across a batch at one spacing -- a tiled floor, a brick wall, a rank of
-    windows, photographed three or more times. Such a batch could be masked here.
-    Two further gates blunt it rather than close it: matches must be EVENLY spaced,
-    which excludes repeats receding with perspective, and each image's mask still
-    faces the per-pixel evidence check. Masks from this route are also small, since
-    only the instances that correlate confidently are stamped -- measured 0.20-0.27%
-    of frame against 2.0-5.8% for the folded route.
-    """
+    """One mark pooled from sparse instances across the whole batch, or none."""
     runs = [run for run in (_anchored_run(rgb) for rgb in images) if run is not None]
     if len(runs) < _MIN_POOL_IMAGES:
         return []
-    # Grouped by pitch, not judged as one set, because a batch can carry more than
-    # one overlay -- the sample of eight carries two, on pitches of 294 and 114.
-    # Lumping them together makes their pitches "disagree" and throws away both.
+    # Grouped by pitch: a batch can carry more than one overlay.
+    # Known risk: scenery that recurs across the batch at one pitch would pass here.
     return [
         mark
         for group in _pitch_groups(runs)
@@ -1300,38 +920,7 @@ def _pitch_groups(runs: list[dict]) -> list[list[dict]]:
 
 
 def _cross_pitch(runs: list[dict], template: np.ndarray) -> tuple[int, int] | None:
-    """The lattice step ACROSS the runs, voted on by the whole group, or None.
-
-    A run establishes one lattice vector. The overlay was laid on a grid, so there
-    is a second one, and finding it is what turns a line of found copies into
-    every copy's address -- which is the whole difference between masking three
-    instances of a mark and masking the nine that are there.
-
-    No single image can supply it. The copies on the other rows are precisely the
-    ones that never correlated: measured on the sample they read 0.03-0.14 where
-    the found row reads 0.49-0.88, because each sits over a colour boundary or a
-    busy region. Asked alone, the three images of that batch answer 288, 292 and
-    354 -- one of them plain wrong. Asked together they answer 292-297, a flat
-    plateau at the true 297.
-
-    So the vote is pooled, and it is taken on NEW evidence only. The anchor row is
-    already known and counting it rewards every candidate equally -- doing so, the
-    vote picked 346 over the true 297. Scoring only the rows a candidate ADDS
-    (y0 +/- k*pitch, k != 0) asks the one question that discriminates: does
-    stepping this far land on copies, or on photograph.
-
-    Believed only if the winner is prominent, since an argmax always exists. The
-    curve's own robust deviation is the yardstick: 5.65 on the batch that has a
-    second pitch, against 0.00 and 1.75 on clean batches that reached this point
-    at all -- and those two picked the shortest candidate on offer, which is what
-    a vote with nothing to find does, because the shortest step fits the most
-    sites into the frame.
-
-    Only axis-aligned runs are answered. A run lying along an axis has one
-    unambiguous perpendicular to search; an oblique one does not, and its second
-    vector is free in two dimensions, which is a far larger space to find a
-    coincidence in. Rectangular is also what the tiling tools actually emit.
-    """
+    """The lattice step ACROSS the runs, voted on by the whole group, or None."""
     steps = np.array([run["step"] for run in runs], np.float64)
     horizontal = bool(np.all(np.abs(steps[:, 0]) <= AXIS_TOLERANCE))
     vertical = bool(np.all(np.abs(steps[:, 1]) <= AXIS_TOLERANCE))
@@ -1342,20 +931,14 @@ def _cross_pitch(runs: list[dict], template: np.ndarray) -> tuple[int, int] | No
     curves = []
     surfaces = []
     for run in runs:
-        # A run can come from a frame shorter than the anchor template -- a
-        # panorama reduces to 63 rows against a template of 68 -- and
-        # matchTemplate raises rather than returning nothing. Such a frame is
-        # already skipped when the template is built, so skip it here too; left
-        # unguarded it took the whole batch down with a cv2.error.
+        # matchTemplate raises on a frame smaller than the template; skip such runs.
         if (
             template.shape[0] > run["hp"].shape[0]
             or template.shape[1] > run["hp"].shape[1]
         ):
             continue
         score = cv2.matchTemplate(run["hp"], template, cv2.TM_CCOEFF_NORMED)
-        # Read the surface with the run along its rows either way, so the vote
-        # below is written once. Transposing a correlation surface just swaps the
-        # axes of every site in it.
+        # Transposed so the run lies along the rows either way.
         surface = score if horizontal else score.T
         sites = [(y, x) if horizontal else (x, y) for y, x in run["sites"]]
         along = int(round(run["pitch"]))
@@ -1369,20 +952,12 @@ def _cross_pitch(runs: list[dict], template: np.ndarray) -> tuple[int, int] | No
         curves.append(_cross_votes(surface, candidates, anchor, columns))
         surfaces.append((surface, anchor, columns))
 
-    # Agreement between images is the whole basis of this route, so the vote has
-    # to keep as many images as the pitch itself needed.
+    # The vote needs as many images as the pitch agreement did.
     if len(curves) < _MIN_POOL_IMAGES:
         return None
 
     vote = np.mean(curves, axis=0)
-    # Candidates that add no row at all score nothing rather than something bad,
-    # and must be left out of the statistic entirely. Scored as a sentinel they
-    # were not merely noise: on a short frame most candidates are sentinels, so
-    # the curve's own median BECAME the sentinel and its deviation collapsed to
-    # exactly zero, which made the bar below vacuous -- a clean batch cleared it
-    # by nine orders of magnitude with a winner whose mean correlation was
-    # NEGATIVE. Anything judged against a spread has to be judged against the
-    # spread of real readings.
+    # Untested candidates are NaN and stay out of the spread, or it collapses to 0.
     real = np.isfinite(vote)
     if int(np.count_nonzero(real)) < _CROSS_MIN_CANDIDATES:
         return None
@@ -1400,21 +975,7 @@ def _cross_pitch(runs: list[dict], template: np.ndarray) -> tuple[int, int] | No
 
 
 def _true_pitch(surfaces: list, cross: int) -> int:
-    """``cross``, or the multiple of it the copies really sit on.
-
-    The search stops at _CROSS_MAX, and a lattice coarser than that has no
-    candidate to be found at. What wins instead is half of it, or a third: a step
-    of half the truth lands on every second real copy, which is plenty of evidence
-    to take the argmax and clear the prominence bar outright -- measured, a true
-    pitch of 560 was voted as 281 with a prominence of 14.1, and every
-    intermediate row it then stamped held nothing.
-
-    Doubling is only accepted on a clear margin. For a pitch that is already
-    right, sampling every second copy scores about the same as sampling every
-    one, so a tie must keep the finer step or half the mark goes unmasked; a
-    subharmonic instead averages real copies with empty rows and is beaten
-    decisively.
-    """
+    """``cross``, or the multiple of it the copies really sit on."""
 
     def scored(step: int) -> float:
         one = np.array([step])
@@ -1457,9 +1018,7 @@ def _cross_votes(
                 right = min(surface.shape[1], column + _CROSS_SNAP + 1)
                 if bottom > top and right > left:
                     reads.append(surface[top:bottom, left:right].max())
-        # Not-a-number, not a bad score: a step too large for the frame was never
-        # tested, and saying so keeps it out of the statistic the winner is
-        # judged against (see _cross_pitch).
+        # NaN, not a bad score: an untested step stays out of the statistic.
         votes[index] = float(np.mean(reads)) if reads else np.nan
     return votes
 
@@ -1467,45 +1026,18 @@ def _cross_votes(
 def _fold_on_grid(
     runs: list[dict], template: np.ndarray, grid: tuple[int, int]
 ) -> tuple[np.ndarray, int, int] | None:
-    """The mark's whole cell, median-folded over every copy in the batch.
-
-    The pooled template that found the grid is a fixed 2*_ANCHOR_HALF window cut
-    around one instance, and its shape was chosen to enclose an anchor, not a
-    mark. On the sample it is 68x156 while the mark is a ~80x80 diagonal, so it
-    clips the mark's top and the stamp taken from it left the upper third of every
-    copy standing -- visible, and the point of removing it lost.
-
-    The grid fixes that, because it says where every copy is. Folding a whole
-    cell at each of them recovers the mark's full extent, and pools far more
-    samples than any one image holds: 27 copies across the batch here against the
-    3 a single frame offers. Copies clipped by the frame edge still contribute
-    what they have -- the median is taken per pixel over however many tiles cover
-    it, so a copy half off the edge donates its half rather than being discarded.
-    """
+    """The mark's whole cell, median-folded over every copy in the batch."""
     cell_y, cell_x = grid
     high, wide = template.shape
     offset_y, offset_x = cell_y // 2 - high // 2, cell_x // 2 - wide // 2
 
-    # Every image contributes, and each contributes a bounded number of cells. A
-    # median is settled long before a few dozen samples, while stacking every cell
-    # of every image is unbounded: measured at 70 MB per full-work-size image, so
-    # a twenty-image batch peaked 1.34 GB above the parent. This module holds one
-    # image at a time everywhere else and the fold has no business being the
-    # exception. The share is per run rather than a single running total, which
-    # would fill up on the first image and lose the cross-image variety that is
-    # the only reason the median cancels scenery at all.
+    # Bounded cells per run, keeping memory flat and cross-image variety in the median.
     share = max(2, _FOLD_MAX_TILES // max(1, len(runs)))
     tiles: list[np.ndarray] = []
     for run in runs:
         mine: list[np.ndarray] = []
         hp = run["hp"]
-        # Anchor every image on where the POOLED template matches best, not on
-        # its own run's first site. Each image picked its own anchor candidate,
-        # and an anchor only has to land within a fraction of a cell of a copy --
-        # so two images' sites are offset from the mark, and from each other, by
-        # different amounts. Folding on those put two ghosted copies in one cell
-        # and left the trim below with no mark to find. One shared template
-        # matched in each image lands on the same feature in all of them.
+        # Anchor on the pooled template's best match; runs' own sites differ in offset.
         if template.shape[0] > hp.shape[0] or template.shape[1] > hp.shape[1]:
             continue
         agreement = cv2.matchTemplate(hp, template, cv2.TM_CCOEFF_NORMED)
@@ -1537,8 +1069,7 @@ def _fold_on_grid(
     covered = np.count_nonzero(~np.isnan(stack), axis=0)
     if not (covered >= MIN_TILES).any():
         return None
-    # nanmedian warns on an all-NaN column, and warnings are errors here. A corner
-    # no tile reached carries no mark, so seeding it with zero says exactly that.
+    # nanmedian warns on an all-NaN column, and warnings are errors here.
     stack[0][covered == 0] = 0.0
     folded = np.nanmedian(stack, axis=0).astype(np.float32)
     # Where too few copies overlapped, the median is noise rather than a mark.
@@ -1546,36 +1077,13 @@ def _fold_on_grid(
     if folded.std() <= 1e-3:
         return None
 
-    # Trim the cell down to the mark. A cell is mostly empty -- the mark measures
-    # about a tenth of this one -- and the stamp is cut by a PERCENTILE of tile
-    # energy, so a tile that is nine parts nothing spends nearly all of its
-    # allowance on the fold's own residue. Left untrimmed the stamp covered window
-    # mullions, a deck edge and its decking texture, all of which then survived the
-    # evidence check because structure is exactly what that check keeps.
-    #
-    # What counts as the mark: ink connected to the window the coarse patch matched
-    # in. That window is where a copy demonstrably is, and closing joins the
-    # letters around it into one body, so the mark's own extent comes back --
-    # including the part that overhangs the window, which is what the fold was for.
-    # Ink is judged against the mark's OWN peak rather than against the tile's
-    # noise floor. A floor-relative cut (median + 3 robust deviations) was tried
-    # and fails on a clean fold: what is left over is faint horizontal streaking
-    # where the median did not quite cancel a row of scenery, and being faint is
-    # exactly what puts it just above a floor. It then bridges the mark to both
-    # edges and the trim returns the whole cell, which is what it was there to
-    # avoid -- 300px wide for a 119px mark. A share of the peak is scale-free and
-    # gets both cases right.
+    # Trim the cell to the ink touching the matched window. Ink is a share of the
+    # mark's own peak: a floor-relative cut bridges faint streaks to the cell edge.
     energy = cv2.GaussianBlur(np.abs(folded), (0, 0), sigmaX=3)
     ink = (energy >= _INK_SHARE * float(energy.max())).astype(np.uint8)
     ink = cv2.morphologyEx(ink, cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8))
     count, labels, stats, _centroids = cv2.connectedComponentsWithStats(ink, 8)
-    # Clipped to the cell, NOT indexed raw. The anchor template is a fixed 68x156
-    # and a cell can be narrower than that -- an along-pitch of 114 makes
-    # offset_x negative -- whereupon a raw slice reads from the far edge under
-    # numpy's negative-index rule instead of the centred window. It then trimmed
-    # to a 21px sliver of the wrong side of the cell, and the mispositioned stamp
-    # made this route WORSE than having no grid at all: recall 0.230 against the
-    # 0.651 the same batch got before the grid existed.
+    # Clipped, not indexed raw: a negative offset would read from the far edge.
     window = labels[
         max(0, offset_y) : max(0, offset_y + high),
         max(0, offset_x) : max(0, offset_x + wide),
@@ -1597,18 +1105,7 @@ def _fold_on_grid(
     if bottom - top < 12 or right - left < 12:
         return None
 
-    # And the mark has to be SMALLER than the cell it repeats on -- the second,
-    # independent test that the grid is real. A watermark cell is mostly empty by
-    # construction; that emptiness is what makes it a watermark rather than a
-    # texture. Fold on a grid that is not there and nothing coheres, so the ink
-    # cut spreads over the whole tile: measured, a clean gradient batch voted a
-    # 311x332 grid and trimmed back to 311x332, exactly the cell, where the real
-    # batch trims to 46% of its cell in one axis and 60% in the other.
-    #
-    # A watermark whose mark genuinely fills its cell is refused here and falls
-    # back to masking only the copies that correlate, which is where this route
-    # was before it could ask for a grid. Losing an improvement is the right
-    # failure; spending a wrong grid over a whole frame is not.
+    # The mark must be smaller than its cell; on a false grid the ink fills the tile.
     if (bottom - top) > _INK_CELL_SHARE * cell_y:
         return None
     if (right - left) > _INK_CELL_SHARE * cell_x:
@@ -1617,12 +1114,7 @@ def _fold_on_grid(
     folded = folded[top:bottom, left:right]
     offset_y, offset_x = offset_y - top, offset_x - left
 
-    # The subject to correlate stays the coarse patch, which is not a compromise
-    # but the right choice: it was cut tight around an instance and matches at
-    # 0.49-0.88, where a crop of the folded cell is mostly the empty surround the
-    # mark floats in and matches far worse -- tried, and it lost the batch its
-    # detection entirely. What the fold is for is the STAMP, and the patch sits at
-    # a known place inside the cell because that is where the fold was centred.
+    # The coarse patch stays the match subject; a crop of the fold matches far worse.
     return folded, offset_y, offset_x
 
 
@@ -1645,37 +1137,8 @@ def _pool_group(runs: list[dict]) -> Mark | None:
     template = np.stack(patches).mean(axis=0).astype(np.float32)
     if template.std() <= 1e-3:
         return None
-    # No significance test here, deliberately. The fold's version -- aligned
-    # average against the same patches rolled to arbitrary offsets -- was tried
-    # and measured to be noise on this route: rolling a patch moves the mark
-    # rather than removing it, so the null scales with the mark and the ratio
-    # depends on where the rolls happen to land. Across marks of rising strength
-    # (alpha 70 to 255) it read 2.69, 2.96, 1.88, 2.34, 2.22 -- straddling the
-    # 2.0 threshold with no relation to how strong the mark was, so it rejected
-    # genuine marks by luck while adding no safety.
-    #
-    # A cross-image template agreement test was tried in its place and is worse:
-    # a CLEAN dithered batch scored 0.640 where the real sparse batch scored
-    # 0.428, because four patches per image leave each per-image template
-    # dominated by leftover background rather than by the mark.
-    #
-    # What actually separates is the pitch agreement above, and it separates
-    # widely. The residual risk this leaves is stated in pooled_marks.
-    # The whole pooled patch is both the subject to match and the shape to stamp:
-    # it was cut around an instance rather than folded out of a tile, so there is
-    # no wider tile for the mark to run out of. The cell is its own size, which is
-    # the closest two instances can sit, and is what separates the matches.
-    #
-    # The grid is a separate question and often unanswerable: a run gives one
-    # lattice vector, and the second is only had when the batch can vote for it.
-    # Without it the mark still masks the copies it can see, which is what this
-    # route did before it could ask.
-    # A grid is kept only if folding on it produces a mark. The two are one
-    # decision, not two: the vote says where the copies would be, and the fold is
-    # what checks that copies are actually there. A grid whose fold came back
-    # empty is a grid that was never corroborated, so it is dropped rather than
-    # carried -- keeping it would spend an unverified lattice over a whole frame,
-    # which is the one mistake this route cannot afford.
+    # No significance test: rolling a patch moves the mark rather than removing it.
+    # A grid is kept only if folding on it produces a mark; otherwise it is dropped.
     grid = _cross_pitch(runs, template)
     folded = None if grid is None else _fold_on_grid(runs, template, grid)
     if folded is None:
@@ -1696,21 +1159,8 @@ def _pool_group(runs: list[dict]) -> Mark | None:
 def propose_pattern_mask_shared(
     rgb: np.ndarray, sensitivity: int, marks: Sequence[Mark]
 ) -> np.ndarray | None:
-    """This image's own mask, or failing that one borrowed from ``marks``.
-
-    Borrowing is deliberately timid. A borrowed mark must clear the higher
-    unprompted correlation bar, is trusted only where it actually correlates
-    rather than walked across a grid, and still faces every existing gate
-    including the per-pixel evidence check. Measured on a sample of eight: two of
-    the five images that came back empty carry the same overlay as three that
-    succeeded, and both are now masked from a sibling's mark — 4.6% and 4.4% of
-    frame against 5.8% for the image the mark came from — while all three clean
-    controls refuse every mark offered to them.
-    """
-    # _propose_own_folded, NOT propose_pattern_mask: the tiled route must run
-    # after borrowing, not before it. A borrowed mark was proved across a whole
-    # batch, while the tiled route proves itself from this image alone, and the
-    # stronger evidence has to win.
+    """This image's own mask, or failing that one borrowed from ``marks``."""
+    # Own fold, borrowed marks, then tiled: a batch-proven mark outranks one image's.
     own = _propose_own_folded(rgb, sensitivity)
     if own is not None:
         return own
@@ -1718,6 +1168,6 @@ def propose_pattern_mask_shared(
         borrowed = apply_mark(rgb, mark, sensitivity, own=False)
         if borrowed is not None:
             return borrowed
-    from .tiled import propose_tiled_mask  # deferred: see propose_pattern_mask
+    from .tiled import propose_tiled_mask  # deferred: tiled.py imports this module
 
     return propose_tiled_mask(rgb, sensitivity)

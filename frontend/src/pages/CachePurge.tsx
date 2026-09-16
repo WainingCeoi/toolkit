@@ -1,8 +1,3 @@
-// Cache Purge — scan a folder for cache/junk files by pattern, preview the
-// exact hit list, then permanently delete it. Scan is synchronous; delete
-// runs as a tracked job. Results are keyed to the folder they were scanned
-// from: edit the folder field and the stale preview disappears.
-
 import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { api } from '../api'
 import { useToolJob } from '../jobs'
@@ -12,15 +7,12 @@ import CodeBox from '../components/CodeBox'
 import Button from '../components/Button'
 import type { PurgeResult, PurgeScanResult } from '../types/api'
 
-// The scan response plus the folder it came from, so a later edit to the
-// folder field can invalidate the preview (see `current` below).
 type ScanState = PurgeScanResult & { folder: string }
 
 const DEFAULT_PATTERNS = '*.dwl *.dwl2 *.bak *.log *.db *.tmp *.err'
 const PREVIEW_LIMIT = 200
 
-// Mirror of the engine's normalize_pattern — used only for the live
-// "Matching:" caption; the backend re-parses authoritatively on scan.
+// Mirrors the backend's normalize_pattern; keep them in sync.
 function normalizeToken(raw: string): string | null {
   const token = raw.trim()
   if (!token || ['*', '*.*', '**', '*.', '.*', '?'].includes(token)) return null
@@ -40,10 +32,7 @@ function livePatterns(raw: string): string[] {
 
 const basename = (path: string): string => path.slice(path.lastIndexOf('/') + 1)
 
-// Subfolder of `path`'s parent relative to the scanned root. The root is the
-// raw field value at scan time — possibly `~/…`, which the backend expanded
-// before building the absolute paths — so for tilde roots we locate the
-// post-tilde tail inside the parent path; if that fails, show the full parent.
+// rawRoot may still be `~/…` while the paths are absolute, hence the tilde tail search.
 function subfolderOf(path: string, rawRoot: string): string {
   const cut = path.lastIndexOf('/')
   const parent = cut > 0 ? path.slice(0, cut) : '/'
@@ -73,8 +62,6 @@ export default function CachePurge() {
 
   const { start, snapshot, running, error, setError } = useToolJob<PurgeResult>('/tools/cache-purge')
 
-  // Results stay visible only while the folder field still matches the folder
-  // they came from — the old page's staleness guard, done with state.
   const current = scan !== null && scan.folder === folder
 
   const matching = livePatterns(patternsRaw)
@@ -95,24 +82,17 @@ export default function CachePurge() {
   }
 
   async function runDelete() {
-    // Unreachable while the Delete button is gated on a current scan.
     if (!scan) return
     setError(null)
     const started = await start(() => api.purgeDelete(scan.scan_id))
     if (started === null) {
-      // The scan is spent or expired server-side, so what is on screen has
-      // stopped describing the disk — an armed list can sit in a hidden tab
-      // for hours while files are rewritten underneath it. Drop the preview
-      // and the confirmation rather than leaving a delete button pointed at
-      // contents nobody reviewed.
+      // null means the scan expired server-side, so the preview no longer describes the disk.
       setScan(null)
       setConfirm(false)
     }
   }
 
-  // Once a delete job reaches any terminal state the previewed list no longer
-  // reflects disk (a cancelled run still deleted part of it), so clear the scan
-  // so the stale table can't be deleted again.
+  // Any terminal state, cancelled included, has changed the disk, so the preview must go.
   const clearedFor = useRef<string | null>(null)
   useEffect(() => {
     if (!snapshot) return
@@ -125,7 +105,7 @@ export default function CachePurge() {
     }
   }, [snapshot])
 
-  // A cancelled run deliberately returns what it already deleted — render it too.
+  // A cancelled run still reports what it deleted.
   const result =
     snapshot && (snapshot.state === 'done' || snapshot.state === 'cancelled')
       ? snapshot.result

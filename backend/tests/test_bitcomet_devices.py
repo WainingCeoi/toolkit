@@ -1,15 +1,4 @@
-"""Reaching a BitComet that is NOT on this machine: addresses and the book.
-
-Two things change the moment the target is across the LAN rather than on
-loopback, and both fail quietly if they are wrong: what an address the user
-typed actually means, and whose filesystem a save folder lives on. Those are
-what this module pins down.
-
-The fake BitComet can only ever bind loopback, so the tests that need a REMOTE
-client flip `is_local` on a client pointed at it. That flag is not a
-convenience here -- it is the single value every remote branch keys off, so
-setting it is exercising the real decision rather than simulating one.
-"""
+"""A BitComet on another machine: addresses, save folders, and the device book."""
 
 from __future__ import annotations
 
@@ -57,28 +46,21 @@ def book(tmp_path):
     return DeviceBook(tmp_path / "torrents.db")
 
 
-# =======================================================
-# ADDRESSES
-# =======================================================
+# --- ADDRESSES ---
 @pytest.mark.parametrize(
     ("typed", "expected"),
     [
         ("http://192.168.1.50:19377", "http://192.168.1.50:19377"),
-        # A bare host or host:port is what people actually paste.
         ("192.168.1.50:19377", "http://192.168.1.50:19377"),
         ("192.168.1.50", f"http://192.168.1.50:{DEFAULT_PORT}"),
-        # "nas:19377" parses as the SCHEME "nas" unless a scheme goes in front
-        # first -- the trap normalize_base_url exists to close.
+        # "nas:19377" parses as scheme "nas" unless a scheme is prepended.
         ("nas:19377", "http://nas:19377"),
         ("nas.local", f"http://nas.local:{DEFAULT_PORT}"),
         ("//nas.local:8080", "http://nas.local:8080"),
-        # Every API path is absolute from the root, so a pasted Web UI path
-        # would corrupt all of them.
         ("http://nas.local:19377/webui/index.html", "http://nas.local:19377"),
         ("http://nas.local:19377/", "http://nas.local:19377"),
         ("  192.168.1.50:19377  ", "http://192.168.1.50:19377"),
         ("https://nas.local:443", "https://nas.local:443"),
-        # An IPv6 literal has to keep its brackets to stay a usable URL.
         ("http://[fd00::1]:19377", "http://[fd00::1]:19377"),
         ("NAS.Local:19377", "http://nas.local:19377"),
     ],
@@ -95,8 +77,6 @@ def test_normalize_base_url_accepts_what_people_type(typed, expected):
         ("ftp://nas.local:19377", "http://"),
         ("http://nas.local:notaport", "no usable port"),
         ("http://nas.local:70000", "no usable port"),
-        # Credentials in the address would be silently dropped, and the user
-        # would be left staring at an auth failure they thought they had fixed.
         ("http://me:secret@nas.local:19377", "fields for them"),
     ],
 )
@@ -130,7 +110,6 @@ def test_client_reads_its_own_locality_from_the_address(fake):
 
     remote = BitCometClient(base_url="nas.local:19377", username="u", password="p")
     assert remote.is_local is False
-    # And the address it will actually call is the normalised one.
     assert remote.base_url == "http://nas.local:19377"
     remote.close()
 
@@ -140,14 +119,10 @@ def test_client_refuses_an_unusable_address():
         BitCometClient(base_url="ftp://nas.local", username="u", password="p")
 
 
-# =======================================================
-# SAVE FOLDERS
-# =======================================================
+# --- SAVE FOLDERS ---
 def test_remote_save_folder_is_never_created_on_this_machine(remote, tmp_path):
-    """The path names the PEER's disk, so nothing here may act on it."""
     wanted = tmp_path / "not-ours"
     assert remote.ensure_save_folder(str(wanted)) == str(wanted)
-    # The give-away bug: a directory quietly made on the wrong machine.
     assert not wanted.exists()
 
 
@@ -175,8 +150,6 @@ def test_remote_save_folder_is_not_re_registered_when_already_known(remote, fake
 
 
 def test_remote_save_folder_refuses_a_tilde_path(remote):
-    # ~ is THIS Mac's home. Expanding it would produce a path that very often
-    # exists here, so the mistake would look like it had worked.
     with pytest.raises(BitCometError) as caught:
         remote.ensure_save_folder("~/Downloads")
     assert "path on this Mac" in str(caught.value)
@@ -192,9 +165,7 @@ def test_save_folders_lists_what_the_peer_will_accept(remote, fake):
     assert remote.save_folders() == ["/volume1/downloads", "/volume2/media"]
 
 
-# =======================================================
-# THE DEVICE BOOK
-# =======================================================
+# --- THE DEVICE BOOK ---
 def test_the_local_device_exists_in_an_empty_book(book):
     assert [d.id for d in book.list()] == [LOCAL_ID]
     assert book.active().id == LOCAL_ID
@@ -205,7 +176,6 @@ def test_adding_a_device_saves_it_and_selects_it(book):
     device = book.add("NAS", "192.168.1.50:19377", "admin", "hunter2")
     assert device.url == "http://192.168.1.50:19377"
     assert book.active().id == device.id
-    # And it survives a fresh reader of the same database -- the whole point.
     assert [d.id for d in DeviceBook(book.path).list()] == [LOCAL_ID, device.id]
 
 
@@ -230,8 +200,6 @@ def test_a_nameless_device_falls_back_to_its_host(book):
 def test_re_adding_one_address_edits_it_rather_than_duplicating(book):
     first = book.add("NAS", "192.168.1.50:19377", "admin", "old")
     again = book.add("NAS v2", "http://192.168.1.50:19377/", "admin", "new")
-    # Two rows for one BitComet would differ only by id, and selecting the
-    # stale one fails with the password the user thought they had corrected.
     assert again.id == first.id
     assert again.password == "new"
     assert len(book.list()) == 2  # local + the one device
@@ -278,8 +246,6 @@ def test_selecting_an_unknown_device_raises(book):
 
 
 def test_a_selection_pointing_at_nothing_falls_back(book):
-    # A device deleted by hand out of the database would otherwise leave the
-    # tool pointed at an id that no longer exists, with no way back.
     with closing(sqlite3.connect(book.path)) as conn, conn:
         conn.execute(
             "INSERT OR REPLACE INTO device_settings VALUES ('active', 'ghost')"
@@ -297,7 +263,6 @@ def test_a_book_damaged_before_startup_is_set_aside_and_rebuilt(tmp_path):
     path = tmp_path / "torrents.db"
     path.write_bytes(b"SQLite format 3\x00 except not really" * 40)
     book = DeviceBook(path)
-    # The bytes survive for a post-mortem; the tool comes up regardless.
     assert (tmp_path / "torrents.db.corrupt").exists()
     assert [d.id for d in book.list()] == [LOCAL_ID]
     book.add("NAS", "192.168.1.50:19377", "admin", "pw")
@@ -310,9 +275,7 @@ def test_rows_without_an_address_are_skipped_rather_than_taking_the_book_down(bo
     assert [d.id for d in book.list()] == [LOCAL_ID]
 
 
-# =======================================================
-# THE LEGACY JSON BOOK
-# =======================================================
+# --- THE LEGACY JSON BOOK ---
 def legacy_body():
     return {
         "active": "abc123",
@@ -329,8 +292,6 @@ def legacy_body():
 
 
 def test_a_json_book_is_imported_once_and_removed(tmp_path):
-    """The pre-database revision kept a JSON file; opening the book imports it
-    so nobody re-enters an address and password they already saved."""
     legacy = tmp_path / "bitcomet-devices.json"
     legacy.write_text(json.dumps(legacy_body()))
 
@@ -347,8 +308,6 @@ def test_importing_never_overwrites_what_the_database_already_holds(tmp_path):
     book = DeviceBook(tmp_path / "torrents.db")
     kept = book.add("NAS", "192.168.110.27:10447", "admin", "new-password")
 
-    # A stale legacy file appearing afterwards (restored from a backup, say)
-    # must not downgrade the row or steal the selection.
     stale = legacy_body()
     stale["devices"][0]["id"] = kept.id
     stale["devices"][0]["password"] = "old-password"

@@ -1,7 +1,3 @@
-// Doc to Markdown — convert PDFs, Office docs, and images with MinerU.
-// One job per batch; the backend runs one MinerU subprocess per file and
-// bundles every file's output tree into a single downloadable zip.
-
 import { useEffect, useState, type ReactNode } from 'react'
 import { api, artifactUrl } from '../api'
 import { useToolJob } from '../jobs'
@@ -18,7 +14,6 @@ const OCR_LANGS = [
   'arabic', 'east_slavic', 'cyrillic', 'devanagari',
 ]
 
-// Small muted help line under a control (the old page's `help=` tooltips).
 function Hint({ children }: { children: ReactNode }) {
   return (
     <p style={{ margin: '4px 0 0', fontSize: '11.5px', color: 'var(--faint)', lineHeight: 1.45 }}>
@@ -36,7 +31,6 @@ export default function DocToMarkdown() {
   const [formula, setFormula] = useState(true)
   const [table, setTable] = useState(true)
 
-  // Health lamps load independently of everything else on the page.
   const [health, setHealth] = useState<MarkdownHealth | null>(null)
   useEffect(() => {
     let alive = true

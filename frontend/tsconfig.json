@@ -1,7 +1,5 @@
 {
-  // Application sources. Type checking is done by TypeScript 7 (`npm run
-  // typecheck`), never by the bundler: Vite/esbuild strips types without
-  // checking them, so `vite build` alone would happily ship broken types.
+  // Type checking is npm run typecheck; vite build strips types without checking them.
   "compilerOptions": {
     "target": "ES2022",
     "lib": ["ES2023", "DOM", "DOM.Iterable"],
@@ -11,14 +9,10 @@
     "types": ["vite/client", "vitest/globals"],
 
     "strict": true,
-    // Deliberately off: the tool pages index rows/columns by key when
-    // rendering tables, and every access would need a redundant guard.
+    // Off: table pages index rows by key, and every access would need a guard.
     "noUncheckedIndexedAccess": false,
 
-    // Unused-code detection lives here, not in ESLint. The lint parser is
-    // Babel and has no type information, so its no-unused-vars cannot tell a
-    // type-only import from a dead one; tsc can. Dropping these would leave
-    // that gap genuinely uncovered.
+    // Unused-code detection lives here; ESLint's Babel parser has no type info.
     "noUnusedLocals": true,
     "noUnusedParameters": true,
 
@@ -29,8 +23,7 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
 
-    // No .js/.jsx remains under src/. Leaving allowJs off means a stray one
-    // cannot slip back in unchecked -- it becomes a build error instead.
+    // A stray .js under src/ becomes a build error.
     "allowJs": false
   },
   "include": ["src"]

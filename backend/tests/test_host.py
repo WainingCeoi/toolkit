@@ -27,7 +27,6 @@ def test_is_private_lan(ip, expected):
 
 
 def test_free_port_advances_past_a_bound_port():
-    # Bind a port, then ask free_port to start there — it must skip to the next.
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as taken:
         taken.bind(("127.0.0.1", 0))
         taken.listen()
@@ -38,8 +37,6 @@ def test_free_port_advances_past_a_bound_port():
 
 
 def test_free_port_ipv6_host_does_not_crash():
-    # Regression: an AF_INET-only probe aborted for ::1. getaddrinfo picks the
-    # right family now, so a loopback IPv6 bind succeeds.
     chosen = host.free_port("::1", 0, tries=1)
     assert isinstance(chosen, int)
 

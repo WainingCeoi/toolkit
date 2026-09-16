@@ -30,8 +30,7 @@ def start_gather(req: GatherStartIn, jobs: JobsDep) -> JobStartedOut:
     src, tgt = src_raw.resolve(), tgt_raw.resolve()
     patterns = gather.build_patterns(req.categories, req.custom)
 
-    # A relative (or empty) typed path would resolve against the app's CWD —
-    # refuse it before it can target the wrong tree.
+    # Relative paths would resolve against the app's CWD.
     if not (src_raw.is_absolute() and tgt_raw.is_absolute()):
         raise HTTPException(
             status_code=400,
@@ -53,8 +52,6 @@ def start_gather(req: GatherStartIn, jobs: JobsDep) -> JobStartedOut:
         scan_errors = [str(error) for error in errors]
 
         if not files:
-            # No matches: the page's "No matching files found." state never
-            # created the target folder — report the empty result, untouched.
             return {
                 "moved": [],
                 "failed": [],
@@ -65,12 +62,10 @@ def start_gather(req: GatherStartIn, jobs: JobsDep) -> JobStartedOut:
 
         moved, failed = [], []
         if not job.cancelled:
-            # Only create the target once there is something to move — the
-            # page mkdir'd here too, never on a no-match (or early-cancel) run.
+            # Create the target only once there is something to move.
             try:
                 tgt.mkdir(parents=True, exist_ok=True)
             except OSError as e:
-                # e.g. the typed target (or one of its parents) is a file
                 raise RuntimeError(f"❌ Cannot create the target folder: {e}") from e
 
             job.set_message(f"Moving… 0/{len(files)}")
@@ -81,9 +76,6 @@ def start_gather(req: GatherStartIn, jobs: JobsDep) -> JobStartedOut:
 
             moved, failed = gather.move_files(files, tgt, on_progress)
 
-        # A scan error means part of the tree was unreadable, so the gather
-        # may be incomplete — surface the page's warning in the result. On
-        # cancel we still return the partial moved/failed already collected.
         warning = None
         if scan_errors:
             warning = (

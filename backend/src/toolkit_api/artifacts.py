@@ -1,17 +1,4 @@
-"""Temp-file store for job outputs (zips, PDFs) served by /api/artifacts.
-
-Jobs write their output files into one spool directory per process; the
-download endpoint streams them back by id. Everything is deleted when the
-app shuts down — artifacts are session-scoped, matching the old UI where
-results lived in st.session_state.
-
-"Session" is not always short, though: `make host` is meant to be left up for
-weeks as a LAN service, and there the store used to only ever grow. Files also
-outlive their reachability — the job registry keeps the last 50 jobs, and an
-artifact id only ever travels inside its job's snapshot, so an evicted job
-leaves a file no client can ask for again. Hence the TTL sweep below, the same
-shape WatermarkBatches already uses for its staging directories.
-"""
+"""TTL-swept temp-file store for job outputs served by /api/artifacts."""
 
 from __future__ import annotations
 
@@ -43,14 +30,7 @@ class ArtifactStore:
         return artifact_id
 
     def replace_bytes(self, artifact_id: str, content: bytes) -> None:
-        """Overwrite an artifact's content in place, keeping its id and name.
-
-        For results that grow as a job runs -- a zip republished after every
-        finished image so a batch that dies still hands over what it got. The
-        write goes to a sibling temp file first and lands with os.replace, so a
-        download racing the update streams a complete old zip or a complete
-        new one, never a torn file.
-        """
+        """Overwrite in place atomically so a racing download never sees a torn file."""
         with self._lock:
             item = self._items.get(artifact_id)
             if item is not None:
@@ -62,13 +42,7 @@ class ArtifactStore:
         staging.replace(item["path"])
 
     def replace_file(self, artifact_id: str, src: Path) -> None:
-        """replace_bytes for a result too big to want in memory.
-
-        Same id, same name, same atomic landing -- the file is moved onto the
-        staging path and then renamed over the live one, so a download racing
-        the update streams a complete old copy or a complete new one. The
-        caller's ``src`` is consumed.
-        """
+        """replace_bytes for a file already on disk; ``src`` is consumed."""
         with self._lock:
             item = self._items.get(artifact_id)
             if item is not None:
@@ -93,8 +67,7 @@ class ArtifactStore:
         with self._lock:
             item = self._items.get(artifact_id)
             if item is not None:
-                # Downloading counts as use: a result someone keeps coming back
-                # to should not expire out from under them mid-session.
+                # A download counts as use, so it resets the TTL.
                 item["used"] = time.monotonic()
             self._sweep()
             return item

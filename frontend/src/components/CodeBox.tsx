@@ -1,5 +1,3 @@
-// Fixed-height, copyable code block (the old pages' st.code contract).
-
 import { useState } from 'react'
 import { copyText } from '../clipboard'
 

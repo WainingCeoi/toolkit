@@ -1,13 +1,4 @@
-"""In-process job registry for long-running batch work.
-
-Every long-running tool (remux, gather, purge, conversions, scraping) follows
-one shape: submit a batch -> a worker thread reports per-item progress ->
-done/failed lists plus an optional artifact. The registry holds one Job per
-run; the SSE endpoint in routers/jobs.py streams each job's snapshot.
-
-Single-process by design: the registry lives on app.state, so the server must
-run exactly one worker (see host.py).
-"""
+"""In-process job registry for long-running batch work."""
 
 from __future__ import annotations
 
@@ -24,8 +15,7 @@ FINISHED_STATES = frozenset({"done", "failed", "cancelled"})
 
 
 class Job:
-    """One batch run. Worker threads mutate it via the helpers; readers take
-    snapshot(). All mutation happens under the job's own lock."""
+    """One batch run; all mutation happens under the job's own lock."""
 
     def __init__(self, tool: str, item_names: list[str]):
         self.id = uuid.uuid4().hex[:12]
@@ -69,13 +59,7 @@ class Job:
                 item["error"] = error
 
     def set_result(self, result: dict | None) -> None:
-        """Publish results so far, without finishing the job.
-
-        snapshot() already carries `result`, so anything published here reaches
-        the client on the next SSE frame. That is what lets a batch hand back
-        the items it already finished even if a later one dies — or takes the
-        whole process down with it.
-        """
+        """Publish results so far without finishing the job."""
         with self._lock:
             self.result = result
 
@@ -105,18 +89,7 @@ class Job:
 
 
 class JobRegistry:
-    """Creates jobs, runs their workers on a bounded pool, keeps the last N.
-
-    Work is handed to a fixed set of daemon worker threads that pull from a
-    queue. Daemon, so a long child process (a 30-min MinerU run) never blocks
-    process exit; fixed, so a burst of submits queues instead of spawning a
-    thread per job. The pool grows lazily to max_workers and no further, which
-    is the bound — an earlier version acquired its semaphore *inside* the new
-    thread, so N submits still created N live threads with N-8 parked.
-
-    shutdown() cancels in-flight jobs on teardown so their children (ffmpeg, …)
-    get cleaned up.
-    """
+    """Creates jobs, runs their workers on a bounded daemon pool, keeps the last N."""
 
     def __init__(self, max_jobs: int = 50, max_workers: int = 8):
         self._jobs: OrderedDict[str, Job] = OrderedDict()
@@ -133,12 +106,7 @@ class JobRegistry:
         item_names: list[str],
         worker: Callable[[Job], dict | None],
     ) -> Job:
-        """Create a job and run `worker(job)` on the worker pool.
-
-        The worker reports progress via job.update_item()/set_message(),
-        checks job.cancelled between items, and returns the result dict. A job
-        submitted while every worker is busy waits its turn as 'running'.
-        """
+        """Create a job and queue ``worker(job)``; the worker polls job.cancelled."""
         job = Job(tool, item_names)
         with self._lock:
             self._jobs[job.id] = job
@@ -154,8 +122,7 @@ class JobRegistry:
         thread = threading.Thread(
             target=self._serve, name=f"job-worker-{len(self._workers)}", daemon=True
         )
-        # Appended only once it is actually running: a thread that failed to
-        # start would otherwise sit in the list as a corpse holding a slot.
+        # Appended only after start(), so a failed start never holds a slot.
         thread.start()
         self._workers.append(thread)
 
@@ -166,11 +133,7 @@ class JobRegistry:
                 if item is None:
                     return
                 job, worker = item
-                # Cancelled while it sat in the queue: the user asked for this
-                # not to happen before any of it had started, so honour that
-                # rather than beginning the work now that a slot is free.
-                # Matters most for purge, whose worker deletes a first batch of
-                # files before its own cooperative check can run.
+                # Honour a cancel from the queue: purge deletes before its own check.
                 if job.cancelled:
                     job._finish(None)
                     continue
@@ -179,32 +142,19 @@ class JobRegistry:
                 except Exception as exc:  # noqa: BLE001 — surfaced to the client
                     job._fail(str(exc))
                 except BaseException as exc:  # noqa: BLE001 — thread is dying
-                    # SystemExit out of a library, an interrupt: this thread is
-                    # going down, and the job it was holding must not be left
-                    # reporting 'running' for the life of the process.
+                    # The thread is dying; the job must not stay 'running' forever.
                     job._fail(f"The worker stopped unexpectedly: {exc!r}")
                     raise
                 else:
                     job._finish(result)
         finally:
-            # Give the slot back, however this thread ends. Losing a worker
-            # used to shrink the pool permanently, because _grow_pool counts
-            # entries and dead ones were never removed — enough deaths and
-            # every later job queued behind nobody, staying 'running' forever.
-            # The next submit now replaces it.
+            # Give the slot back however this thread ends; the next submit refills it.
             with self._lock:
                 here = threading.current_thread()
                 self._workers = [t for t in self._workers if t is not here]
 
     def shutdown(self, timeout: float = 3.0) -> None:
-        """Cancel in-flight jobs and briefly join the workers (teardown).
-
-        Setting the cancel flag lets cooperative workers stop and clean up their
-        children (e.g. remux kills its ffmpeg processes); the bounded join gives
-        them a moment before the daemon threads die with the process. Anything
-        still queued is cancelled too, so a worker that reaches it retires it
-        without running it.
-        """
+        """Cancel in-flight jobs and briefly join the workers (teardown)."""
         with self._lock:
             jobs = list(self._jobs.values())
             workers = list(self._workers)

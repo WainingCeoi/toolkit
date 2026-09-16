@@ -14,9 +14,6 @@ from ..schemas import CategoryOut, HealthOut, ToolOut
 
 router = APIRouter(tags=["meta"])
 
-# The single source of truth for navigation and the home grid — the React app
-# renders this manifest, collapsing the app.py/home.py duplication of the old
-# Streamlit shell. Titles/descriptions carry the old UI's brand verbatim.
 CATEGORIES = [
     CategoryOut(
         name="🎬 Media",
@@ -145,16 +142,7 @@ def _soffice_available() -> bool:
 
 
 def disabled_slugs() -> set[str]:
-    """Tool slugs switched off for this machine via TOOLKIT_DISABLED_TOOLS.
-
-    Set it in backend/.env (comma- or space-separated slugs) to turn off tools
-    you can't or don't want to run here — e.g. Doc to Markdown on an Intel Mac,
-    where MinerU's torch dependency has no macOS x86_64 wheel.
-
-    A disabled tool is dropped from this manifest *and* its router is never
-    mounted (see main.create_app), so its endpoints 404 rather than quietly
-    staying callable. Read at startup, so changes need a restart.
-    """
+    """Tool slugs switched off for this machine via TOOLKIT_DISABLED_TOOLS."""
     raw = os.environ.get("TOOLKIT_DISABLED_TOOLS", "")
     return {slug.lower() for slug in raw.replace(",", " ").split()}
 
@@ -168,7 +156,7 @@ def tools() -> list[CategoryOut]:
     kept = []
     for category in CATEGORIES:
         tools_left = [t for t in category.tools if t.slug not in disabled]
-        if tools_left:  # drop a category that ends up empty
+        if tools_left:
             kept.append(CategoryOut(name=category.name, tools=tools_left))
     return kept
 
@@ -179,7 +167,6 @@ def health() -> HealthOut:
         ffmpeg=shutil.which("ffmpeg") is not None,
         soffice=_soffice_available(),
         mineru=docmd.find_mineru() is not None,
-        # BitComet is a .app, not a binary on PATH, so its config file existing
-        # is the only cheap "installed" signal there is.
+        # BitComet is a .app, not on PATH; its config file is the install signal.
         bitcomet=bitcomet.CONFIG_PATH.exists(),
     )

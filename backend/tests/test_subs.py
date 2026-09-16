@@ -14,9 +14,7 @@ TROJAN_LINK = "trojan://s3cret-pass@origin.example.com:443#US"
 
 @pytest.fixture
 def tool_client(app_state, monkeypatch):
-    # Pin the URL host so no mDNS/LAN discovery runs, and start token-free
-    # (individual tests opt in to SUB_ACCESS_TOKEN). create_app already wires
-    # both the /api and public /sub routers — don't re-include them here.
+    # Pinning the host skips mDNS/LAN discovery; tests opt in to the token.
     monkeypatch.setenv("SUB_PUBLIC_HOST", "mac.local")
     monkeypatch.delenv("SUB_ACCESS_TOKEN", raising=False)
     app = create_app(state=app_state)

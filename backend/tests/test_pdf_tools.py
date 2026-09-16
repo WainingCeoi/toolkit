@@ -1,11 +1,4 @@
-"""Image to PDF + Web Images to PDF: engines and routers.
-
-Hermetic by construction: images are generated in-memory with PIL, scraped
-pages are canned HTML whose images are data: URIs (nothing is fetched), and
-the browser is a fake injected onto app_state — Chrome is never launched.
-add_bookmark parses the captured page_source directly (no network), and the
-canned pages carry no TOC anchors so it simply reports none were found.
-"""
+"""Image to PDF + Web Images to PDF: engines and routers."""
 
 from __future__ import annotations
 
@@ -34,7 +27,6 @@ NO_IMAGES_DETAIL = (
 
 @pytest.fixture
 def tool_client(app_state):
-    # create_app already wires every /api router (don't re-include here).
     app = create_app(state=app_state)
     with TestClient(app) as c:
         yield c
@@ -51,11 +43,9 @@ def _data_uri(png):
 
 
 class FakeBrowserSession:
-    """Stands in for toolkit_engine.webpdf.BrowserSession — no Chrome."""
-
     def __init__(self, html=""):
         self._html = html
-        self.url = "not-a-url"  # never fetched — capture uses page_source
+        self.url = "not-a-url"
         self.quit_called = False
 
     @property
@@ -71,9 +61,7 @@ class FakeBrowserSession:
     shutdown = quit
 
 
-# =======================================================
-# Image to PDF
-# =======================================================
+# --- Image to PDF ---
 def test_img_to_pdf_end_to_end(tool_client):
     files = [
         ("files", ("b.png", _png_bytes("red"), "image/png")),
@@ -124,7 +112,6 @@ def test_img_to_pdf_name_with_quote_is_well_formed(tool_client):
     resp = tool_client.post("/api/img-to-pdf", data={"name": 'a"b'}, files=files)
     assert resp.status_code == 200
     assert resp.content.startswith(b"%PDF")
-    # The inner double-quote must be backslash-escaped, not left bare.
     assert resp.headers["content-disposition"] == 'attachment; filename="a\\"b.pdf"'
 
 
@@ -139,7 +126,6 @@ def test_images_to_pdf_orders_pages_naturally():
 
     named = [("p10.png", png(10, 10)), ("p2.png", png(20, 20))]
     pdf = imgpdf_engine.images_to_pdf_bytes(named)
-    # p2 (natural-first) must be page 1 -> its 20x20 box appears before 10x10.
     boxes = [tuple(map(float, m.decode().split())) for m in _mediaboxes(pdf)]
     assert boxes[0][2:] == (20.0, 20.0)
 
@@ -147,7 +133,7 @@ def test_images_to_pdf_orders_pages_naturally():
 def test_images_to_pdf_rejects_decompression_bomb(monkeypatch):
     from toolkit_engine import imgpdf as imgpdf_engine
 
-    monkeypatch.setattr(imgpdf_engine, "MAX_PIXELS", 100)  # 4x4=16 ok; 20x20=400 not
+    monkeypatch.setattr(imgpdf_engine, "MAX_PIXELS", 100)
     big = BytesIO()
     Image.new("RGB", (20, 20), "white").save(big, format="PNG")
     with pytest.raises(ValueError, match="too large"):
@@ -174,13 +160,11 @@ def _mediaboxes(pdf_bytes):
     return re.findall(rb"/MediaBox\s*\[\s*([0-9.\s]+?)\]", pdf_bytes)
 
 
-# =======================================================
-# Web Images to PDF — engine
-# =======================================================
+# --- Web Images to PDF — engine ---
 def test_sanitize_filename():
     assert sanitize_filename('a\\b/c:d*e?f"g<h>i|j') == "a_b_c_d_e_f_g_h_i_j"
     assert sanitize_filename("My Comic: Vol 1") == "My Comic_ Vol 1"
-    assert sanitize_filename("a<<>>b") == "a_b"  # runs collapse to one _
+    assert sanitize_filename("a<<>>b") == "a_b"
     assert sanitize_filename("plain name") == "plain name"
     assert sanitize_filename("") == "web"
     assert sanitize_filename("   ") == "web"
@@ -217,13 +201,11 @@ def test_scrape_images_selector_and_skip_counting():
 def test_browser_session_shutdown_alias_and_safe_quit():
     session = BrowserSession()
     assert session.is_open is False
-    session.shutdown()  # no driver — must not raise (lifespan calls this)
+    session.shutdown()  # no driver; must not raise
     assert BrowserSession.shutdown is BrowserSession.quit
 
 
-# =======================================================
-# Web Images to PDF — router
-# =======================================================
+# --- Web Images to PDF — router ---
 def test_webpdf_status_reflects_browser_slot(tool_client, app_state):
     assert tool_client.get("/api/webpdf/status").json() == {"open": False}
     app_state.browser = FakeBrowserSession()
@@ -273,7 +255,7 @@ def test_webpdf_capture_no_images_is_400_and_keeps_browser(tool_client, app_stat
     resp = tool_client.post("/api/webpdf/capture")
     assert resp.status_code == 400
     assert resp.json()["detail"] == NO_IMAGES_DETAIL
-    assert app_state.browser is fake  # page behavior: retry without relaunching
+    assert app_state.browser is fake
     assert fake.quit_called is False
 
 
@@ -293,9 +275,8 @@ def test_webpdf_capture_builds_pdf_and_closes_browser(tool_client, app_state):
     assert body["name"] == "Book_ One.pdf"
     assert body["pages"] == 2
     assert body["skipped"] == 0
-    assert body["warn"]  # bookmark re-fetch of "not-a-url" fails offline
+    assert body["warn"]
 
-    # Page behavior: a successful capture closes the browser.
     assert fake.quit_called is True
     assert app_state.browser is None
 
@@ -316,9 +297,6 @@ def test_webpdf_close_is_idempotent(tool_client, app_state):
 
 
 def test_webpdf_open_is_race_safe(tool_client, app_state, monkeypatch):
-    # Two near-simultaneous /open calls (double-click / retry) must launch
-    # exactly ONE Chrome: the check + launch + assign is serialized, so the
-    # loser blocks and then gets a clean 409 instead of leaking a driver.
     launches: list[str] = []
     launches_lock = threading.Lock()
     in_open = threading.Event()
@@ -341,23 +319,20 @@ def test_webpdf_open_is_race_safe(tool_client, app_state, monkeypatch):
 
     first = threading.Thread(target=call, args=("first",))
     first.start()
-    assert in_open.wait(timeout=5)  # first has passed the check and is launching
+    assert in_open.wait(timeout=5)
     second = threading.Thread(target=call, args=("second",))
     second.start()
-    time.sleep(0.2)  # let the second reach its check (buggy) or block (fixed)
+    time.sleep(0.2)  # let the second call reach the lock
     may_finish.set()
     first.join(timeout=10)
     second.join(timeout=10)
 
-    assert len(launches) == 1  # only one driver spawned; no leak
+    assert len(launches) == 1
     assert sorted(results.values()) == [200, 409]
     assert isinstance(app_state.browser, SlowSession)
 
 
 def test_webpdf_capture_preserves_newer_session(tool_client, app_state, monkeypatch):
-    # If a newer session is opened mid-capture, the success path must clear the
-    # slot only when it still holds the session it captured from (identity
-    # check) — otherwise it clobbers the newer session.
     html = (
         "<html><head><title>Book</title></head><body>"
         f'<img class="bi" src="{_data_uri(_png_bytes("red"))}">'
@@ -368,7 +343,7 @@ def test_webpdf_capture_preserves_newer_session(tool_client, app_state, monkeypa
     app_state.browser = captured
 
     def reassign(page_source, pdf_path):
-        # Stand in for a newer /open that landed while this capture was running.
+        # A newer /open lands mid-capture.
         app_state.browser = newer
         return None
 
@@ -376,6 +351,6 @@ def test_webpdf_capture_preserves_newer_session(tool_client, app_state, monkeypa
     resp = tool_client.post("/api/webpdf/capture")
     assert resp.status_code == 200
 
-    assert captured.quit_called is True  # the captured session is closed
-    assert app_state.browser is newer  # the newer session is NOT clobbered
+    assert captured.quit_called is True
+    assert app_state.browser is newer
     assert newer.quit_called is False
