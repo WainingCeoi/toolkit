@@ -168,6 +168,36 @@ def test_clean_docx_accepts_insertions_drops_deletions_and_trackchanges(tmp_path
     assert docpdf._w("trackChanges") not in {el.tag for el in settings.iter()}
 
 
+def test_docmd_convert_batch_final_message_counts_only_successes(monkeypatch):
+    messages = []
+
+    def fake_run(cmd, *_args, **_kwargs):
+        in_path = Path(cmd[cmd.index("-p") + 1])
+        if in_path.parent.name == "in_0":
+            md_dir = Path(cmd[cmd.index("-o") + 1]) / "a" / "auto"
+            md_dir.mkdir(parents=True)
+            (md_dir / "a.md").write_text("# hi")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="boom")
+
+    monkeypatch.setattr(docmd, "run_mineru", fake_run)
+
+    options = {
+        "backend": "pipeline",
+        "method": "auto",
+        "lang": "ch",
+        "effort": "medium",
+        "formula": True,
+        "table": True,
+    }
+    docmd.convert_batch(
+        [("a.pdf", b"one"), ("b.pdf", b"two")],
+        options,
+        lambda pct, text: messages.append(text),
+        ["mineru"],
+    )
+    assert messages[-1] == "Converted 1/2 file(s)."
+
+
 def test_batch_to_pdf_kills_soffice_on_cancel(tmp_path):
     fake_soffice = tmp_path / "soffice"
     fake_soffice.write_text("#!/bin/sh\nsleep 30\n")

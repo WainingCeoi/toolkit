@@ -173,5 +173,5 @@ def convert_batch(named_files, options, on_progress, mineru_cmd, is_cancelled=No
         if done:
             zip_bytes = buffer.getvalue()
 
-    on_progress(100, f"Converted {total}/{total} file(s).")
+    on_progress(100, f"Converted {len(done)}/{total} file(s).")
     return zip_bytes, done, failed
