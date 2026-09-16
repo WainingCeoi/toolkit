@@ -408,9 +408,15 @@ def npm_outdated(folder: str) -> tuple[dict, str | None]:
     if not out:
         return {}, None  # nothing outdated
     try:
-        return json.loads(out), None
+        parsed = json.loads(out)
     except json.JSONDecodeError as exc:
         return {}, f"❌ Could not parse npm outdated: {exc}"
+    # npm prints registry/auth failures as {"error": …} on stdout, also with exit 1.
+    failure = parsed.get("error") if isinstance(parsed, dict) else None
+    if isinstance(failure, dict) and "latest" not in failure:
+        detail = failure.get("summary") or failure.get("code") or "unknown error"
+        return {}, f"❌ npm outdated failed: {detail}"
+    return parsed, None
 
 
 def npm_installed(folder: str) -> dict[str, str]:

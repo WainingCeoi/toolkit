@@ -289,6 +289,35 @@ def test_apply_uv_bumps_raises_when_string_missing(tmp_path):
         depsync.apply_uv_bumps(path, [ghost])
 
 
+# --- npm: reading the registry ---
+
+
+def _fake_npm_outdated(monkeypatch, stdout):
+    monkeypatch.setattr(depsync.shutil, "which", lambda name: "/usr/bin/npm")
+    monkeypatch.setattr(
+        depsync.subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(a[0], 1, stdout, ""),
+    )
+
+
+def test_npm_outdated_reports_a_registry_failure(tmp_path, monkeypatch):
+    _fake_npm_outdated(
+        monkeypatch,
+        '{"error":{"code":"ECONNREFUSED","summary":"FetchError: refused"}}',
+    )
+    outdated, err = depsync.npm_outdated(str(tmp_path))
+    assert outdated == {} and err and "FetchError: refused" in err
+    latest, err = depsync.npm_latest(str(tmp_path))
+    assert latest == {} and err and "npm outdated failed" in err
+
+
+def test_npm_outdated_keeps_a_package_actually_named_error(tmp_path, monkeypatch):
+    _fake_npm_outdated(monkeypatch, '{"error":{"current":"1.0.0","latest":"1.2.0"}}')
+    outdated, err = depsync.npm_outdated(str(tmp_path))
+    assert err is None and outdated["error"]["latest"] == "1.2.0"
+
+
 # --- npm: bump rules ---
 
 
