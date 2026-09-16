@@ -308,6 +308,30 @@ def test_apply_npm_bumps_rewrites_ranges_and_leaves_others(tmp_path):
     assert '"workspace-dep": "workspace:*"' in text
 
 
+def test_apply_npm_bumps_only_touches_the_bumps_own_table(tmp_path):
+    (tmp_path / "package.json").write_text(
+        '{\n  "peerDependencies": {"react": "^18.2.0"},\n'
+        '  "devDependencies": {"react": "^18.2.0"}\n}\n',
+        encoding="utf-8",
+    )
+    path = tmp_path / "package.json"
+    bumps = depsync.compute_npm_bumps(path, {"react": "19.1.0"})
+    assert [b.table for b in bumps] == ["devDependencies"]
+    depsync.apply_npm_bumps(path, bumps)
+    text = path.read_text(encoding="utf-8")
+    assert '"peerDependencies": {"react": "^18.2.0"}' in text
+    assert '"devDependencies": {"react": "^19.1.0"}' in text
+
+
+def test_apply_npm_bumps_raises_when_the_table_is_missing(tmp_path):
+    path = _npm_project(tmp_path) / "package.json"
+    ghost = depsync.Bump(
+        "react", "peerDependencies", "^18.2.0", "^19.1.0", True, "", ""
+    )
+    with pytest.raises(ValueError, match="could not locate"):
+        depsync.apply_npm_bumps(path, [ghost])
+
+
 def test_apply_npm_bumps_tolerates_spacing(tmp_path):
     (tmp_path / "package.json").write_text(
         '{"dependencies":{"react":"^18.2.0"}}', encoding="utf-8"

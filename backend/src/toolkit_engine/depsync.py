@@ -506,6 +506,19 @@ def compute_npm_bumps(package_json_path: Path, latest: dict[str, str]) -> list[B
     return bumps
 
 
+def _table_span(text: str, table: str) -> tuple[int, int] | None:
+    """The body of the ``"table": { … }`` object, so no other table is rewritten."""
+    opening = re.search(r'"' + re.escape(table) + r'"\s*:\s*\{', text)
+    if opening is None:
+        return None
+    depth = 1
+    for token in re.finditer(r'"(?:[^"\\]|\\.)*"|[{}]', text[opening.end() :]):
+        depth += {"{": 1, "}": -1}.get(token.group(), 0)
+        if depth == 0:
+            return opening.end(), opening.end() + token.start()
+    return None
+
+
 def apply_npm_bumps(package_json_path: Path, bumps: list[Bump]) -> None:
     """Rewrite each `"name": "range"` value in place, tolerant of JSON spacing."""
     text = package_json_path.read_text(encoding="utf-8")
@@ -513,9 +526,15 @@ def apply_npm_bumps(package_json_path: Path, bumps: list[Bump]) -> None:
         pattern = re.compile(
             r'("' + re.escape(bump.name) + r'"\s*:\s*)"' + re.escape(bump.old) + r'"'
         )
-        text, n = pattern.subn(
-            lambda m, new=bump.new: m.group(1) + f'"{new}"', text, count=1
-        )
+        span, n = _table_span(text, bump.table), 0
+        if span is not None:
+            start, end = span
+            body, n = pattern.subn(
+                lambda m, new=bump.new: m.group(1) + f'"{new}"',
+                text[start:end],
+                count=1,
+            )
+            text = text[:start] + body + text[end:]
         if n == 0:
             raise ValueError(
                 f'could not locate "{bump.name}": "{bump.old}" '
