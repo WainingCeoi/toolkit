@@ -127,6 +127,20 @@ def find_manifests(folder: str) -> tuple[list[Manifest], str | None]:
     return found[:_MAX_MANIFESTS], None
 
 
+def _lock_path(folder: str, name: str) -> Path:
+    """The folder's lockfile; a workspace member has none, so the root's is used."""
+    start = Path(folder).expanduser()
+    root = git_root(folder)
+    if root is None:
+        return start / name
+    here, top = start.resolve(), Path(root).resolve()
+    while not (here / name).is_file():
+        if here == top or here.parent == here:
+            return start / name
+        here = here.parent
+    return here / name
+
+
 # --- Subprocess streaming (uv sync / npm install) ---
 
 
@@ -233,7 +247,7 @@ def uv_lock_refresh(folder: str) -> tuple[bool, str]:
 
 def resolved_versions(folder: str) -> tuple[dict[str, str], str | None]:
     """Canonical-name → version, read from the folder's ``uv.lock``."""
-    lock = Path(folder).expanduser() / "uv.lock"
+    lock = _lock_path(folder, "uv.lock")
     if not lock.is_file():
         return {}, f"❌ No uv.lock in {folder} (run the scan first)."
     try:
@@ -422,7 +436,7 @@ def npm_outdated(folder: str) -> tuple[dict, str | None]:
 
 def npm_installed(folder: str) -> dict[str, str]:
     """Direct-dependency name → installed version, read from package-lock.json."""
-    lock = Path(folder) / "package-lock.json"
+    lock = _lock_path(folder, "package-lock.json")
     if not lock.is_file():
         return {}
     try:
@@ -741,7 +755,7 @@ def _write_manifest(manifest: Manifest, result: dict, originals: dict) -> dict:
     if not bumps:
         return result
 
-    lock = Path(folder) / _LOCKS[manifest.kind]
+    lock = _lock_path(folder, _LOCKS[manifest.kind])
     originals.update(
         {
             str(manifest.path): manifest.path.read_text(encoding="utf-8"),

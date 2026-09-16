@@ -549,6 +549,31 @@ def test_write_manifest_uv_rolls_back_when_relock_fails(tmp_path, monkeypatch):
     assert (root / "uv.lock").read_text(encoding="utf-8") == original_lock
 
 
+@requires_git
+def test_write_manifest_uses_the_workspace_root_lock(tmp_path, monkeypatch):
+    repo = tmp_path / "ws"
+    member = repo / "pkgs" / "a"
+    member.mkdir(parents=True)
+    (member / "pyproject.toml").write_text(SAMPLE_PYPROJECT, encoding="utf-8")
+    (repo / "uv.lock").write_text(SAMPLE_LOCK, encoding="utf-8")  # members have none
+    _init_git(repo)
+
+    resolved, err = depsync.resolved_versions(str(member))
+    assert err is None and resolved["fastapi"] == "0.115.0"
+
+    monkeypatch.setattr(depsync, "uv_lock_refresh", lambda folder: (True, "ok"))
+    manifest = depsync.Manifest(
+        member / "pyproject.toml", "uv", "pkgs/a/pyproject.toml"
+    )
+    result = depsync.write_manifest(manifest)
+
+    assert result["written"] == 3 and result["error"] is None
+    assert result["changed"] == [
+        member / "pyproject.toml",
+        repo.resolve() / "uv.lock",
+    ]
+
+
 def test_write_manifest_npm_skips_peer_conflicts_and_keeps_the_rest(
     tmp_path, monkeypatch
 ):
