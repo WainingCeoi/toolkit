@@ -444,6 +444,41 @@ def test_the_cv2_inpaint_is_not_run_twice_per_image(tmp_path, monkeypatch):
     assert len(calls) == 1, f"the destruction probe was inpainted again ({len(calls)})"
 
 
+def test_the_auto_gate_does_not_inpaint_its_own_probe_again(tmp_path, monkeypatch):
+    from watermark import detect, pipeline
+
+    # Forced past pattern and stacked, so auto reaches the gated texture fallback.
+    monkeypatch.setattr(detect, "propose_pattern_mask", lambda *a, **k: None)
+    monkeypatch.setattr(detect, "propose_pattern_mask_shared", lambda *a, **k: None)
+    monkeypatch.setattr(detect, "repeating_evidence", lambda rgb: True)
+    monkeypatch.setattr(pipeline, "repeating_evidence", lambda rgb: True)
+    src = tmp_path / "in"
+    src.mkdir()
+    _clean, marked, _true = synthetic_pair()
+    Image.fromarray(marked).save(src / "photo_0.png")
+
+    real = pipeline.remove_watermark
+    calls = []
+
+    def counting(*args, **kwargs):
+        calls.append(1)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(pipeline, "remove_watermark", counting)
+    cleaned, _skipped, _protected, _failed = pipeline.clean_folder(
+        src, tmp_path / "out", inpainter="cv2", detector="auto"
+    )
+    assert cleaned == ["photo_0.png"], "the auto route never reached the texture gate"
+    assert len(calls) == 1, f"the gate's probe was inpainted again ({len(calls)})"
+
+    calls.clear()
+    cleaned, _skipped, _protected, _failed = pipeline.clean_folder(
+        src, tmp_path / "wider", inpainter="cv2", detector="auto", dilate_px=8
+    )
+    assert cleaned == ["photo_0.png"]
+    assert len(calls) == 2, "a wider dilation reused a probe taken at the default"
+
+
 def test_two_inputs_with_the_same_stem_both_survive(tmp_path, capsys):
     src = tmp_path / "in"
     src.mkdir()

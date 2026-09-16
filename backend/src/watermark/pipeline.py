@@ -182,7 +182,7 @@ def clean_folder(
     ):
         try:
             rgb, alpha = load_rgba(path.read_bytes())
-            mask, _used, evidence = _propose_with_evidence(
+            mask, _used, evidence, probe = _propose_with_evidence(
                 rgb, sensitivity, detector, marks
             )
             if not mask.any():
@@ -196,7 +196,10 @@ def clean_folder(
                 if on_progress is not None and on_progress(idx + 1, len(files)):
                     break
                 continue
-            probe, destroys = probe_removal(rgb, mask, dilate_px)
+            # The auto gate already probed its own mask, but only at the default.
+            destroys = False
+            if probe is None or dilate_px != DEFAULT_DILATE_PX:
+                probe, destroys = probe_removal(rgb, mask, dilate_px)
             if destroys:
                 protected.append(path.name)
                 if on_progress is not None and on_progress(idx + 1, len(files)):

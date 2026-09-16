@@ -91,7 +91,9 @@ def propose_mask_detailed(
     marks: Sequence[Mark | StackedMark] = (),
 ) -> tuple[np.ndarray, str]:
     """The mask plus which detector produced it, or NONE and an empty mask."""
-    mask, used, _evidence = _propose_with_evidence(rgb, sensitivity, detector, marks)
+    mask, used, _evidence, _probe = _propose_with_evidence(
+        rgb, sensitivity, detector, marks
+    )
     return mask, used
 
 
@@ -100,14 +102,14 @@ def _propose_with_evidence(
     sensitivity: int = DEFAULT_SENSITIVITY,
     detector: str = DEFAULT_DETECTOR,
     marks: Sequence[Mark | StackedMark] = (),
-) -> tuple[np.ndarray, str, bool | None]:
-    """The mask, the detector, and the repeat evidence if this route needed it."""
+) -> tuple[np.ndarray, str, bool | None, np.ndarray | None]:
+    """The mask, the detector, the repeat evidence, and the gate's cv2 probe."""
     if detector not in DETECTORS:
         raise ValueError(
             f"Unknown detector {detector!r} (choose from: {', '.join(DETECTORS)})."
         )
     if detector == TEXTURE:
-        return propose_texture_mask(rgb, sensitivity), TEXTURE, None
+        return propose_texture_mask(rgb, sensitivity), TEXTURE, None, None
     pattern_marks = [m for m in marks if isinstance(m, Mark)]
     stacked = next((m for m in marks if isinstance(m, StackedMark)), None)
     if pattern_marks:
@@ -115,27 +117,33 @@ def _propose_with_evidence(
     else:
         pattern = propose_pattern_mask(rgb, sensitivity)
     if pattern is not None:
-        return pattern, PATTERN, None
+        return pattern, PATTERN, None, None
     # Stacked runs after pattern, which masks actual copies rather than a consensus.
     if stacked is not None:
         mask = stamp_stacked(stacked, rgb.shape[:2], sensitivity)
         if mask.any():
-            return mask, STACKED, None
+            return mask, STACKED, None, None
     evidence = None
     if detector == AUTO:
         evidence = repeating_evidence(rgb)
         if evidence:
             texture = propose_texture_mask(rgb, sensitivity)
-            if texture.any() and _worth_removing(rgb, texture):
-                return texture, TEXTURE, evidence
-    return np.zeros(rgb.shape[:2], np.uint8), NONE, evidence
+            if texture.any():
+                probe, worth = _worth_removing(rgb, texture)
+                if worth:
+                    return texture, TEXTURE, evidence, probe
+    return np.zeros(rgb.shape[:2], np.uint8), NONE, evidence, None
 
 
-def _worth_removing(rgb: np.ndarray, mask: np.ndarray) -> bool:
+def _worth_removing(
+    rgb: np.ndarray, mask: np.ndarray
+) -> tuple[np.ndarray | None, bool]:
+    """The cv2 probe the gate ran, and whether removing ``mask`` is worth it."""
     # Imported at call time: pipeline imports this module.
-    from .pipeline import DEFAULT_DILATE_PX, would_destroy_content
+    from .pipeline import DEFAULT_DILATE_PX, probe_removal
 
-    return not would_destroy_content(rgb, mask, DEFAULT_DILATE_PX)
+    probe, destroys = probe_removal(rgb, mask, DEFAULT_DILATE_PX)
+    return probe, not destroys
 
 
 def repeating_evidence(rgb: np.ndarray) -> bool:

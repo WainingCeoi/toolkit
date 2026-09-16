@@ -628,7 +628,7 @@ def test_auto_withholds_a_fallback_mask_it_would_not_be_allowed_to_use():
     assert np.count_nonzero(mask) == 0
 
     real = detect._worth_removing
-    detect._worth_removing = lambda rgb, m: True
+    detect._worth_removing = lambda rgb, m: (None, True)
     try:
         ungated, kind = propose_mask_detailed(page, 50, detector="auto")
     finally:
