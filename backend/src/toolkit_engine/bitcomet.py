@@ -8,6 +8,7 @@ import hmac
 import ipaddress
 import json
 import os
+import threading
 import uuid
 import xml.etree.ElementTree as ET
 from contextlib import suppress
@@ -285,6 +286,8 @@ class BitCometClient:
         # Fixed at construction so save-folder and timeout rules always agree.
         self.is_local = is_local_host(urlsplit(self.base_url).hostname or "")
         self._device_token: str | None = None
+        # One handshake at a time: ten threads on a fresh client would all log in.
+        self._login_lock = threading.Lock()
         self._server_name: str | None = None
         # .torrent size cap, read from BitComet on first use.
         self._torrent_max_size: int | None = None
@@ -373,9 +376,10 @@ class BitCometClient:
 
     def _token(self, timeout: float | None = None) -> str:
         """The cached device_token, logging in on first use."""
-        if self._device_token is None:
-            self._device_token = self._login(timeout)
-        return self._device_token
+        with self._login_lock:
+            if self._device_token is None:
+                self._device_token = self._login(timeout)
+            return self._device_token
 
     def _login(self, timeout: float | None = None) -> str:
         """The two-step handshake: credentials -> invite_token -> device_token."""
@@ -423,9 +427,13 @@ class BitCometClient:
         timeout: float | None = None,
     ) -> dict:
         """One authenticated call, re-authenticating at most once on a 401."""
-        response = self._http(method, path, payload, self._token(timeout), timeout)
+        token = self._token(timeout)
+        response = self._http(method, path, payload, token, timeout)
         if response.status_code == 401:
-            self._device_token = None
+            with self._login_lock:
+                # Only the thread whose own token was rejected drops it.
+                if self._device_token == token:
+                    self._device_token = None
             response = self._http(method, path, payload, self._token(timeout), timeout)
         return self._decode(response, path)
 

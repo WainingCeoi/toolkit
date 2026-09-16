@@ -34,6 +34,11 @@ def _file(index: int, path: str, size: int) -> dict:
     }
 
 
+class _Server(ThreadingHTTPServer):
+    # A send window opens ten sockets at once; the default backlog of 5 resets them.
+    request_queue_size = 64
+
+
 class _DeniedError(Exception):
     """Answered as HTTP 401: the bearer token is missing, stale or revoked."""
 
@@ -68,7 +73,7 @@ class FakeBitComet:
         self.reject_every_token = False
 
         self._next_task_id = 1001
-        self._server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
+        self._server = _Server(("127.0.0.1", 0), self._handler())
         self._thread = threading.Thread(
             target=self._server.serve_forever,
             # shutdown() waits a full poll tick; the 0.5s default dominates the suite.

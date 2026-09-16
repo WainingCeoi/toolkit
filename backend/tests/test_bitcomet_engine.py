@@ -275,6 +275,28 @@ def test_reauth_is_attempted_only_once_before_giving_up(fake, client):
     assert fake.logins == 2
 
 
+def test_threads_starting_together_share_one_handshake(fake, client):
+    """A send window puts ten calls on one tokenless client at the same moment."""
+    ready = threading.Barrier(10)
+    failures: list[BaseException] = []
+
+    def call():
+        try:
+            ready.wait(10.0)
+            client.task_list()
+        except BaseException as exc:  # noqa: BLE001 - reported by the assertion below
+            failures.append(exc)
+
+    threads = [threading.Thread(target=call) for _ in range(10)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(15.0)
+
+    assert not failures
+    assert fake.logins == 1
+
+
 # --- TASK IDS ---
 def test_task_ids_go_out_as_strings(fake, client):
     task_id = int(fake.add_task("A", SAMPLE_FILES))
