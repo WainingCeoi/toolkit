@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from toolkit_api.main import create_app
 from toolkit_api.torrents import TorrentManager
-from toolkit_engine.bitcomet import BitCometClient
+from toolkit_engine.bitcomet import BitCometClient, BitCometError
 from toolkit_engine.torrent import bencode, parse_torrent
 
 HASH = "c9e15763f722f23e98a29decdfae341b98d53056"
@@ -143,6 +143,29 @@ def test_resolve_uploads_a_torrent_and_lists_its_files(torrent_client):
         "RARBG.txt",
     ]
     assert [f["category"] for f in body["files"]] == ["video", "subtitle", "document"]
+
+
+def test_a_torrent_resolves_ready_even_if_bitcomet_cannot_list_it_yet(
+    torrent_client, app_state, monkeypatch
+):
+    """The .torrent already holds the file list; only stageMagnet ever polls."""
+
+    def no_listing(task_id):
+        raise BitCometError("BitComet returned HTTP 500 for /api/task/files/get")
+
+    monkeypatch.setattr(app_state.torrents.client, "files", no_listing)
+    body = torrent_client.post(
+        "/api/torrent/resolve",
+        files={"file": ("Example.torrent", sample_torrent(), TORRENT_MIME)},
+    ).json()
+
+    assert body["state"] == "awaiting_selection"
+    assert body["ready"] is True
+    assert [f["path"] for f in body["files"]] == [
+        "Movie.mkv",
+        "Movie.chi.srt",
+        "RARBG.txt",
+    ]
 
 
 def test_a_torrent_is_staged_stopped_so_nothing_downloads_during_review(

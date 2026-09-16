@@ -149,7 +149,8 @@ class TorrentManager:
         folder = self._stage_folder(save_dir)
         added = self.client.add_torrent(data, folder, start_later=True)
         self._staged.add(info.infohash)
-        files = self._files_if_ready(added["task_id"])
+        # Nothing polls a .torrent card, so it must never answer awaiting_metadata.
+        files = self._files_if_ready(added["task_id"]) or info.files
         return self._payload(
             info.infohash,
             info.name,
