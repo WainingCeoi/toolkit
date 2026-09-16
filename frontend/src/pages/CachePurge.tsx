@@ -13,11 +13,16 @@ const DEFAULT_PATTERNS = '*.dwl *.dwl2 *.bak *.log *.db *.tmp *.err'
 const PREVIEW_LIMIT = 200
 
 // Mirrors the backend's normalize_pattern; keep them in sync.
+const GLOB_CHARS = /[*?[\]{}]/
+// Whole bracket expression: it matches one arbitrary char, so `*[!/]*` is a catch-all.
+const BRACKET = /\[!?\]?[^\]]*\]/g
+const EDGES = /^[*?.{},]+|[*?.{},]+$/g
+
 function normalizeToken(raw: string): string | null {
   const token = raw.trim()
-  if (!token || ['*', '*.*', '**', '*.', '.*', '?'].includes(token)) return null
-  if (token.includes('*') || token.includes('?')) return token
-  return `*.${token.replace(/^\.+/, '')}`
+  if (!token) return null
+  if (!GLOB_CHARS.test(token)) return `*.${token.replace(/^\.+/, '')}`
+  return token.replace(BRACKET, '').replace(EDGES, '') ? token : null
 }
 
 function livePatterns(raw: string): string[] {
