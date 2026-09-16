@@ -282,13 +282,15 @@ def run(
     def stop(phase: str, done: int = 0, total: int = 0) -> bool:
         return on_progress is not None and on_progress(phase, done, total)
 
-    stop("plan")
+    if stop("plan"):
+        return Result(plan=Plan())
     p = plan(src, rules)
     r = Result(plan=p, errors=list(p.errors))
     db = "database/Photos.sqlite"
     if dry_run:
         planned = set(p.keep) | set(p.snapshot)
-        stop("verify")
+        if stop("verify"):
+            return r
         r.problems, r.assets, r.edited = verify(src / db, planned.__contains__)
         r.verified = True
         return r
@@ -359,7 +361,8 @@ def run(
                     _delete(shutil.rmtree, path, rel + "/", r)
         r.deleted.sort()
 
-    stop("verify")
+    if stop("verify"):
+        return r
     r.problems, r.assets, r.edited = verify(
         dest / db, lambda rel: (dest / rel).exists()
     )

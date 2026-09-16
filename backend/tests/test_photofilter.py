@@ -410,6 +410,19 @@ def test_an_undeletable_entry_is_reported_and_the_run_carries_on(tmp_path):
     assert r.deleted == [] and r.verified
 
 
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_a_cancel_before_the_verify_leaves_the_run_unverified(tmp_path, dry_run):
+    src, dest = build_src(tmp_path), tmp_path / "Dest.photoslibrary"
+
+    def stop_at_verify(phase, done, total):
+        return phase == "verify"
+
+    r = pf.run(src, dest, pf.compile_rules(RULES), dry_run, stop_at_verify)
+
+    assert not r.verified
+    assert (r.assets, r.edited, r.problems) == (0, 0, [])
+
+
 def test_skip_needs_the_exact_mtime_not_a_near_one(tmp_path):
     # scandir-rs mtimes are doubles (~0.5us); the skip decision uses an exact stat.
     src, dest = build_src(tmp_path), tmp_path / "Dest.photoslibrary"
