@@ -13,6 +13,7 @@ import {
   retryableSend,
   ruleKey,
   selectionFor,
+  selectionUnder,
   truncateMiddle,
   updateTorrent,
   windowedRun,
@@ -357,6 +358,32 @@ describe('windowedRun', () => {
 
   it('resolves immediately for an empty list', async () => {
     await windowedRun([], () => Promise.resolve(), 10)
+  })
+})
+
+describe('selectionUnder', () => {
+  const rules = { overrides: new Map(), categories: new Set(['video']), minMb: 100 }
+
+  it('falls back to the shared filter when a torrent has no ticks', () => {
+    expect(selectionUnder(torrent('a'), rules)).toEqual(new Set([1]))
+  })
+
+  it('applies the ticks made under the filter in force', () => {
+    const key = ruleKey('a', rules.categories, rules.minMb)
+    const overrides = new Map([['a', { key, map: new Map([[3, true]]) }]])
+    expect(selectionUnder(torrent('a'), { ...rules, overrides })).toEqual(new Set([1, 3]))
+  })
+
+  it('drops ticks made under an older filter', () => {
+    const stale = ruleKey('a', rules.categories, 200)
+    const overrides = new Map([['a', { key: stale, map: new Map([[3, true]]) }]])
+    expect(selectionUnder(torrent('a'), { ...rules, overrides })).toEqual(new Set([1]))
+  })
+
+  it("never lends one torrent another's ticks", () => {
+    const key = ruleKey('a', rules.categories, rules.minMb)
+    const overrides = new Map([['a', { key, map: new Map([[1, false]]) }]])
+    expect(selectionUnder(torrent('b'), { ...rules, overrides })).toEqual(new Set([1]))
   })
 })
 

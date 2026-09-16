@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../api'
 import { useToolActive, useToolBusy } from '../toolHost'
 import Button from '../components/Button'
@@ -8,14 +8,13 @@ import FolderField from '../components/FolderField'
 import {
   CATEGORIES,
   DEFAULT_SAVE_DIR,
-  MB,
   addTorrent,
   formatBytes,
   magnetLink,
   parseMagnetLines,
   retryableSend,
   ruleKey,
-  selectionFor,
+  selectionUnder,
   truncateMiddle,
   updateTorrent,
   windowedRun,
@@ -24,12 +23,11 @@ import type {
   TorrentDevice,
   TorrentDeviceList,
   TorrentDeviceTest,
-  TorrentFileRow,
   TorrentResolve,
   TorrentStatus,
 } from '../types/api'
 
-const NO_OVERRIDES: ReadonlyMap<number, boolean> = new Map()
+const NO_SELECTION: ReadonlySet<number> = new Set()
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 const errMsg = (e: unknown, fallback: string) => (e as Error).message || fallback
 
@@ -62,23 +60,24 @@ function magnetLabel(uri: string): string {
   return uri.match(/btih:([a-z0-9]+)/i)?.[1]?.slice(0, 12) ?? uri.slice(0, 24)
 }
 
-function FileList({
-  files,
+// Memoized: a season pack is thousands of rows, and every page keystroke re-renders.
+const FileList = memo(function FileList({
+  torrent,
   selected,
   onToggle,
 }: {
-  files: TorrentFileRow[]
-  selected: Set<number>
-  onToggle: (index: number) => void
+  torrent: TorrentResolve
+  selected: ReadonlySet<number>
+  onToggle: (t: TorrentResolve, index: number) => void
 }) {
   return (
     <div className="tor-files">
-      {files.map((file) => (
+      {torrent.files.map((file) => (
         <label key={file.index} className="tor-file" title={file.path}>
           <input
             type="checkbox"
             checked={selected.has(file.index)}
-            onChange={() => onToggle(file.index)}
+            onChange={() => onToggle(torrent, file.index)}
           />
           {/* Middle-truncated: the tail carries the extension and episode tag. */}
           <span className="tor-path">{truncateMiddle(file.path, 56)}</span>
@@ -88,7 +87,7 @@ function FileList({
       ))}
     </div>
   )
-}
+})
 
 export default function TorrentDownloader() {
   const [status, setStatus] = useState<TorrentStatus | null>(null)
@@ -274,11 +273,14 @@ export default function TorrentDownloader() {
   liveSelection.current = { overrides, categories, minMb }
 
   function selectedFor(t: TorrentResolve): Set<number> {
-    const { overrides: live, categories: cats, minMb: floor } = liveSelection.current
-    const entry = live.get(t.infohash)
-    const active = entry && entry.key === ruleKey(t.infohash, cats, floor) ? entry.map : NO_OVERRIDES
-    return selectionFor(t, cats, floor * MB, active)
+    return selectionUnder(t, liveSelection.current)
   }
+
+  // Rendered ticks, computed once per torrent: unrelated state must not re-tick every file.
+  const selections = useMemo(() => {
+    const rules = { overrides, categories, minMb }
+    return new Map(resolved.map((t) => [t.infohash, selectionUnder(t, rules)]))
+  }, [resolved, overrides, categories, minMb])
 
   // Discard deletes the task in BitComet, so a poll crossing it 404s; that is not a failure.
   const discarded = useRef<Set<string>>(new Set())
@@ -484,9 +486,10 @@ export default function TorrentDownloader() {
     })
   }
 
-  function toggleFile(t: TorrentResolve, index: number) {
-    const key = ruleKey(t.infohash, categories, minMb)
-    const current = selectedFor(t)
+  const toggleFile = useCallback((t: TorrentResolve, index: number) => {
+    const { categories: cats, minMb: floor } = liveSelection.current
+    const key = ruleKey(t.infohash, cats, floor)
+    const current = selectionUnder(t, liveSelection.current)
     setOverrides((prev) => {
       const entry = prev.get(t.infohash)
       const map = new Map(entry && entry.key === key ? entry.map : [])
@@ -495,7 +498,7 @@ export default function TorrentDownloader() {
       next.set(t.infohash, { key, map })
       return next
     })
-  }
+  }, [])
 
   function setAllFiles(t: TorrentResolve, on: boolean) {
     const key = ruleKey(t.infohash, categories, minMb)
@@ -518,7 +521,9 @@ export default function TorrentDownloader() {
   const bitcometDown = status !== null && !status.running
   const nothingToResolve = parseMagnetLines(magnets).length === 0 && pendingFiles.length === 0
   const noDestination = !saveDir.trim()
-  const readyCount = resolved.filter((t) => t.ready && selectedFor(t).size > 0).length
+  const readyCount = resolved.filter(
+    (t) => t.ready && (selections.get(t.infohash) ?? NO_SELECTION).size > 0,
+  ).length
   const active = status?.device ?? devices?.devices.find((d) => d.id === devices.active) ?? null
   const remote = status?.is_local === false
   const folders = status?.save_folders ?? []
@@ -862,7 +867,7 @@ export default function TorrentDownloader() {
 
           <div className="tor-list">
             {resolved.map((t) => {
-              const selected = selectedFor(t)
+              const selected = selections.get(t.infohash) ?? NO_SELECTION
               const bytes = t.files
                 .filter((f) => selected.has(f.index))
                 .reduce((sum, f) => sum + f.size, 0)
@@ -928,11 +933,7 @@ export default function TorrentDownloader() {
                           ticks override the filter above
                         </span>
                       </div>
-                      <FileList
-                        files={t.files}
-                        selected={selected}
-                        onToggle={(index) => toggleFile(t, index)}
-                      />
+                      <FileList torrent={t} selected={selected} onToggle={toggleFile} />
                     </div>
                   )}
 
