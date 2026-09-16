@@ -72,6 +72,8 @@ class TorrentManager:
         self.client = client
         self.download_dir = str(download_dir)
         self._watching: dict[str, _Watch] = {}
+        # Infohashes this app added to BitComet; only these may be deleted again.
+        self._staged: set[str] = set()
 
     # --- BITCOMET LOOKUPS ---
     def _task_for(self, infohash: str) -> dict | None:
@@ -146,6 +148,7 @@ class TorrentManager:
 
         folder = self._stage_folder(save_dir)
         added = self.client.add_torrent(data, folder, start_later=True)
+        self._staged.add(info.infohash)
         files = self._files_if_ready(added["task_id"])
         return self._payload(
             info.infohash,
@@ -168,6 +171,7 @@ class TorrentManager:
 
         folder = self._stage_folder(save_dir)
         self.client.add_magnets([uri], folder, start_later=False)
+        self._staged.add(infohash)
         # add_magnets returns no task id and answers before the task exists.
         self._watching[infohash] = _Watch(
             name=display, started=time.monotonic(), ours=True
@@ -246,6 +250,7 @@ class TorrentManager:
         self.client.action(task_id, "start")
 
         self._watching.pop(infohash, None)
+        self._staged.discard(infohash)
         return {
             "infohash": infohash,
             "task_id": task_id,
@@ -254,10 +259,14 @@ class TorrentManager:
 
     def discard(self, infohash: str) -> None:
         """Drop a staged torrent that was never sent, keeping any downloaded data."""
+        self._watching.pop(infohash, None)
+        if infohash not in self._staged:
+            # BitComet already had this one: the user's own download, not ours.
+            return
         task = self._task_for(infohash)
         if task is not None:
             self.client.delete(task["task_id"], delete_files=False)
-        self._watching.pop(infohash, None)
+        self._staged.discard(infohash)
 
     def close(self) -> None:
         """Release the HTTP session; BitComet and its downloads keep running."""

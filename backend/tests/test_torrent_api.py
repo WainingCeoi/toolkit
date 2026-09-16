@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 from toolkit_api.main import create_app
 from toolkit_api.torrents import TorrentManager
 from toolkit_engine.bitcomet import BitCometClient
-from toolkit_engine.torrent import bencode
+from toolkit_engine.torrent import bencode, parse_torrent
 
 HASH = "c9e15763f722f23e98a29decdfae341b98d53056"
 TORRENT_MIME = "application/x-bittorrent"
@@ -331,6 +331,29 @@ def test_discard_stops_a_magnet_that_is_still_fetching_metadata(torrent_client, 
     torrent_client.delete(f"/api/torrent/{HASH}")
     assert fake.tasks == {}
     assert fake.deleted and fake.deleted[0][1] is False  # (task_id, delete_all)
+
+
+def test_discard_leaves_a_magnet_bitcomet_already_had_alone(torrent_client, fake):
+    # A download the user already runs: Discard closes the card, it is not theirs.
+    fake.add_task("Seeding Already", [("Movie.mkv", 10)], HASH)
+    torrent_client.post("/api/torrent/resolve", data={"magnet": MAGNET})
+
+    assert torrent_client.delete(f"/api/torrent/{HASH}").status_code == 200
+    assert len(fake.tasks) == 1
+    assert fake.deleted == []
+
+
+def test_discard_leaves_a_torrent_bitcomet_already_had_alone(torrent_client, fake):
+    infohash = parse_torrent(sample_torrent()).infohash
+    fake.add_task("Seeding Already", [("Movie.mkv", 10)], infohash)
+    torrent_client.post(
+        "/api/torrent/resolve",
+        files={"file": ("Example.torrent", sample_torrent(), TORRENT_MIME)},
+    )
+
+    assert torrent_client.delete(f"/api/torrent/{infohash}").status_code == 200
+    assert len(fake.tasks) == 1
+    assert fake.deleted == []
 
 
 def test_discard_keeps_the_downloaded_data(torrent_client, fake):
