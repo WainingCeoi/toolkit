@@ -136,6 +136,10 @@ def plan(src: Path | str, rules: list[Rule]) -> Plan:
             p.snapshot.append(rel)
         else:
             p.keep.append(rel)
+    # scandir-rs drops a directory it cannot open without reporting an error.
+    for rel in ("", *p.dirs):
+        if not os.access(os.path.join(src, rel), os.R_OK | os.X_OK):
+            p.errors.append(f"unreadable directory: {rel or '.'}")
     return p
 
 
@@ -249,6 +253,15 @@ def check_paths(src: Path | str, dest: Path | str) -> tuple[Path, Path]:
     return src, dest
 
 
+def _delete(remove: Callable[[str], None], path: str, rel: str, r: Result) -> None:
+    try:
+        remove(path)
+    except OSError as e:
+        r.errors.append(f"delete failed for {rel}: {e}")
+    else:
+        r.deleted.append(rel)
+
+
 # (phase, done, total) -> True to stop; total is 0 when unknown up front.
 Progress = Callable[[str, int, int], bool]
 
@@ -323,22 +336,28 @@ def run(
             r.errors.append(f"snapshot failed for {rel}: {e}")
 
     wanted_files, wanted_dirs = set(p.keep) | set(p.snapshot), set(p.dirs)
-    for root, dnames, fnames in os.walk(dest, topdown=False):
-        if stop("delete", len(r.deleted)):
-            r.deleted.sort()
-            return r
-        rel_root = os.path.relpath(root, dest)
-        for f in fnames:
-            rel = _join(rel_root, f)
-            if rel not in wanted_files:
-                os.remove(os.path.join(root, f))
-                r.deleted.append(rel)
-        for d in dnames:
-            rel = _join(rel_root, d)
-            if rel not in wanted_dirs:
-                shutil.rmtree(os.path.join(root, d))
-                r.deleted.append(rel + "/")
-    r.deleted.sort()
+    if p.errors:
+        # An incomplete scan must never prune the mirror down to what it did see.
+        r.errors.append("delete skipped: the scan of SRC was incomplete")
+    else:
+        for root, dnames, fnames in os.walk(dest, topdown=False):
+            if stop("delete", len(r.deleted)):
+                r.deleted.sort()
+                return r
+            rel_root = os.path.relpath(root, dest)
+            for f in fnames:
+                rel = _join(rel_root, f)
+                if rel not in wanted_files:
+                    _delete(os.remove, os.path.join(root, f), rel, r)
+            for d in dnames:
+                rel, path = _join(rel_root, d), os.path.join(root, d)
+                if os.path.islink(path):
+                    # os.walk files a symlink to a dir here, and rmtree refuses one.
+                    if rel not in wanted_files:
+                        _delete(os.remove, path, rel, r)
+                elif rel not in wanted_dirs:
+                    _delete(shutil.rmtree, path, rel + "/", r)
+        r.deleted.sort()
 
     stop("verify")
     r.problems, r.assets, r.edited = verify(

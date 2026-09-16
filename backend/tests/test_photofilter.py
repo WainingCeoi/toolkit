@@ -358,6 +358,58 @@ def test_stop_request_returns_the_partial_result_unverified(tmp_path):
     assert not (dest / "database/Photos.sqlite").exists()
 
 
+def test_an_unreadable_source_dir_is_reported_and_spares_the_mirror(tmp_path):
+    # scandir-rs omits a directory it cannot open and reports no error for it.
+    src, dest = build_src(tmp_path), tmp_path / "Dest.photoslibrary"
+    pf.run(src, dest, pf.compile_rules(RULES))
+    os.chmod(src / "originals/A", 0)
+    try:
+        r = pf.run(src, dest, pf.compile_rules(RULES))
+    finally:
+        os.chmod(src / "originals/A", 0o755)
+
+    assert "unreadable directory: originals/A" in r.errors
+    assert "delete skipped: the scan of SRC was incomplete" in r.errors
+    assert r.deleted == []
+    assert (dest / "originals/A/AAAA-1.heic").exists()
+
+
+def test_a_symlinked_directory_does_not_abort_the_delete_phase(tmp_path):
+    src, dest = build_src(tmp_path), tmp_path / "Dest.photoslibrary"
+    elsewhere = tmp_path / "elsewhere"
+    touch(elsewhere, "inner.txt")
+    os.symlink(elsewhere, src / "linkdir")
+
+    r = pf.run(src, dest, pf.compile_rules(RULES))
+
+    assert r.errors == [] and r.verified
+    assert os.path.islink(dest / "linkdir")
+
+    # A symlinked dir left in the destination is unlinked, never walked through.
+    os.symlink(elsewhere, dest / "stale-link")
+    r2 = pf.run(src, dest, pf.compile_rules(RULES))
+
+    assert r2.deleted == ["stale-link"]
+    assert (elsewhere / "inner.txt").exists()
+
+
+def test_an_undeletable_entry_is_reported_and_the_run_carries_on(tmp_path):
+    src, dest = build_src(tmp_path), tmp_path / "Dest.photoslibrary"
+    pf.run(src, dest, pf.compile_rules(RULES))
+    stale = touch(dest, "resources/derivatives/stale.jpeg")
+    os.chmod(stale.parent, 0o500)
+    try:
+        r = pf.run(src, dest, pf.compile_rules(RULES))
+    finally:
+        os.chmod(stale.parent, 0o700)
+
+    assert r.errors == [
+        "delete failed for resources/derivatives/stale.jpeg: "
+        f"[Errno 13] Permission denied: '{stale}'"
+    ]
+    assert r.deleted == [] and r.verified
+
+
 def test_skip_needs_the_exact_mtime_not_a_near_one(tmp_path):
     # scandir-rs mtimes are doubles (~0.5us); the skip decision uses an exact stat.
     src, dest = build_src(tmp_path), tmp_path / "Dest.photoslibrary"
