@@ -45,7 +45,9 @@ def whitened(gray: np.ndarray, background: int = _MATCH_BG) -> np.ndarray:
     return res / (np.sqrt(energy) + 1.0)
 
 
-def _score_field(padded: np.ndarray, patch: np.ndarray, substance: np.ndarray):
+def _score_field(
+    padded: np.ndarray, patch: np.ndarray, substance: np.ndarray
+) -> np.ndarray:
     """Correlation of ``patch`` over the zero-padded field, given its window std."""
     score = cv2.matchTemplate(padded, patch, cv2.TM_CCOEFF_NORMED)
     # TM_CCOEFF_NORMED returns 1.0 over a flat window (0/0), so those are zeroed.
