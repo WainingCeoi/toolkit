@@ -137,9 +137,12 @@ export default function TorrentDownloader() {
 
   // Keyed on tab visibility, not mount: keep-alive keeps this page mounted all session.
   const tabActive = useToolActive()
+  // Probing a sleeping remote takes seconds; only the newest probe may write status.
+  const statusSeq = useRef(0)
   useEffect(() => {
     if (!tabActive) return
     let cancelled = false
+    const seq = (statusSeq.current += 1)
     void (async () => {
       const [next, book] = await Promise.all([
         api.torrentStatus().catch(
@@ -147,7 +150,7 @@ export default function TorrentDownloader() {
         ),
         api.torrentDevices().catch(() => null),
       ])
-      if (cancelled) return
+      if (cancelled || seq !== statusSeq.current) return
       setStatus(next)
       setDevices(book)
     })()
@@ -175,11 +178,14 @@ export default function TorrentDownloader() {
   }
 
   async function refreshStatus() {
+    const seq = (statusSeq.current += 1)
+    let next: TorrentStatus
     try {
-      setStatus(await api.torrentStatus())
+      next = await api.torrentStatus()
     } catch {
-      setStatus({ running: false, server: null, detail: null, url: null })
+      next = { running: false, server: null, detail: null, url: null }
     }
+    if (seq === statusSeq.current) setStatus(next)
   }
 
   function pushFailure(id: string, magnet: string | null = null, reason: string | null = null) {
@@ -696,9 +702,9 @@ export default function TorrentDownloader() {
                   )}
                 </div>
               )}
-              {deviceError && <div className="note error">{deviceError}</div>}
             </div>
           )}
+          {deviceError && <div className="note error">{deviceError}</div>}
         </div>
       )}
 
