@@ -140,6 +140,11 @@ class BrowserSession:
         self._driver = driver
         self.url = url
 
+    @property
+    def current_url(self) -> str | None:
+        """Where Chrome is now: the user may have navigated since open()."""
+        return self._driver.current_url or self.url
+
     def page_source(self) -> str:
         return self._driver.page_source
 

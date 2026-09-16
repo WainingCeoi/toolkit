@@ -6,6 +6,7 @@ import base64
 import threading
 import time
 from io import BytesIO
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -46,6 +47,7 @@ class FakeBrowserSession:
     def __init__(self, html=""):
         self._html = html
         self.url = "not-a-url"
+        self.current_url = self.url
         self.quit_called = False
 
     @property
@@ -220,6 +222,13 @@ def test_browser_session_shutdown_alias_and_safe_quit():
     assert BrowserSession.shutdown is BrowserSession.quit
 
 
+def test_browser_session_current_url_follows_the_driver():
+    session = BrowserSession()
+    session.url = "http://example.com/start"
+    session._driver = SimpleNamespace(current_url="http://example.com/chapter-2")
+    assert session.current_url == "http://example.com/chapter-2"
+
+
 # --- Web Images to PDF — router ---
 def test_webpdf_status_reflects_browser_slot(tool_client, app_state):
     assert tool_client.get("/api/webpdf/status").json() == {"open": False}
@@ -272,6 +281,24 @@ def test_webpdf_capture_no_images_is_400_and_keeps_browser(tool_client, app_stat
     assert resp.json()["detail"] == NO_IMAGES_DETAIL
     assert app_state.browser is fake
     assert fake.quit_called is False
+
+
+def test_webpdf_capture_resolves_images_against_the_current_page(
+    tool_client, app_state, monkeypatch
+):
+    seen = {}
+
+    def spy(page_source, page_url):
+        seen["url"] = page_url
+        return "x.pdf", [], 0
+
+    monkeypatch.setattr(webpdf, "scrape_images_from_source", spy)
+    fake = FakeBrowserSession("<html><body></body></html>")
+    fake.current_url = "http://example.com/chapter-2"  # the user browsed on
+    app_state.browser = fake
+
+    assert tool_client.post("/api/webpdf/capture").status_code == 400
+    assert seen["url"] == "http://example.com/chapter-2"
 
 
 def test_webpdf_capture_builds_pdf_and_closes_browser(tool_client, app_state):

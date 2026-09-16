@@ -80,10 +80,11 @@ def capture(state: StateDep, artifacts: ArtifactsDep) -> CaptureOut:
         if not _session_open(state):
             raise HTTPException(status_code=409, detail="No browser session is open.")
         session = state.browser
-    url = session.url or ""
     try:
         page_source = session.page_source()
-        pdf_name, images, skipped = scrape_images_from_source(page_source, url)
+        pdf_name, images, skipped = scrape_images_from_source(
+            page_source, session.current_url or ""
+        )
         if not images:
             # Leave the browser open for a retry.
             raise HTTPException(
