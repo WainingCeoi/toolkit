@@ -30,7 +30,7 @@ def wait_for_job(client, job_id, timeout=5.0):
     raise AssertionError(f"job {job_id} did not finish within {timeout}s")
 
 
-# ---------------------------------------------------------------- dedupe ---
+# --- dedupe ---
 
 
 def test_dedupe_removes_duplicates_and_preserves_first_seen_order(tool_client):
@@ -48,7 +48,7 @@ def test_dedupe_empty_is_400_with_page_warning(tool_client):
     assert resp.json()["detail"] == "Please enter at least one magnet link"
 
 
-# ------------------------------------------------------------------ auto ---
+# --- auto ---
 
 
 def test_auto_missing_website_url_fails_with_page_error(
@@ -134,6 +134,74 @@ def test_auto_happy_path_advances_cutoff_and_scrapes(
     assert "https://site.test/v5" in env_file.read_text()
 
 
+def test_auto_holds_the_cutoff_behind_a_failed_fetch(
+    tool_client, monkeypatch, tmp_path
+):
+    env_file = tmp_path / ".env"
+    env_file.write_text('CUTOFF_VIDEO="https://site.test/v3"\n')
+    monkeypatch.setattr(magnet_engine, "ENV_PATH", env_file)
+    monkeypatch.setenv("WEBSITE_URL", "https://site.test")
+    monkeypatch.setenv("CUTOFF_VIDEO", "https://site.test/v3")
+
+    pages = {
+        "https://site.test/page/1/": _page_html(
+            ["https://site.test/v6", "https://site.test/v5", "https://site.test/v4"]
+        ),
+        "https://site.test/page/2/": _page_html(["https://site.test/v3"]),
+    }
+
+    def fake_requests_get(url, timeout=10):
+        return FakeResponse(pages[url])
+
+    def fake_get_magnet_link(url):
+        if url == "https://site.test/v5":
+            return {"success": False, "url": url, "reason": "timed out"}
+        return {"success": True, "result": f"magnet:?xt={url}"}
+
+    monkeypatch.setattr(magnet_engine.requests, "get", fake_requests_get)
+    monkeypatch.setattr(magnet_engine, "get_magnet_link", fake_get_magnet_link)
+
+    resp = tool_client.post("/api/magnet/auto", json={"start_page": 1})
+    snap = wait_for_job(tool_client, resp.json()["job_id"])
+    assert snap["state"] == "done"
+    assert [r["url"] for r in snap["result"]["failed"]] == ["https://site.test/v5"]
+    # v4 is the newest video older than the failure, so a rerun still sees v5.
+    assert "CUTOFF_VIDEO='https://site.test/v4'" in env_file.read_text()
+
+
+def test_auto_leaves_the_cutoff_alone_when_the_oldest_fetch_failed(
+    tool_client, monkeypatch, tmp_path
+):
+    env_file = tmp_path / ".env"
+    env_file.write_text('CUTOFF_VIDEO="https://site.test/v3"\n')
+    monkeypatch.setattr(magnet_engine, "ENV_PATH", env_file)
+    monkeypatch.setenv("WEBSITE_URL", "https://site.test")
+    monkeypatch.setenv("CUTOFF_VIDEO", "https://site.test/v3")
+
+    pages = {
+        "https://site.test/page/1/": _page_html(
+            ["https://site.test/v5", "https://site.test/v4"]
+        ),
+        "https://site.test/page/2/": _page_html(["https://site.test/v3"]),
+    }
+
+    def fake_requests_get(url, timeout=10):
+        return FakeResponse(pages[url])
+
+    def fake_get_magnet_link(url):
+        if url == "https://site.test/v4":
+            return {"success": False, "url": url, "reason": "timed out"}
+        return {"success": True, "result": f"magnet:?xt={url}"}
+
+    monkeypatch.setattr(magnet_engine.requests, "get", fake_requests_get)
+    monkeypatch.setattr(magnet_engine, "get_magnet_link", fake_get_magnet_link)
+
+    resp = tool_client.post("/api/magnet/auto", json={"start_page": 1})
+    snap = wait_for_job(tool_client, resp.json()["job_id"])
+    assert snap["state"] == "done"
+    assert 'CUTOFF_VIDEO="https://site.test/v3"' in env_file.read_text()
+
+
 def test_auto_cancel_during_scrape_does_not_advance_cutoff(
     tool_client, monkeypatch, tmp_path
 ):
@@ -205,7 +273,7 @@ def test_auto_cutoff_not_found_warns_and_leaves_env_alone(
     assert env_file.read_text() == 'CUTOFF_VIDEO="https://site.test/gone"\n'
 
 
-# ---------------------------------------------------------------- manual ---
+# --- manual ---
 
 
 def test_manual_scrape_splits_successful_and_failed(tool_client, monkeypatch):
@@ -283,7 +351,7 @@ def test_manual_empty_is_400_with_page_warning(tool_client):
     assert resp.json()["detail"] == "Please enter at least one URL"
 
 
-# ------------------------------------------------- find_unwatched_urls -----
+# --- find_unwatched_urls ---
 
 
 def test_find_unwatched_urls_slices_at_cutoff(monkeypatch):

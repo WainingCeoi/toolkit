@@ -26,7 +26,6 @@ class AppState:
     browser: Any = None
     # LibreOffice shares one user profile, so conversions must not overlap.
     soffice_lock: threading.Lock = field(default_factory=threading.Lock)
-    # Serializes every check-then-set of ``browser``.
     browser_lock: threading.Lock = field(default_factory=threading.Lock)
     # The TorrentManager; None when injected (tests) or BitComet is unconfigured.
     torrents: Any = None

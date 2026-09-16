@@ -16,8 +16,7 @@ from ..schemas import JobStartedOut
 
 router = APIRouter(prefix="/remux", tags=["remux"])
 
-# ffmpeg protocols like "concat:" and "pipe:" have no "//"; two-plus characters
-# before the colon rules out a Windows drive letter.
+# Protocols like "concat:" have no "//"; 2+ chars rules out a Windows drive letter.
 _SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]+:")
 
 
@@ -133,8 +132,10 @@ def start(req: StartIn, jobs: JobsDep) -> JobStartedOut:
             detail="❌ Select at least one video, audio, or subtitle track.",
         )
 
+    # The map mirrors /subtitles, whose unmatched videos carry a null subtitle.
+    ext_subs = req.external_sub_map.values() if req.use_external_sub else ()
     # Security boundary: ffmpeg fetches URLs itself, so inputs must be local files.
-    for video in [*req.selected, *req.external_sub_map.values()]:
+    for video in [*req.selected, *(sub for sub in ext_subs if sub)]:
         if not video or "://" in video or _SCHEME.match(video):
             raise HTTPException(
                 status_code=400,
@@ -153,14 +154,13 @@ def start(req: StartIn, jobs: JobsDep) -> JobStartedOut:
             status_code=400, detail=f"❌ Cannot create the output folder: {e}"
         ) from e
 
-    # ffmpeg's same-file guard compares strings only, so an output that resolves to
-    # the source (/tmp vs /private/tmp) would truncate it; compare resolved paths.
+    # Match by inode: ffmpeg's same-file guard is string-only, resolve() folds no case.
     out_resolved = out_path.resolve()
     seen_outputs: set[str] = set()
     for video in req.selected:
         name = Path(video).name
         dest = out_resolved / name
-        if dest == Path(video).expanduser().resolve():
+        if dest.exists() and dest.samefile(Path(video).expanduser()):
             raise HTTPException(
                 status_code=400,
                 detail=(
@@ -197,10 +197,12 @@ def start(req: StartIn, jobs: JobsDep) -> JobStartedOut:
 
     def worker(job):
         results = run_remux_batch(tasks, max_workers, job)
-        successful = [r for r in results if r["success"]]
-        failed = [r for r in results if not r["success"]]
+        # A task killed on cancel neither succeeded nor failed; leave it uncounted.
+        finished = [r for r in results if not r.get("cancelled")]
+        successful = [r for r in finished if r["success"]]
+        failed = [r for r in finished if not r["success"]]
         return {
-            "total": len(results),
+            "total": len(finished),
             "successful": len(successful),
             "failed": [{"title": r["title"], "error": r["error"]} for r in failed],
             "out_folder": str(out_path),

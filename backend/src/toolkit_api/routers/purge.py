@@ -49,7 +49,11 @@ def scan_folder(req: PurgeScanIn, scans: PurgeScansDep) -> PurgeScanOut:
         raise HTTPException(
             status_code=400, detail="❌ Enter at least one extension / pattern."
         )
-    files, errors, total_bytes = purge.scan_folder(src, patterns)
+    try:
+        files, errors, total_bytes = purge.scan_folder(src, patterns)
+    except OSError as e:
+        # The Rust glob matcher rejects malformed brackets like '*.[abc'.
+        raise HTTPException(status_code=400, detail=f"❌ Invalid pattern: {e}") from e
     return PurgeScanOut(
         scan_id=scans.put(str(src), files),
         files=files,

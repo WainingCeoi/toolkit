@@ -29,7 +29,6 @@ METADATA_TIMEOUT = 120.0
 # task_guid is "bt_<infohash>", the only place BitComet's API exposes the infohash.
 GUID_PREFIX = "bt_"
 
-# The three answers a resolve can give.
 AWAITING_METADATA = "awaiting_metadata"
 AWAITING_SELECTION = "awaiting_selection"
 FAILED = "error"
@@ -72,6 +71,8 @@ class TorrentManager:
         self.client = client
         self.download_dir = str(download_dir)
         self._watching: dict[str, _Watch] = {}
+        # Infohashes this app added to BitComet; only these may be deleted again.
+        self._staged: set[str] = set()
 
     # --- BITCOMET LOOKUPS ---
     def _task_for(self, infohash: str) -> dict | None:
@@ -118,7 +119,6 @@ class TorrentManager:
     def _payload(
         self, infohash: str, name: str | None, files: list[TorrentFile], state: str
     ) -> dict:
-        """The shape every resolve/poll answer takes."""
         return {
             "infohash": infohash,
             "ready": bool(files),
@@ -128,7 +128,6 @@ class TorrentManager:
         }
 
     def _staged_payload(self, infohash: str, task: dict, name: str | None) -> dict:
-        """The answer for a torrent already in BitComet, ready or not."""
         files = self._files_if_ready(task["task_id"])
         display = name or task.get("task_name") or None
         return self._payload(
@@ -146,7 +145,9 @@ class TorrentManager:
 
         folder = self._stage_folder(save_dir)
         added = self.client.add_torrent(data, folder, start_later=True)
-        files = self._files_if_ready(added["task_id"])
+        self._staged.add(info.infohash)
+        # Nothing polls a .torrent card, so it must never answer awaiting_metadata.
+        files = self._files_if_ready(added["task_id"]) or info.files
         return self._payload(
             info.infohash,
             info.name,
@@ -168,6 +169,7 @@ class TorrentManager:
 
         folder = self._stage_folder(save_dir)
         self.client.add_magnets([uri], folder, start_later=False)
+        self._staged.add(infohash)
         # add_magnets returns no task id and answers before the task exists.
         self._watching[infohash] = _Watch(
             name=display, started=time.monotonic(), ours=True
@@ -175,7 +177,6 @@ class TorrentManager:
         return self._payload(infohash, display, [], AWAITING_METADATA)
 
     def poll_resolve(self, infohash: str) -> dict:
-        """Has this magnet's metadata landed yet?"""
         watch = self._watching.get(infohash)
         task = self._task_for(infohash)
 
@@ -196,8 +197,7 @@ class TorrentManager:
             return self._still_waiting(infohash, watch)
 
         if watch is not None and watch.ours:
-            # Deselect everything the moment metadata lands: the task is running and
-            # would otherwise download the whole torrent while the user chooses.
+            # Deselect at once: the task is running and would fetch the whole torrent.
             self.client.set_priority(
                 task["task_id"], [f.index for f in files], DESELECTED
             )
@@ -207,7 +207,6 @@ class TorrentManager:
         return self._payload(infohash, name, files, AWAITING_SELECTION)
 
     def _still_waiting(self, infohash: str, watch: _Watch) -> dict:
-        """Keep waiting, unless the deadline has passed -- then give up."""
         if time.monotonic() - watch.started <= METADATA_TIMEOUT:
             return self._payload(infohash, watch.name, [], AWAITING_METADATA)
 
@@ -219,8 +218,7 @@ class TorrentManager:
 
     # --- HANDOVER ---
     def send(self, infohash: str, selected: list[int]) -> dict:
-        """Apply the tick list to BitComet and start the task. Both directions are
-        sent: a magnet's files are all disabled while it waits."""
+        """Apply the tick list to BitComet and start the task; both ways are sent."""
         task = self._task_for(infohash)
         if task is None:
             raise KeyError(infohash)
@@ -246,6 +244,7 @@ class TorrentManager:
         self.client.action(task_id, "start")
 
         self._watching.pop(infohash, None)
+        self._staged.discard(infohash)
         return {
             "infohash": infohash,
             "task_id": task_id,
@@ -254,10 +253,14 @@ class TorrentManager:
 
     def discard(self, infohash: str) -> None:
         """Drop a staged torrent that was never sent, keeping any downloaded data."""
+        self._watching.pop(infohash, None)
+        if infohash not in self._staged:
+            # BitComet already had this one: the user's own download, not ours.
+            return
         task = self._task_for(infohash)
         if task is not None:
             self.client.delete(task["task_id"], delete_files=False)
-        self._watching.pop(infohash, None)
+        self._staged.discard(infohash)
 
     def close(self) -> None:
         """Release the HTTP session; BitComet and its downloads keep running."""

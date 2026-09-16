@@ -37,10 +37,10 @@ BACKEND_DIR = Path(__file__).resolve().parents[2]
 # Shell values win; .env only fills gaps.
 load_dotenv(BACKEND_DIR / ".env")
 
-# subgen.config defaults to <repo>/data; keep runtime data under backend/data.
-os.environ.setdefault("SUB_DB_PATH", str(BACKEND_DIR / "data" / "sub.db"))
+# subgen.config defaults to <repo>/data; a blank `SUB_DB_PATH=` in .env must not win.
+if not os.environ.get("SUB_DB_PATH"):
+    os.environ["SUB_DB_PATH"] = str(BACKEND_DIR / "data" / "sub.db")
 
-# Vite dev origins.
 _DEFAULT_ORIGINS = "http://localhost:5173,http://127.0.0.1:5173"
 
 
@@ -50,7 +50,6 @@ def _cors_origins() -> list[str]:
 
 
 def _frontend_dist() -> Path | None:
-    """Built frontend location, if present (APP_STATIC_DIR or ../frontend/dist)."""
     override = os.environ.get("APP_STATIC_DIR")
     dist = Path(override) if override else BACKEND_DIR.parent / "frontend" / "dist"
     return dist if dist.is_dir() else None
@@ -81,7 +80,6 @@ def create_app(state: AppState | None = None) -> FastAPI:
         allow_headers=["*"],
     )
 
-    # Always mounted: manifest, folder picker, job streams.
     for api_router in (meta.router, fs.router, jobs.router):
         app.include_router(api_router, prefix="/api")
 
@@ -105,7 +103,8 @@ def create_app(state: AppState | None = None) -> FastAPI:
         if slug not in disabled:
             app.include_router(api_router, prefix="/api")
     # Public /sub/{id} for proxy clients; gated by SUB_ACCESS_TOKEN in the router.
-    app.include_router(subs.public_router)
+    if "subscription" not in disabled:
+        app.include_router(subs.public_router)
 
     # The built frontend, mounted last so it only catches unmatched paths.
     if not provided:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import queue
@@ -17,7 +18,6 @@ from packaging.requirements import InvalidRequirement, Requirement
 from packaging.utils import canonicalize_name
 from packaging.version import InvalidVersion, Version
 
-# Pruned during the walk, along with any dot-directory.
 _SKIP_DIRS = {
     "node_modules",
     "venv",
@@ -30,18 +30,18 @@ _SKIP_DIRS = {
     "coverage",
     "htmlcov",
 }
-_MAX_MANIFESTS = 40  # ceiling on manifests scanned
+_MAX_MANIFESTS = 40
 
 
 @dataclass(frozen=True)
 class Bump:
     """One dependency to raise: ``name old → new`` in ``table``."""
 
-    name: str  # display name, e.g. "mineru" or "eslint"
+    name: str
     table: str  # e.g. "project.dependencies" or "devDependencies"
-    old: str  # the old spec/range, e.g. ">=3.4.0" or "^9.15.0"
-    new: str  # the new spec/range, e.g. ">=6.14.2" or "^10.7.0"
-    major: bool  # True when the major version changed
+    old: str
+    new: str
+    major: bool
     raw: str  # the on-disk string verbatim (server-side only)
     raw_new: str  # its replacement (server-side only)
 
@@ -61,7 +61,7 @@ def bump_dict(bump: Bump) -> dict:
 class Manifest:
     """A dependency manifest found under the scanned root."""
 
-    path: Path  # absolute path to the pyproject.toml / package.json
+    path: Path
     kind: str  # "uv" | "npm"
     rel: str  # display path relative to the root, e.g. "backend/pyproject.toml"
 
@@ -88,11 +88,12 @@ def _is_uv_project(path: Path) -> bool:
     except OSError, tomllib.TOMLDecodeError:
         return False
     tool = data.get("tool", {})
-    return (
-        "project" in data
-        or "dependency-groups" in data
-        or (isinstance(tool, dict) and "uv" in tool)
-    )
+    if not isinstance(tool, dict):
+        tool = {}
+    # Poetry/PDM resolve their own lockfile; uv would write a second one beside it.
+    if ("poetry" in tool or "pdm" in tool) and "uv" not in tool:
+        return (path.parent / "uv.lock").is_file()
+    return "project" in data or "dependency-groups" in data or "uv" in tool
 
 
 def _has_npm_deps(path: Path) -> bool:
@@ -101,7 +102,12 @@ def _has_npm_deps(path: Path) -> bool:
         data = json.loads(path.read_text(encoding="utf-8"))
     except OSError, json.JSONDecodeError:
         return False
-    return any(isinstance(data.get(t), dict) and data.get(t) for t in _NPM_TABLES)
+    if not any(isinstance(data.get(t), dict) and data.get(t) for t in _NPM_TABLES):
+        return False
+    # pnpm/yarn/bun resolve their own lockfile; npm would write a second one beside it.
+    if any((path.parent / name).is_file() for name in _NPM_ALT_LOCKS):
+        return (path.parent / "package-lock.json").is_file()
+    return True
 
 
 def find_manifests(folder: str) -> tuple[list[Manifest], str | None]:
@@ -109,6 +115,7 @@ def find_manifests(folder: str) -> tuple[list[Manifest], str | None]:
     base, err = _validate_folder(folder)
     if err:
         return [], err
+    base = base.resolve()  # git reports realpaths; a symlinked root must still match
     found: list[Manifest] = []
     for dirpath, dirnames, filenames in os.walk(base):
         dirnames[:] = [
@@ -125,7 +132,21 @@ def find_manifests(folder: str) -> tuple[list[Manifest], str | None]:
     return found[:_MAX_MANIFESTS], None
 
 
-# --- Subprocess streaming (uv sync / npm install) ---
+def _lock_path(folder: str, name: str) -> Path:
+    """The folder's lockfile; a workspace member has none, so the root's is used."""
+    start = Path(folder).expanduser()
+    root = git_root(folder)
+    if root is None:
+        return start / name
+    here, top = start.resolve(), Path(root).resolve()
+    while not (here / name).is_file():
+        if here == top or here.parent == here:
+            return start / name
+        here = here.parent
+    return here / name
+
+
+# --- Subprocess streaming (uv lock / npm install) ---
 
 
 def _terminate(proc: subprocess.Popen) -> None:
@@ -151,6 +172,7 @@ def _stream(
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
+        errors="replace",  # a native build can emit bytes that are not UTF-8
         bufsize=1,
     )
     lines: list[str] = []
@@ -159,9 +181,12 @@ def _stream(
     # A reader thread keeps the cancel poll on a fixed cadence when output stalls.
     def _reader() -> None:
         assert proc.stdout is not None
-        for line in proc.stdout:
-            q.put(line)
-        q.put(None)  # EOF sentinel
+        try:
+            for line in proc.stdout:
+                q.put(line)
+        finally:
+            proc.stdout.close()
+            q.put(None)  # EOF sentinel, even if the read blew up
 
     threading.Thread(target=_reader, daemon=True).start()
 
@@ -198,6 +223,7 @@ def _lock_refresh(cmd: list[str], folder: str, tool: str) -> tuple[bool, str]:
             cwd=folder,
             capture_output=True,
             text=True,
+            errors="replace",
             timeout=_LOCK_TIMEOUT,
         )
     except subprocess.TimeoutExpired:
@@ -212,11 +238,12 @@ def uv_available() -> bool:
     return shutil.which("uv") is not None
 
 
-def run_uv_sync(folder, on_message=None, is_cancelled=None) -> tuple[bool, str]:
+def run_uv_upgrade(folder, on_message=None, is_cancelled=None) -> tuple[bool, str]:
+    """Upgrade uv.lock only: the scan reads the lock and never needs the venv."""
     uv = shutil.which("uv")
     if uv is None:
         return False, "❌ uv is not installed or not on PATH."
-    return _stream([uv, "sync", "-U"], folder, on_message, is_cancelled)
+    return _stream([uv, "lock", "-U"], folder, on_message, is_cancelled)
 
 
 def uv_lock_refresh(folder: str) -> tuple[bool, str]:
@@ -226,7 +253,7 @@ def uv_lock_refresh(folder: str) -> tuple[bool, str]:
 
 def resolved_versions(folder: str) -> tuple[dict[str, str], str | None]:
     """Canonical-name → version, read from the folder's ``uv.lock``."""
-    lock = Path(folder).expanduser() / "uv.lock"
+    lock = _lock_path(folder, "uv.lock")
     if not lock.is_file():
         return {}, f"❌ No uv.lock in {folder} (run the scan first)."
     try:
@@ -329,7 +356,6 @@ _SCANNED_SECTIONS = {
 
 
 def _section_header(stripped: str) -> str | None:
-    """The table name if the line is a ``[section]`` header, else None."""
     if stripped.startswith("[") and stripped.endswith("]") and "=" not in stripped:
         return stripped.strip("[]").strip()
     return None
@@ -348,7 +374,7 @@ def apply_uv_bumps(pyproject_path: Path, bumps: list[Bump]) -> None:
             section = header
             continue
         if section not in _SCANNED_SECTIONS or stripped.startswith("#"):
-            continue  # never touch comments or unscanned tables
+            continue
         for raw, raw_new in replacements.items():
             for quote in ('"', "'"):
                 token = f"{quote}{raw}{quote}"
@@ -367,6 +393,7 @@ def apply_uv_bumps(pyproject_path: Path, bumps: list[Bump]) -> None:
 # --- npm (package.json + package-lock.json) ---
 
 _NPM_TABLES = ("dependencies", "devDependencies", "optionalDependencies")
+_NPM_ALT_LOCKS = ("pnpm-lock.yaml", "yarn.lock", "bun.lock", "bun.lockb")
 # Bumpable ranges: optional ^, ~ or >= before x.y.z; anything fancier is left alone.
 _NPM_RANGE = re.compile(r"^([~^]|>=)?\s*(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.+-]+)?)$")
 
@@ -375,11 +402,13 @@ def npm_available() -> bool:
     return shutil.which("npm") is not None
 
 
-def run_npm_install(folder, on_message=None, is_cancelled=None) -> tuple[bool, str]:
+def run_npm_upgrade(folder, on_message=None, is_cancelled=None) -> tuple[bool, str]:
+    """Resolve package-lock.json only: npm outdated reads the registry, not the tree."""
     npm = shutil.which("npm")
     if npm is None:
         return False, "❌ npm is not installed or not on PATH."
-    return _stream([npm, "install"], folder, on_message, is_cancelled)
+    cmd = [npm, "install", "--package-lock-only"]
+    return _stream(cmd, folder, on_message, is_cancelled)
 
 
 def npm_outdated(folder: str) -> tuple[dict, str | None]:
@@ -393,6 +422,7 @@ def npm_outdated(folder: str) -> tuple[dict, str | None]:
             cwd=folder,
             capture_output=True,
             text=True,
+            errors="replace",
             timeout=_LOCK_TIMEOUT,
         )
     except subprocess.TimeoutExpired:
@@ -401,14 +431,20 @@ def npm_outdated(folder: str) -> tuple[dict, str | None]:
     if not out:
         return {}, None  # nothing outdated
     try:
-        return json.loads(out), None
+        parsed = json.loads(out)
     except json.JSONDecodeError as exc:
         return {}, f"❌ Could not parse npm outdated: {exc}"
+    # npm prints registry/auth failures as {"error": …} on stdout, also with exit 1.
+    failure = parsed.get("error") if isinstance(parsed, dict) else None
+    if isinstance(failure, dict) and "latest" not in failure:
+        detail = failure.get("summary") or failure.get("code") or "unknown error"
+        return {}, f"❌ npm outdated failed: {detail}"
+    return parsed, None
 
 
 def npm_installed(folder: str) -> dict[str, str]:
     """Direct-dependency name → installed version, read from package-lock.json."""
-    lock = Path(folder) / "package-lock.json"
+    lock = _lock_path(folder, "package-lock.json")
     if not lock.is_file():
         return {}
     try:
@@ -506,6 +542,19 @@ def compute_npm_bumps(package_json_path: Path, latest: dict[str, str]) -> list[B
     return bumps
 
 
+def _table_span(text: str, table: str) -> tuple[int, int] | None:
+    """The body of the ``"table": { … }`` object, so no other table is rewritten."""
+    opening = re.search(r'"' + re.escape(table) + r'"\s*:\s*\{', text)
+    if opening is None:
+        return None
+    depth = 1
+    for token in re.finditer(r'"(?:[^"\\]|\\.)*"|[{}]', text[opening.end() :]):
+        depth += {"{": 1, "}": -1}.get(token.group(), 0)
+        if depth == 0:
+            return opening.end(), opening.end() + token.start()
+    return None
+
+
 def apply_npm_bumps(package_json_path: Path, bumps: list[Bump]) -> None:
     """Rewrite each `"name": "range"` value in place, tolerant of JSON spacing."""
     text = package_json_path.read_text(encoding="utf-8")
@@ -513,9 +562,15 @@ def apply_npm_bumps(package_json_path: Path, bumps: list[Bump]) -> None:
         pattern = re.compile(
             r'("' + re.escape(bump.name) + r'"\s*:\s*)"' + re.escape(bump.old) + r'"'
         )
-        text, n = pattern.subn(
-            lambda m, new=bump.new: m.group(1) + f'"{new}"', text, count=1
-        )
+        span, n = _table_span(text, bump.table), 0
+        if span is not None:
+            start, end = span
+            body, n = pattern.subn(
+                lambda m, new=bump.new: m.group(1) + f'"{new}"',
+                text[start:end],
+                count=1,
+            )
+            text = text[:start] + body + text[end:]
         if n == 0:
             raise ValueError(
                 f'could not locate "{bump.name}": "{bump.old}" '
@@ -577,11 +632,16 @@ def commit_paths(
         text=True,
     )
     if commit.returncode != 0:
-        return (
-            None,
-            [],
-            f"❌ git commit failed: {commit.stderr.strip() or commit.stdout.strip()}",
+        # git add staged them; a rejected commit must not leave them in the index.
+        subprocess.run(
+            ["git", "-C", repo_root, "reset", "-q", "--", *rels], capture_output=True
         )
+        detail = (
+            commit.stderr.strip()
+            or commit.stdout.strip()
+            or "a git hook rejected the commit"
+        )
+        return None, [], f"❌ git commit failed: {detail}"
     sha = subprocess.run(
         ["git", "-C", repo_root, "rev-parse", "--short", "HEAD"],
         capture_output=True,
@@ -597,15 +657,15 @@ _NPM_RETRY_ROUNDS = 3
 
 
 def scan_manifest(manifest: Manifest, on_message=None, is_cancelled=None) -> dict:
-    """Sync one manifest and compute its bumps as a wire-ready dict."""
+    """Re-resolve one manifest's lockfile and compute its bumps as a wire-ready dict."""
     folder = str(manifest.path.parent)
     out = {"rel": manifest.rel, "kind": manifest.kind, "bumps": [], "error": None}
     if manifest.kind == "uv":
-        ok, log = run_uv_sync(folder, on_message, is_cancelled)
+        ok, log = run_uv_upgrade(folder, on_message, is_cancelled)
         if is_cancelled is not None and is_cancelled():
             return out
         if not ok:
-            out["error"] = f"uv sync -U failed:\n{_tail(log)}"
+            out["error"] = f"uv lock -U failed:\n{_tail(log)}"
             return out
         resolved, err = resolved_versions(folder)
         if err:
@@ -613,11 +673,11 @@ def scan_manifest(manifest: Manifest, on_message=None, is_cancelled=None) -> dic
             return out
         bumps = compute_uv_bumps(manifest.path, resolved)
     else:
-        ok, log = run_npm_install(folder, on_message, is_cancelled)
+        ok, log = run_npm_upgrade(folder, on_message, is_cancelled)
         if is_cancelled is not None and is_cancelled():
             return out
         if not ok:
-            out["error"] = f"npm install failed:\n{_tail(log)}"
+            out["error"] = f"npm install --package-lock-only failed:\n{_tail(log)}"
             return out
         latest, err = npm_latest(folder)
         if err:
@@ -666,7 +726,6 @@ def _npm_write_with_retry(
 
 def write_manifest(manifest: Manifest) -> dict:
     """Recompute and write one manifest, then re-resolve its lockfile; no commit."""
-    folder = str(manifest.path.parent)
     result = {
         "rel": manifest.rel,
         "kind": manifest.kind,
@@ -677,7 +736,18 @@ def write_manifest(manifest: Manifest) -> dict:
         "changed": [],
         "originals": {},
     }
+    originals: dict[str, str | None] = {}
+    try:
+        return _write_manifest(manifest, result, originals)
+    except Exception as exc:  # noqa: BLE001 — one bad manifest fails on its own
+        with contextlib.suppress(OSError):  # a rollback that cannot write is moot here
+            restore(originals)
+        result["error"] = f"❌ {exc}"
+        return result
 
+
+def _write_manifest(manifest: Manifest, result: dict, originals: dict) -> dict:
+    folder = str(manifest.path.parent)
     if manifest.kind == "uv":
         resolved, err = resolved_versions(folder)
         if err:
@@ -693,11 +763,13 @@ def write_manifest(manifest: Manifest) -> dict:
     if not bumps:
         return result
 
-    lock = Path(folder) / _LOCKS[manifest.kind]
-    originals: dict[str, str | None] = {
-        str(manifest.path): manifest.path.read_text(encoding="utf-8"),
-        str(lock): lock.read_text(encoding="utf-8") if lock.is_file() else None,
-    }
+    lock = _lock_path(folder, _LOCKS[manifest.kind])
+    originals.update(
+        {
+            str(manifest.path): manifest.path.read_text(encoding="utf-8"),
+            str(lock): lock.read_text(encoding="utf-8") if lock.is_file() else None,
+        }
+    )
 
     if manifest.kind == "uv":
         apply_uv_bumps(manifest.path, bumps)

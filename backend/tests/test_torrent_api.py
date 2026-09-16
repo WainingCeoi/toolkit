@@ -8,8 +8,8 @@ from fastapi.testclient import TestClient
 
 from toolkit_api.main import create_app
 from toolkit_api.torrents import TorrentManager
-from toolkit_engine.bitcomet import BitCometClient
-from toolkit_engine.torrent import bencode
+from toolkit_engine.bitcomet import BitCometClient, BitCometError
+from toolkit_engine.torrent import bencode, parse_torrent
 
 HASH = "c9e15763f722f23e98a29decdfae341b98d53056"
 TORRENT_MIME = "application/x-bittorrent"
@@ -60,7 +60,6 @@ def torrent_client(app_state, fake, save_folder):
 
 
 def upload(client, save_dir=None):
-    """Resolve a .torrent and return its infohash."""
     return client.post(
         "/api/torrent/resolve",
         files={"file": ("Example.torrent", sample_torrent(), TORRENT_MIME)},
@@ -145,6 +144,29 @@ def test_resolve_uploads_a_torrent_and_lists_its_files(torrent_client):
     assert [f["category"] for f in body["files"]] == ["video", "subtitle", "document"]
 
 
+def test_a_torrent_resolves_ready_even_if_bitcomet_cannot_list_it_yet(
+    torrent_client, app_state, monkeypatch
+):
+    """The .torrent already holds the file list; only stageMagnet ever polls."""
+
+    def no_listing(task_id):
+        raise BitCometError("BitComet returned HTTP 500 for /api/task/files/get")
+
+    monkeypatch.setattr(app_state.torrents.client, "files", no_listing)
+    body = torrent_client.post(
+        "/api/torrent/resolve",
+        files={"file": ("Example.torrent", sample_torrent(), TORRENT_MIME)},
+    ).json()
+
+    assert body["state"] == "awaiting_selection"
+    assert body["ready"] is True
+    assert [f["path"] for f in body["files"]] == [
+        "Movie.mkv",
+        "Movie.chi.srt",
+        "RARBG.txt",
+    ]
+
+
 def test_a_torrent_is_staged_stopped_so_nothing_downloads_during_review(
     torrent_client, fake
 ):
@@ -167,6 +189,18 @@ def test_resolve_rejects_a_corrupt_torrent_upload(torrent_client):
     )
     assert resp.status_code == 400
     assert "torrent" in resp.json()["detail"].lower()
+
+
+def test_resolve_400s_on_a_bencoded_torrent_with_a_broken_info_dict(torrent_client):
+    # Valid bencode, wrong shape: unguarded field access would answer 500.
+    resp = torrent_client.post(
+        "/api/torrent/resolve",
+        files={
+            "file": ("bad.torrent", bencode({b"info": {b"name": b"a"}}), TORRENT_MIME)
+        },
+    )
+    assert resp.status_code == 400
+    assert "Could not read that .torrent" in resp.json()["detail"]
 
 
 def test_resolve_accepts_a_magnet_as_form_data(torrent_client):
@@ -319,6 +353,29 @@ def test_discard_stops_a_magnet_that_is_still_fetching_metadata(torrent_client, 
     torrent_client.delete(f"/api/torrent/{HASH}")
     assert fake.tasks == {}
     assert fake.deleted and fake.deleted[0][1] is False  # (task_id, delete_all)
+
+
+def test_discard_leaves_a_magnet_bitcomet_already_had_alone(torrent_client, fake):
+    # A download the user already runs: Discard closes the card, it is not theirs.
+    fake.add_task("Seeding Already", [("Movie.mkv", 10)], HASH)
+    torrent_client.post("/api/torrent/resolve", data={"magnet": MAGNET})
+
+    assert torrent_client.delete(f"/api/torrent/{HASH}").status_code == 200
+    assert len(fake.tasks) == 1
+    assert fake.deleted == []
+
+
+def test_discard_leaves_a_torrent_bitcomet_already_had_alone(torrent_client, fake):
+    infohash = parse_torrent(sample_torrent()).infohash
+    fake.add_task("Seeding Already", [("Movie.mkv", 10)], infohash)
+    torrent_client.post(
+        "/api/torrent/resolve",
+        files={"file": ("Example.torrent", sample_torrent(), TORRENT_MIME)},
+    )
+
+    assert torrent_client.delete(f"/api/torrent/{infohash}").status_code == 200
+    assert len(fake.tasks) == 1
+    assert fake.deleted == []
 
 
 def test_discard_keeps_the_downloaded_data(torrent_client, fake):

@@ -53,7 +53,8 @@ export default function DocToMarkdown() {
     if (id) setFiles([])
   }
 
-  const result = snapshot?.state === 'done' ? snapshot.result : null
+  const result =
+    snapshot?.state === 'done' || snapshot?.state === 'cancelled' ? snapshot.result : null
 
   return (
     <div>
@@ -72,14 +73,14 @@ export default function DocToMarkdown() {
       )}
       {health && !health.mineru && (
         <div className="note warn">
-          Missing required tool: MinerU (<code>uv add mineru</code>).
+          Missing required tool: MinerU. Install it with{' '}
+          <code>uv sync --extra docmd</code> in <code>backend/</code>, then reload.
         </div>
       )}
       {health && health.mineru && !health.backend_ready && (
         <div className="note warn">
-          MinerU is installed but its conversion backend isn&apos;t. Install it with{' '}
-          <code>uv add &apos;mineru[core]&apos;</code> (all backends) or{' '}
-          <code>uv add &apos;mineru[pipeline]&apos;</code> (pipeline only), then reload.
+          MinerU is installed but its conversion backend isn&apos;t. Run{' '}
+          <code>uv sync --extra docmd</code> in <code>backend/</code>, then reload.
         </div>
       )}
 

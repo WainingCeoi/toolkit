@@ -236,6 +236,25 @@ def test_tiles_with_nothing_masked_are_skipped_entirely():
     assert len(calls) == 1, f"expected one tile of work, ran {len(calls)}"
 
 
+def test_a_tiled_inpaint_stops_between_tiles_when_asked():
+    from watermark.pipeline import CancelledError
+
+    calls = []
+
+    def counting_inpaint(rgb, mask):
+        calls.append(1)
+        return inpaint_cv2(rgb, mask)
+
+    big = np.full((800, 3000, 3), 130, np.uint8)
+    mask = np.zeros((800, 3000), np.uint8)
+    mask[100:120, ::700] = 255  # work in every tile column
+    with pytest.raises(CancelledError):
+        remove_watermark(
+            big, mask, counting_inpaint, should_stop=lambda: len(calls) >= 2
+        )
+    assert len(calls) == 2, f"kept inpainting after the stop: {len(calls)} tiles"
+
+
 def test_only_masked_pixels_are_ever_rewritten():
     rgb = np.dstack([np.tile(np.arange(200, dtype=np.uint8), (150, 1))] * 3)
     mask = np.zeros((150, 200), np.uint8)
@@ -253,6 +272,34 @@ def test_an_empty_mask_returns_the_image_unchanged():
     rgb = np.full((40, 60, 3), 200, np.uint8)
     out = remove_watermark(rgb, np.zeros((40, 60), np.uint8), inpaint_cv2)
     assert np.array_equal(out, rgb)
+
+
+def test_two_jobs_load_the_lama_checkpoint_once(monkeypatch):
+    import threading
+    import time
+    import types
+
+    from watermark import inpaint as inpaint_module
+
+    # A stand-in torch: the load is stubbed, so nothing here touches the real one.
+    monkeypatch.setattr(inpaint_module, "_models", {})
+    monkeypatch.setitem(sys.modules, "torch", types.SimpleNamespace())
+    loaded = []
+
+    def slow_load(self, torch):
+        loaded.append(self.device)
+        time.sleep(0.1)
+        return "big-lama"
+
+    monkeypatch.setattr(inpaint_module.LamaInpainter, "_load", slow_load)
+    painters = [inpaint_module.LamaInpainter(device="cpu") for _ in range(2)]
+    threads = [threading.Thread(target=painter.load) for painter in painters]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(5.0)
+    assert loaded == ["cpu"], "both jobs downloaded and loaded the checkpoint"
+    assert all(painter._model == "big-lama" for painter in painters)
 
 
 def test_get_inpainter_rejects_unknown_names():
@@ -274,6 +321,54 @@ def test_a_mask_of_the_wrong_size_is_refused_not_resized():
     mask = np.zeros((10, 20), np.uint8)
     with pytest.raises(ValueError, match="Mask is 20×10 but the image is 40×30"):
         imgio.load_mask(imgio.encode_png(mask), (30, 40))
+
+
+def test_transparency_is_kept_beside_the_rgb_it_decodes_to():
+    import io
+
+    image = Image.new("RGBA", (8, 6), (200, 30, 40, 255))
+    image.putpixel((1, 1), (0, 0, 0, 0))
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    rgb, alpha = imgio.load_rgba(buffer.getvalue())
+    assert rgb.shape == (6, 8, 3)
+    assert alpha is not None and alpha[1, 1] == 0
+    assert np.array_equal(rgb, imgio.load_rgb(buffer.getvalue()))
+
+    opaque = io.BytesIO()
+    Image.new("RGBA", (8, 6), (200, 30, 40, 255)).save(opaque, format="PNG")
+    assert imgio.load_rgba(opaque.getvalue())[1] is None
+
+
+def test_the_alpha_plane_does_not_pin_the_rgba_buffer_it_came_from():
+    import io
+
+    image = Image.new("RGBA", (40, 30), (200, 30, 40, 255))
+    image.putpixel((1, 1), (0, 0, 0, 0))
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    _rgb, alpha = imgio.load_rgba(buffer.getvalue())
+    assert alpha is not None and alpha.nbytes == 40 * 30
+    held = alpha.base
+    assert not isinstance(held, np.ndarray) or held.nbytes == alpha.nbytes, (
+        f"the alpha plane holds {held.nbytes} bytes alive to carry {alpha.nbytes}"
+    )
+    assert alpha.flags["C_CONTIGUOUS"], "the alpha plane is a strided RGBA view"
+
+
+def test_a_transparent_image_comes_out_of_the_cli_still_transparent(tmp_path):
+    src = tmp_path / "in"
+    src.mkdir()
+    _clean, marked, _true = synthetic_pair(size=(120, 90))
+    rgba = np.dstack([marked, np.full(marked.shape[:2], 255, np.uint8)])
+    rgba[0:10, 0:10, 3] = 0
+    Image.fromarray(rgba).save(src / "logo.png")
+    out = tmp_path / "out"
+    args = ["clean", str(src), str(out), "--inpainter", "cv2", "--detector", "texture"]
+    assert main(args) == 0
+    with Image.open(out / "logo.png") as cleaned:
+        assert cleaned.mode == "RGBA"
+        assert np.asarray(cleaned)[0:10, 0:10, 3].max() == 0
 
 
 def test_exif_rotation_is_normalized_at_decode():
@@ -308,6 +403,80 @@ def test_cli_cleans_a_folder_with_cv2(tmp_path, capsys):
     assert main(args) == 0
     assert sorted(p.name for p in out.iterdir()) == ["photo_0.png", "photo_1.png"]
     assert "[2/2]" in capsys.readouterr().out
+
+
+def test_an_image_with_no_mask_is_proved_clean_once(tmp_path, monkeypatch):
+    from watermark import detect, pipeline
+
+    real = detect.repeating_evidence
+    calls = []
+
+    def counting(rgb):
+        calls.append(1)
+        return real(rgb)
+
+    monkeypatch.setattr(detect, "repeating_evidence", counting)
+    monkeypatch.setattr(pipeline, "repeating_evidence", counting)
+    src = write_marked_folder(tmp_path / "in", count=1)
+    _cleaned, skipped, _protected, _failed = pipeline.clean_folder(
+        src, tmp_path / "out", inpainter="cv2", detector="auto"
+    )
+    assert skipped == ["photo_0.png"]
+    assert len(calls) == 1, f"the same evidence pass ran {len(calls)} times"
+
+
+def test_the_cv2_inpaint_is_not_run_twice_per_image(tmp_path, monkeypatch):
+    from watermark import pipeline
+
+    real = pipeline.remove_watermark
+    calls = []
+
+    def counting(*args, **kwargs):
+        calls.append(1)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(pipeline, "remove_watermark", counting)
+    src = write_marked_folder(tmp_path / "in", count=1)
+    cleaned, _skipped, _protected, _failed = pipeline.clean_folder(
+        src, tmp_path / "out", inpainter="cv2", detector="texture"
+    )
+    assert cleaned == ["photo_0.png"]
+    assert len(calls) == 1, f"the destruction probe was inpainted again ({len(calls)})"
+
+
+def test_the_auto_gate_does_not_inpaint_its_own_probe_again(tmp_path, monkeypatch):
+    from watermark import detect, pipeline
+
+    # Forced past pattern and stacked, so auto reaches the gated texture fallback.
+    monkeypatch.setattr(detect, "propose_pattern_mask", lambda *a, **k: None)
+    monkeypatch.setattr(detect, "propose_pattern_mask_shared", lambda *a, **k: None)
+    monkeypatch.setattr(detect, "repeating_evidence", lambda rgb: True)
+    monkeypatch.setattr(pipeline, "repeating_evidence", lambda rgb: True)
+    src = tmp_path / "in"
+    src.mkdir()
+    _clean, marked, _true = synthetic_pair()
+    Image.fromarray(marked).save(src / "photo_0.png")
+
+    real = pipeline.remove_watermark
+    calls = []
+
+    def counting(*args, **kwargs):
+        calls.append(1)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(pipeline, "remove_watermark", counting)
+    cleaned, _skipped, _protected, _failed = pipeline.clean_folder(
+        src, tmp_path / "out", inpainter="cv2", detector="auto"
+    )
+    assert cleaned == ["photo_0.png"], "the auto route never reached the texture gate"
+    assert len(calls) == 1, f"the gate's probe was inpainted again ({len(calls)})"
+
+    calls.clear()
+    cleaned, _skipped, _protected, _failed = pipeline.clean_folder(
+        src, tmp_path / "wider", inpainter="cv2", detector="auto", dilate_px=8
+    )
+    assert cleaned == ["photo_0.png"]
+    assert len(calls) == 2, "a wider dilation reused a probe taken at the default"
 
 
 def test_two_inputs_with_the_same_stem_both_survive(tmp_path, capsys):

@@ -6,6 +6,7 @@ import base64
 import threading
 import time
 from io import BytesIO
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -15,6 +16,7 @@ from toolkit_api.main import create_app
 from toolkit_api.routers import webpdf
 from toolkit_engine.webpdf import (
     BrowserSession,
+    parse_page,
     sanitize_filename,
     scrape_images_from_source,
 )
@@ -46,6 +48,7 @@ class FakeBrowserSession:
     def __init__(self, html=""):
         self._html = html
         self.url = "not-a-url"
+        self.current_url = self.url
         self.quit_called = False
 
     @property
@@ -130,6 +133,40 @@ def test_images_to_pdf_orders_pages_naturally():
     assert boxes[0][2:] == (20.0, 20.0)
 
 
+def test_images_to_pdf_applies_exif_orientation():
+    from toolkit_engine import imgpdf as imgpdf_engine
+
+    # Orientation 6 is how phones store a portrait shot in a landscape frame.
+    buf = BytesIO()
+    image = Image.new("RGB", (40, 20), "white")
+    exif = image.getexif()
+    exif[0x0112] = 6
+    image.save(buf, format="JPEG", exif=exif)
+
+    pdf = imgpdf_engine.images_to_pdf_bytes([("photo.jpg", buf.getvalue())])
+    boxes = [tuple(map(float, m.decode().split())) for m in _mediaboxes(pdf)]
+    assert boxes[0][2:] == (20.0, 40.0)
+
+
+def test_images_to_pdf_transposes_without_an_extra_pixel_copy(monkeypatch):
+    from toolkit_engine import imgpdf as imgpdf_engine
+
+    copies = 0
+    original_copy = Image.Image.copy
+
+    def counting_copy(self):
+        nonlocal copies
+        copies += 1
+        return original_copy(self)
+
+    monkeypatch.setattr(Image.Image, "copy", counting_copy)
+    buf = BytesIO()
+    Image.new("RGB", (40, 20), "white").save(buf, format="JPEG")
+    imgpdf_engine.images_to_pdf_bytes([("photo.jpg", buf.getvalue())])
+    # Only .convert("RGB") may copy; an unrotated image must not be copied twice.
+    assert copies == 1
+
+
 def test_images_to_pdf_rejects_decompression_bomb(monkeypatch):
     from toolkit_engine import imgpdf as imgpdf_engine
 
@@ -170,13 +207,20 @@ def test_sanitize_filename():
     assert sanitize_filename("   ") == "web"
 
 
+def test_sanitize_filename_caps_long_titles():
+    # An SEO-stuffed <title> otherwise fails the capture with "File name too long".
+    assert len(sanitize_filename("书名" * 300)) == 200
+
+
 def test_scrape_images_from_source_data_uris():
     html = (
         "<html><head><title>My Comic: Vol 1</title></head><body>"
         f'<img class="bi" src="{_data_uri(_png_bytes("red"))}">'
         "</body></html>"
     )
-    pdf_name, images, skipped = scrape_images_from_source(html, "http://example.com")
+    pdf_name, images, skipped = scrape_images_from_source(
+        parse_page(html), "http://example.com"
+    )
     assert pdf_name == "My Comic_ Vol 1.pdf"
     assert len(images) == 1
     assert skipped == 0
@@ -192,7 +236,9 @@ def test_scrape_images_selector_and_skip_counting():
         f'<img class="other" src="{_data_uri(_png_bytes())}">'  # not selected
         "</body></html>"
     )
-    pdf_name, images, skipped = scrape_images_from_source(html, "http://example.com")
+    pdf_name, images, skipped = scrape_images_from_source(
+        parse_page(html), "http://example.com"
+    )
     assert pdf_name == "web.pdf"
     assert len(images) == 1
     assert skipped == 1
@@ -203,6 +249,13 @@ def test_browser_session_shutdown_alias_and_safe_quit():
     assert session.is_open is False
     session.shutdown()  # no driver; must not raise
     assert BrowserSession.shutdown is BrowserSession.quit
+
+
+def test_browser_session_current_url_follows_the_driver():
+    session = BrowserSession()
+    session.url = "http://example.com/start"
+    session._driver = SimpleNamespace(current_url="http://example.com/chapter-2")
+    assert session.current_url == "http://example.com/chapter-2"
 
 
 # --- Web Images to PDF — router ---
@@ -259,6 +312,24 @@ def test_webpdf_capture_no_images_is_400_and_keeps_browser(tool_client, app_stat
     assert fake.quit_called is False
 
 
+def test_webpdf_capture_resolves_images_against_the_current_page(
+    tool_client, app_state, monkeypatch
+):
+    seen = {}
+
+    def spy(soup, page_url):
+        seen["url"] = page_url
+        return "x.pdf", [], 0
+
+    monkeypatch.setattr(webpdf, "scrape_images_from_source", spy)
+    fake = FakeBrowserSession("<html><body></body></html>")
+    fake.current_url = "http://example.com/chapter-2"  # the user browsed on
+    app_state.browser = fake
+
+    assert tool_client.post("/api/webpdf/capture").status_code == 400
+    assert seen["url"] == "http://example.com/chapter-2"
+
+
 def test_webpdf_capture_builds_pdf_and_closes_browser(tool_client, app_state):
     html = (
         "<html><head><title>Book: One</title></head><body>"
@@ -285,6 +356,26 @@ def test_webpdf_capture_builds_pdf_and_closes_browser(tool_client, app_state):
     assert download.content.startswith(b"%PDF")
     # FileResponse RFC-5987-encodes the space in the filename.
     assert "Book_%20One.pdf" in download.headers["content-disposition"]
+
+
+def test_webpdf_capture_parses_the_page_once(tool_client, app_state, monkeypatch):
+    parsed = []
+    real_parse = webpdf.parse_page
+
+    def counting(page_source):
+        parsed.append(page_source)
+        return real_parse(page_source)
+
+    monkeypatch.setattr(webpdf, "parse_page", counting)
+    html = (
+        "<html><head><title>Book</title></head><body>"
+        f'<img class="bi" src="{_data_uri(_png_bytes("red"))}">'
+        "</body></html>"
+    )
+    app_state.browser = FakeBrowserSession(html)
+
+    assert tool_client.post("/api/webpdf/capture").status_code == 200
+    assert len(parsed) == 1
 
 
 def test_webpdf_close_is_idempotent(tool_client, app_state):
@@ -342,7 +433,7 @@ def test_webpdf_capture_preserves_newer_session(tool_client, app_state, monkeypa
     newer = FakeBrowserSession(html)
     app_state.browser = captured
 
-    def reassign(page_source, pdf_path):
+    def reassign(soup, pdf_path):
         # A newer /open lands mid-capture.
         app_state.browser = newer
         return None

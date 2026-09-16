@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { api, artifactUrl } from '../api'
 import Button from '../components/Button'
-import { useToolActive } from '../toolHost'
+import { useToolActive, useToolBusy } from '../toolHost'
 import type { WebPdfCapture } from '../types/api'
 
 export default function WebImagesToPdf() {
@@ -13,6 +13,9 @@ export default function WebImagesToPdf() {
   const [error, setError] = useState<string | null>(null)
   const busy = useRef(false)
   const active = useToolActive()
+
+  // Capture has no job registry entry: closing the tab mid-run would drop the artifact id.
+  useToolBusy(opening || capturing)
 
   // Polls only while the tab is visible: keep-alive keeps hidden pages mounted.
   useEffect(() => {

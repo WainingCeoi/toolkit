@@ -83,8 +83,12 @@ async function request<T>(path: string, { method = 'GET', body }: RequestOptions
 function filenameFromDisposition(res: Response, fallback: string): string {
   const dispo = res.headers.get('content-disposition') || ''
   const star = /filename\*=utf-8''([^;]+)/i.exec(dispo)
-  const plain = /filename="?([^";]+)"?/i.exec(dispo)
-  return star ? decodeURIComponent(star[1]) : plain ? plain[1] : fallback
+  if (star) return decodeURIComponent(star[1])
+  // The quoted form may contain backslash-escaped quotes, so it cannot stop at the first `"`.
+  const quoted = /filename="((?:[^"\\]|\\.)*)"/i.exec(dispo)
+  if (quoted) return quoted[1].replace(/\\(.)/g, '$1')
+  const plain = /filename=([^;]+)/i.exec(dispo)
+  return plain ? plain[1].trim() : fallback
 }
 
 async function blobError(res: Response): Promise<Error> {
@@ -110,8 +114,7 @@ async function fetchBlob(path: string, fallbackName: string): Promise<Downloaded
   return { blob: await res.blob(), filename: filenameFromDisposition(res, fallbackName) }
 }
 
-// Browser quirks: the anchor must be in the document for click() to work, and revoking
-// the object URL synchronously can cancel the download.
+// The anchor must be in the document for click(), and revoking the URL now cancels the download.
 export function saveBlob(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
@@ -161,7 +164,6 @@ async function pollJob<R>(
   }
 }
 
-// Follows a job's SSE stream, falling back to polling on disconnect.
 export function followJob<R>(
   jobId: string,
   onSnapshot: (snapshot: Job<R>) => void,
@@ -197,8 +199,49 @@ export function followJob<R>(
   })
 }
 
+const RELOAD_BASE_MS = 2000
+const RELOAD_MAX_MS = 30000
+
+export interface Reloader {
+  reload: () => void
+  stop: () => void
+}
+
+export function retryingLoad<T>(
+  fetcher: () => Promise<T>,
+  onLoad: (value: T) => void,
+  onError: (err: Error) => void,
+): Reloader {
+  let stopped = false
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let delay = RELOAD_BASE_MS
+  const attempt = (): void => {
+    clearTimeout(timer)
+    void fetcher().then(
+      (value) => {
+        if (stopped) return
+        delay = RELOAD_BASE_MS
+        onLoad(value)
+      },
+      (err: Error) => {
+        if (stopped) return
+        onError(err)
+        timer = setTimeout(attempt, delay)
+        delay = Math.min(delay * 2, RELOAD_MAX_MS)
+      },
+    )
+  }
+  attempt()
+  return {
+    reload: attempt,
+    stop: () => {
+      stopped = true
+      clearTimeout(timer)
+    },
+  }
+}
+
 export const api = {
-  // meta
   tools: () => request<Category[]>('/tools'),
   health: () => request<Health>('/health'),
   // `packages` shows bundles (a *.photoslibrary) as selectable folders.
@@ -208,11 +251,9 @@ export const api = {
       body: { start_dir: startDir || null, packages },
     }),
 
-  // jobs
   job: (id: string) => request<Job<unknown>>(`/jobs/${id}`),
   cancelJob: (id: string) => request<JobCancel>(`/jobs/${id}/cancel`, { method: 'POST' }),
 
-  // magnet scraper
   magnetConfig: () => request<MagnetConfig>('/magnet/config'),
   magnetAuto: (startPage: number) =>
     request<JobStarted>('/magnet/auto', { method: 'POST', body: { start_page: startPage } }),
@@ -221,7 +262,6 @@ export const api = {
   magnetDedupe: (links: string[]) =>
     request<DedupeResult>('/magnet/dedupe', { method: 'POST', body: { links } }),
 
-  // remux
   remuxScan: (folder: string) =>
     request<RemuxScanResult>('/remux/scan', { method: 'POST', body: { folder } }),
   remuxSubtitles: (subFolder: string, selected: string[]) =>
@@ -232,11 +272,9 @@ export const api = {
   remuxStart: (payload: RemuxStartPayload) =>
     request<JobStarted>('/remux/start', { method: 'POST', body: payload }),
 
-  // file gatherer
   gatherStart: (payload: GatherStartPayload) =>
     request<JobStarted>('/gather/start', { method: 'POST', body: payload }),
 
-  // cache purge
   purgeScan: (folder: string, patternsRaw: string) =>
     request<PurgeScanResult>('/purge/scan', {
       method: 'POST',
@@ -245,36 +283,30 @@ export const api = {
   purgeDelete: (scanId: string) =>
     request<JobStarted>('/purge/delete', { method: 'POST', body: { scan_id: scanId } }),
 
-  // photos library filter
   photofilterDryRun: (payload: PhotoFilterPayload) =>
     request<JobStarted>('/photofilter/dry-run', { method: 'POST', body: payload }),
   photofilterRun: (payload: PhotoFilterPayload) =>
     request<JobStarted>('/photofilter/run', { method: 'POST', body: payload }),
 
-  // image to pdf (direct download)
   imgToPdf: (formData: FormData) => requestBlob('/img-to-pdf', formData),
 
-  // web images to pdf
   webpdfOpen: (url: string) =>
     request<WebPdfStatus>('/webpdf/open', { method: 'POST', body: { url } }),
   webpdfStatus: () => request<WebPdfStatus>('/webpdf/status'),
   webpdfCapture: () => request<WebPdfCapture>('/webpdf/capture', { method: 'POST', body: {} }),
   webpdfClose: () => request<WebPdfStatus>('/webpdf/close', { method: 'POST' }),
 
-  // doc conversions (multipart -> job)
   docToPdf: (formData: FormData) =>
     request<JobStarted>('/doc-to-pdf', { method: 'POST', body: formData }),
   docToMarkdown: (formData: FormData) =>
     request<JobStarted>('/doc-to-markdown', { method: 'POST', body: formData }),
   docmdHealth: () => request<MarkdownHealth>('/doc-to-markdown/health'),
 
-  // dependency upgrader
   depsScan: (folder: string) =>
     request<JobStarted>('/deps/scan', { method: 'POST', body: { folder } }),
   depsApply: (folder: string, commit: boolean, message: string | null) =>
     request<DepApplyResult>('/deps/apply', { method: 'POST', body: { folder, commit, message } }),
 
-  // optimized-ip subscription
   subsGenerate: (payload: SubsGeneratePayload) =>
     request<Subscription>('/subs/generate', { method: 'POST', body: payload }),
   subsHistory: () => request<SubsHistoryItem[]>('/subs/history'),
@@ -286,8 +318,7 @@ export const api = {
   subsDownload: (id: string, target: string) =>
     fetchBlob(`/subs/${id}/render?target=${target}`, `subscription-${target}`),
 
-  // torrent downloader. /resolve is multipart on both paths (JSON would 422), and save_dir
-  // travels with it: BitComet fixes a task's folder at creation.
+  // /resolve must be multipart (JSON 422s); BitComet fixes a task's folder at creation.
   torrentStatus: () => request<TorrentStatus>('/torrent/status'),
   torrentResolveMagnet: (magnet: string, saveDir = '') => {
     const body = new FormData()
@@ -310,7 +341,6 @@ export const api = {
     request<{ infohash: string; state: string }>(`/torrent/${infohash}`, {
       method: 'DELETE',
     }),
-  // devices
   torrentDevices: () => request<TorrentDeviceList>('/torrent/devices'),
   torrentDeviceAdd: (payload: TorrentDeviceInput) =>
     request<TorrentDeviceList>('/torrent/devices', { method: 'POST', body: payload }),
@@ -329,7 +359,6 @@ export const api = {
       body: payload,
     }),
 
-  // watermark remover
   watermarkHealth: () => request<WatermarkHealth>('/watermark/health'),
   watermarkUpload: (formData: FormData) =>
     request<WatermarkBatch>('/watermark/batch', { method: 'POST', body: formData }),

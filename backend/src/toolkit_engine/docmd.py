@@ -5,10 +5,11 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import zipfile
 from pathlib import Path
 
-# cwd for the `uv run mineru` fallback: uv resolves the venv relative to cwd.
+# A stable cwd for the mineru subprocess, whatever the server was launched from.
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 # Files MinerU can parse (mirrors its CLI's accepted inputs).
@@ -24,12 +25,7 @@ def find_mineru():
     if venv_bin.exists():
         return [str(venv_bin)]
     on_path = shutil.which("mineru")
-    if on_path:
-        return [on_path]
-    uv = shutil.which("uv")
-    if uv:
-        return [uv, "run", "mineru"]
-    return None
+    return [on_path] if on_path else None
 
 
 def build_mineru_cmd(
@@ -69,6 +65,43 @@ def build_mineru_cmd(
     return cmd
 
 
+def _terminate(proc):
+    proc.terminate()
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+
+
+def run_mineru(cmd, is_cancelled=None, poll=0.5):
+    """Run one MinerU conversion; None once ``is_cancelled()`` kills the child."""
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        cwd=PROJECT_ROOT,
+    )
+    deadline = time.monotonic() + PER_FILE_TIMEOUT
+    # The context manager closes the pipes however this returns.
+    with proc:
+        while True:
+            try:
+                # Retrying communicate() after a timeout keeps the output read so far.
+                stdout, stderr = proc.communicate(timeout=poll)
+            except subprocess.TimeoutExpired:
+                pass
+            else:
+                return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
+            if is_cancelled is not None and is_cancelled():
+                _terminate(proc)
+                return None
+            if time.monotonic() >= deadline:
+                _terminate(proc)
+                raise subprocess.TimeoutExpired(cmd, PER_FILE_TIMEOUT)
+
+
 def find_markdown(out_dir):
     """Return the first Markdown file MinerU produced under out_dir, or None."""
     # Not a direct path: MinerU truncates long stems and the method folder varies.
@@ -76,15 +109,14 @@ def find_markdown(out_dir):
     return md_files[0] if md_files else None
 
 
-def zip_tree(out_dir, archive):
-    """Add every file under out_dir to the zip, preserving its relative path."""
+def zip_tree(out_dir, archive, prefix=""):
     out_dir = Path(out_dir)
     for path in sorted(out_dir.rglob("*")):
         if path.is_file():
-            archive.write(path, path.relative_to(out_dir))
+            archive.write(path, Path(prefix) / path.relative_to(out_dir))
 
 
-def convert_batch(named_files, options, on_progress, mineru_cmd):
+def convert_batch(named_files, options, on_progress, mineru_cmd, is_cancelled=None):
     """Convert (name, bytes) uploads to a zip of Markdown trees."""
     done, failed, zip_bytes = [], [], None
     total = len(named_files)
@@ -122,20 +154,17 @@ def convert_batch(named_files, options, on_progress, mineru_cmd):
                 options["table"],
             )
             try:
-                result = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    text=True,
-                    cwd=PROJECT_ROOT,
-                    timeout=PER_FILE_TIMEOUT,
-                )
+                result = run_mineru(cmd, is_cancelled)
             except subprocess.TimeoutExpired:
                 failed.append((idx, name, "timed out"))
                 continue
+            if result is None:
+                break
 
             if find_markdown(out_dir):
-                zip_tree(out_dir, archive)
-                done.append(name)
+                # Own folder per upload: MinerU names its tree after the stem.
+                zip_tree(out_dir, archive, safe)
+                done.append((idx, name))
             else:
                 reason = (result.stderr or result.stdout or "").strip()
                 failed.append((idx, name, reason[-2000:] or "no Markdown produced"))
@@ -144,5 +173,5 @@ def convert_batch(named_files, options, on_progress, mineru_cmd):
         if done:
             zip_bytes = buffer.getvalue()
 
-    on_progress(100, f"Converted {total}/{total} file(s).")
+    on_progress(100, f"Converted {len(done)}/{total} file(s).")
     return zip_bytes, done, failed

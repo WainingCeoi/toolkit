@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { api, artifactUrl, watermarkImageUrl, watermarkMaskUrl } from './api'
+import { api, artifactUrl, retryingLoad, watermarkImageUrl, watermarkMaskUrl } from './api'
 
 describe('api helpers', () => {
   it('builds artifact URLs under /api', () => {
@@ -124,6 +124,25 @@ describe('api helpers', () => {
     vi.unstubAllGlobals()
   })
 
+  it('keeps escaped quotes in a Content-Disposition filename', async () => {
+    const blobResponse = (dispo: string) =>
+      new Response(new Blob(['%PDF']), {
+        status: 200,
+        headers: { 'content-type': 'application/pdf', 'content-disposition': dispo },
+      })
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(blobResponse('attachment; filename="say \\"hi\\".pdf"'))
+      .mockResolvedValueOnce(blobResponse('attachment; filename="plain.pdf"'))
+      .mockResolvedValueOnce(blobResponse('attachment; filename=plain.pdf'))
+    vi.stubGlobal('fetch', fetchMock)
+
+    expect((await api.imgToPdf(new FormData())).filename).toBe('say "hi".pdf')
+    expect((await api.imgToPdf(new FormData())).filename).toBe('plain.pdf')
+    expect((await api.imgToPdf(new FormData())).filename).toBe('plain.pdf')
+    vi.unstubAllGlobals()
+  })
+
   it('surfaces the detail message from an error response', async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ detail: '❌ nope' }), {
@@ -142,6 +161,65 @@ describe('api helpers', () => {
       .mockResolvedValue(new Response('boom', { status: 500, statusText: 'Server Error' }))
     vi.stubGlobal('fetch', fetchMock)
     await expect(api.health()).rejects.toThrow(/500/)
+    vi.unstubAllGlobals()
+  })
+})
+
+describe('retryingLoad', () => {
+  const emptyManifest = () =>
+    Promise.resolve(
+      new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    )
+
+  it('keeps retrying a failed load until it succeeds', async () => {
+    vi.useFakeTimers()
+    const fetchMock = vi
+      .fn()
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+      .mockImplementation(emptyManifest)
+    vi.stubGlobal('fetch', fetchMock)
+
+    const onLoad = vi.fn()
+    const onError = vi.fn()
+    const loader = retryingLoad(() => api.tools(), onLoad, onError)
+
+    await vi.advanceTimersByTimeAsync(0)
+    expect(onError).toHaveBeenCalledTimes(1)
+    expect(onLoad).not.toHaveBeenCalled()
+
+    // 2s then 4s: the backoff doubles.
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(onError).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(4000)
+    expect(onLoad).toHaveBeenCalledTimes(1)
+
+    loader.stop()
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
+
+  it('stops retrying once stopped, and reload replaces the pending retry', async () => {
+    vi.useFakeTimers()
+    const fetchMock = vi.fn().mockRejectedValue(new TypeError('Failed to fetch'))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const loader = retryingLoad(() => api.tools(), vi.fn(), vi.fn())
+    await vi.advanceTimersByTimeAsync(0)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    loader.reload()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+
+    loader.stop()
+    await vi.advanceTimersByTimeAsync(60000)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+
+    vi.useRealTimers()
     vi.unstubAllGlobals()
   })
 })

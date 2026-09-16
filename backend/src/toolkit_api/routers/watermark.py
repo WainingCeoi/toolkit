@@ -29,14 +29,16 @@ from watermark.detect import (
 from watermark.inpaint import (
     INPAINTERS,
     get_inpainter,
+    inpaint_cv2,
     lama_available,
     resolve_device,
 )
 from watermark.pipeline import (
     DEFAULT_DILATE_PX,
     IMAGE_TYPES,
+    CancelledError,
+    probe_removal,
     remove_watermark,
-    would_destroy_content,
 )
 
 from ..deps import StateDep, WatermarksDep
@@ -116,13 +118,14 @@ def create_batch(
     staged = []
     for name, content in zip(dedupe_filenames(names), read_uploads(files), strict=True):
         try:
-            rgb = imgio.load_rgb(content)
+            rgb, alpha = imgio.load_rgba(content)
         except Exception as e:  # Pillow's decode errors are many and unhelpful
             raise HTTPException(
                 status_code=400, detail=f"❌ Could not read {name}: {e}"
             ) from e
         height, width = rgb.shape[:2]
-        staged.append((name, imgio.encode_png(rgb), width, height))
+        working = imgio.encode_png(imgio.with_alpha(rgb, alpha))
+        staged.append((name, working, width, height))
 
     batch = watermarks.create(staged)
     return WatermarkBatchOut(
@@ -154,7 +157,6 @@ def _collect_marks(paths: list[Path]) -> list:
     """Marks the whole batch shares; independent of the sensitivity slider."""
 
     def each():
-        # A generator: only one decoded image is held at a time.
         for path in paths:
             try:
                 yield imgio.load_rgb(path.read_bytes())
@@ -258,14 +260,16 @@ def run(req: WatermarkRunIn, state: StateDep, watermarks: WatermarksDep):
         inpaint = get_inpainter(req.inpainter)
         if req.inpainter == "lama":
             job.set_message("Loading LaMa — the first run downloads a ~200 MB model…")
+            # Up front: the lazy load would happen under the first image's message.
+            inpaint.load()
         done: list[str] = []
         failed: list[tuple[str, str]] = []
         skipped: list[str] = []
         protected: list[str] = []
         cleaned: list[tuple[str, Path]] = []
         zip_id: str | None = None
-        # Spooled to disk: outputs held in RAM would stack on LaMa's inpainting peak.
-        spool = Path(tempfile.mkdtemp(prefix="toolkit_watermark_"))
+        # Spooled into the batch dir: RAM would stack on LaMa's peak; a kill sweeps it.
+        spool = Path(tempfile.mkdtemp(prefix="spool_", dir=batch["dir"]))
 
         def bundle(dest: Path) -> None:
             """Rebuild the zip of everything cleaned so far."""
@@ -312,7 +316,7 @@ def run(req: WatermarkRunIn, state: StateDep, watermarks: WatermarksDep):
                         f"Inpainting {idx + 1}/{len(selected)} — {entry['name']}…"
                     )
                     try:
-                        rgb = imgio.load_rgb(entry["path"].read_bytes())
+                        rgb, alpha = imgio.load_rgba(entry["path"].read_bytes())
                         mask = imgio.load_mask(masks[entry["id"]], rgb.shape[:2])
                         if not mask.any():
                             # Not written back: an unchanged copy is not a result.
@@ -323,17 +327,30 @@ def run(req: WatermarkRunIn, state: StateDep, watermarks: WatermarksDep):
                             job.update_item(idx, pct=100, state="done")
                             publish()
                             continue
-                        if would_destroy_content(rgb, mask, req.dilate_px):
+                        probe, destroys = probe_removal(rgb, mask, req.dilate_px)
+                        if destroys:
                             protected.append(entry["name"])
                             job.update_item(idx, pct=100, state="done")
                             publish()
                             continue
-                        spooled = spool / f"{idx}_{out_name}"
-                        spooled.write_bytes(
-                            imgio.encode_png(
-                                remove_watermark(rgb, mask, inpaint, req.dilate_px)
+                        # The probe is already the cv2 answer for this image.
+                        out = (
+                            probe
+                            if inpaint is inpaint_cv2
+                            else remove_watermark(
+                                rgb,
+                                mask,
+                                inpaint,
+                                req.dilate_px,
+                                should_stop=lambda: job.cancelled,
                             )
                         )
+                        spooled = spool / f"{idx}_{out_name}"
+                        spooled.write_bytes(
+                            imgio.encode_png(imgio.with_alpha(out, alpha))
+                        )
+                    except CancelledError:
+                        break
                     except Exception as e:  # noqa: BLE001 — per-file, batch goes on
                         job.update_item(idx, pct=100, state="failed", error=str(e))
                         failed.append((entry["name"], str(e)))

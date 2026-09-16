@@ -39,8 +39,6 @@ CREATE TABLE IF NOT EXISTS device_settings (
 
 @dataclass(frozen=True)
 class Device:
-    """One BitComet this app can talk to."""
-
     id: str
     label: str
     # None = the local BitComet, whose config is read at connect time, not stored.

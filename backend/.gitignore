@@ -17,8 +17,9 @@ htmlcov/
 # Secrets / local config (.env.example is the committed template)
 .env
 
-# Runtime data (subscription SQLite store)
+# Runtime data (subscription SQLite store) and the port `make backend` resolved
 data/
+.port
 
 # Build output
 dist/

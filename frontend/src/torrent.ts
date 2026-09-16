@@ -139,3 +139,20 @@ export function selectionFor(
 export function ruleKey(infohash: string, categories: Set<string>, minMb: number): string {
   return JSON.stringify([infohash, [...categories].sort(), minMb])
 }
+
+const NO_OVERRIDES: ReadonlyMap<number, boolean> = new Map()
+
+/** The shared filter plus the per-torrent ticks made under it. */
+export interface SelectionRules {
+  overrides: ReadonlyMap<string, { key: string; map: ReadonlyMap<number, boolean> }>
+  categories: Set<string>
+  minMb: number
+}
+
+/** One torrent's tick list; ticks made under an older filter are ignored. */
+export function selectionUnder(t: TorrentResolve, rules: SelectionRules): Set<number> {
+  const entry = rules.overrides.get(t.infohash)
+  const key = ruleKey(t.infohash, rules.categories, rules.minMb)
+  const active = entry && entry.key === key ? entry.map : NO_OVERRIDES
+  return selectionFor(t, rules.categories, rules.minMb * MB, active)
+}

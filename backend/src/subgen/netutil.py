@@ -68,7 +68,6 @@ def get_lan_ips() -> list[str]:
             ips.append(primary)
     except OSError:
         pass
-    # Any other IPv4 the host advertises.
     try:
         for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
             ip = info[4][0]

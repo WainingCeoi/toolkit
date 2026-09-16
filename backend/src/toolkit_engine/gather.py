@@ -8,37 +8,13 @@ from pathlib import Path
 
 from scandir_rs import Scandir
 
+from .filetypes import CATEGORY_EXTENSIONS
 from .fsutil import natural_sort_key
 
-# File-type presets -> scandir_rs file_include glob patterns
+# Derived from the shared table so the presets cannot drift from it.
 FILE_TYPE_PRESETS = {
-    "Video": [
-        "*.mkv",
-        "*.mp4",
-        "*.mov",
-        "*.ts",
-        "*.flv",
-        "*.avi",
-        "*.webm",
-        "*.m4v",
-        "*.wmv",
-        "*.mpg",
-        "*.mpeg",
-    ],
-    "Audio": ["*.mp3", "*.flac", "*.aac", "*.wav", "*.m4a", "*.ogg", "*.opus", "*.wma"],
-    "Image": [
-        "*.jpg",
-        "*.jpeg",
-        "*.png",
-        "*.gif",
-        "*.heic",
-        "*.webp",
-        "*.bmp",
-        "*.tiff",
-    ],
-    "Subtitle": ["*.srt", "*.ass", "*.ssa", "*.sub", "*.vtt"],
-    "Document": ["*.pdf", "*.docx", "*.doc", "*.txt", "*.epub", "*.pptx", "*.xlsx"],
-    "Archive": ["*.zip", "*.rar", "*.7z", "*.tar", "*.gz"],
+    name.capitalize(): sorted(f"*{ext}" for ext in extensions)
+    for name, extensions in CATEGORY_EXTENSIONS.items()
 }
 
 
@@ -56,6 +32,8 @@ def build_patterns(categories: list[str], custom_raw: str) -> list[str]:
     """Assemble the dedup-sorted glob list from presets and custom tokens."""
     patterns = []
     for category in categories:
+        if category not in FILE_TYPE_PRESETS:
+            raise ValueError(f"❌ Unknown file type: {category}")
         patterns.extend(FILE_TYPE_PRESETS[category])
     for token in custom_raw.replace(",", " ").split():
         pattern = normalize_pattern(token)
@@ -80,15 +58,22 @@ def move_files(
     """Move files into `tgt`, auto-numbering duplicate names (stem_1, stem_2…)."""
     total = len(files)
     moved, failed = [], []
+    # Resume each basename's counter; restarting at 1 costs k stats for the k-th copy.
+    next_counter: dict[str, int] = {}
     for idx, file_path in enumerate(files, start=1):
         file = Path(file_path)
         try:
-            target_path = tgt / file.name
-            counter = 1
+            counter = next_counter.get(file.name, 0)
+            target_path = (
+                tgt / file.name
+                if counter == 0
+                else tgt / f"{file.stem}_{counter}{file.suffix}"
+            )
             while target_path.exists():
-                target_path = tgt / f"{file.stem}_{counter}{file.suffix}"
                 counter += 1
+                target_path = tgt / f"{file.stem}_{counter}{file.suffix}"
             shutil.move(str(file), str(target_path))
+            next_counter[file.name] = counter
             moved.append(file.name)
         except Exception as e:
             failed.append((file.name, str(e)))

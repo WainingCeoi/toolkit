@@ -28,7 +28,7 @@ the engines, a React single-page UI, and one `make` entrance.
 | 📝  | **Doc to Markdown**     | PDFs / Office docs / images → Markdown with MinerU (text, tables, formulas).     |
 | 🧹  | **Cache Purge**         | Recursively find and delete cache / junk files.                                  |
 | 📸  | **Photos Library Filter** | Mirror a Photos library without its caches, safe while Photos is running.     |
-| 📦  | **Dependency Upgrader** | Scan a project's `pyproject.toml` / `package.json`, upgrade and commit each one. |
+| 📦  | **Dependency Upgrader** | Upgrade every uv / npm manifest under a folder, relock, and commit each repo.    |
 
 **🌐 Network**
 
@@ -48,6 +48,10 @@ make dev         # → http://localhost:5173
 | `make dev`   | Vite `:5173` + API `:8000`, hot-reload   | this Mac                  |
 | `make start` | built UI + API in one process, `:8000`   | this Mac (loopback)       |
 | `make host`  | the same, bound to `0.0.0.0`             | every device on the Wi-Fi |
+
+Run the two halves in separate terminals with `make backend` and `make frontend`:
+`make backend` writes the port it settled on to `backend/.port`, and `make frontend`
+points Vite's `/api` proxy there.
 
 One Ctrl-C stops everything. In dev, Vite proxies `/api` to the backend, so the UI
 calls same-origin and streaming needs no CORS. `make host PORT=9000` moves the base
@@ -125,13 +129,13 @@ Environment variables, or `backend/.env` (copy `backend/.env.example`). All opti
 | Needed by             | Requirement                                            | Notes                                                             |
 | --------------------- | ------------------------------------------------------ | ----------------------------------------------------------------- |
 | everything            | [uv](https://docs.astral.sh/uv/)                       | Python 3.14, managed via `.python-version`                        |
-| everything            | [Node.js](https://nodejs.org/) ≥ 20                    | frontend build                                                    |
+| everything            | [Node.js](https://nodejs.org/) 22.22+, 24.15+ or 26+   | frontend build                                                    |
 | Remux Processor       | [FFmpeg](https://ffmpeg.org/)                          | `brew install ffmpeg`                                             |
 | Torrent Downloader    | [BitComet](https://www.bitcomet.com/)                  | *Options → Remote Access*: enable **both** switches, set user/pass |
 | Watermark Remover     | [torch](https://pytorch.org/)                          | via the `watermark` extra; big-lama (~200 MB) auto-downloads. Falls back to cv2 |
 | Web Images to PDF     | [Google Chrome](https://www.google.com/chrome/)        | matching driver downloaded automatically                          |
 | Doc to PDF            | [LibreOffice](https://www.libreoffice.org/)            | `brew install --cask libreoffice`                                 |
-| Doc to Markdown       | [MinerU](https://github.com/opendatalab/MinerU)        | installed with the backend; models download on first run          |
+| Doc to Markdown       | [MinerU](https://github.com/opendatalab/MinerU)        | the `docmd` extra (`uv sync --extra docmd`); models download on first run |
 
 For BitComet on *this* Mac the app reads credentials from BitComet's own config —
 nothing to configure twice.
@@ -194,7 +198,9 @@ flowchart TD
 - Retries are safe because a send is idempotent — during a batch BitComet's API can
   answer so slowly that a send reads as failed when the task actually landed.
 - Once sent, the task is BitComet's: pause, watch and remove it there. Nothing is
-  stored here to drift out of date. *Discard* only cancels a staging you never sent.
+  stored here to drift out of date. *Discard* only cancels a staging you never sent,
+  and only one this server staged: after a restart it leaves the task alone rather
+  than deleting a download that may be yours.
 - **Pick the destination folder before you resolve** — BitComet fixes a task's save
   folder at creation and cannot move it after.
 
@@ -252,8 +258,8 @@ flowchart TD
   out. That makes a mark far too faint to see anywhere on its own legible.
 - Folding alone is **not** evidence: a clean photo can lock onto its own sky
   gradient. Verifying each stamp against the image is what separates them, and it
-  is why a mark buried in busy texture is skipped rather than guessed at. Evidence
-  and the gates that were tried and rejected are in `backend/src/watermark/pattern.py`.
+  is why a mark buried in busy texture is skipped rather than guessed at. The gates
+  and the measured constants behind them are in `backend/src/watermark/pattern.py`.
 - Marks are shared across the batch — one watermarking tool usually ran over all of
   them — so an image that cannot recover its own is masked from a sibling's.
 - Only marked pixels are ever written, always as PNG (re-encoding inpainted pixels

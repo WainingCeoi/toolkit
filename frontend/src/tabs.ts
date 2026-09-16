@@ -1,11 +1,8 @@
-// Pure logic for the tab dock.
-
 export function parseToolSlug(pathname: string): string | null {
   const m = /^\/tools\/([^/]+)\/?$/.exec(pathname)
   return m ? m[1] : null
 }
 
-/** Open tabs in opening order, then tools that only have tracked jobs. */
 export function tabOrder<T extends string>(open: T[], jobSlugs: T[]): T[] {
   return [...new Set([...open, ...jobSlugs])]
 }

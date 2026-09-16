@@ -23,6 +23,7 @@ export default function WatermarkRemover() {
   const [applied, setApplied] = useState<Record<string, number>>({})
   const [ready, setReady] = useState<Record<string, boolean>>({})
   const [noPattern, setNoPattern] = useState<Record<string, boolean>>({})
+  const [failed, setFailed] = useState<Record<string, boolean>>({})
   const [inpainter, setInpainter] = useState<'lama' | 'cv2'>('lama')
   const previews = useRef<Record<string, MaskPreviewHandle | null>>({})
 
@@ -55,6 +56,10 @@ export default function WatermarkRemover() {
     setNoPattern((prev) => (prev[id] === empty ? prev : { ...prev, [id]: empty }))
   }, [])
 
+  const markFailed = useCallback((id: string, isFailed: boolean) => {
+    setFailed((prev) => (prev[id] === isFailed ? prev : { ...prev, [id]: isFailed }))
+  }, [])
+
   async function detect() {
     setUploading(true)
     setUploadError(null)
@@ -69,6 +74,7 @@ export default function WatermarkRemover() {
       setDraft(defaults)
       setApplied(defaults)
       setReady({})
+      setFailed({})
       setError(null)
       setBatch(next)
       setFiles([])
@@ -83,7 +89,13 @@ export default function WatermarkRemover() {
     if (!batch) return
     const masks: Record<string, string> = {}
     const pending: string[] = []
+    const broken: string[] = []
     for (const img of batch.images) {
+      // A failed proposal leaves the previous one on the canvas; never inpaint that.
+      if (failed[img.id]) {
+        broken.push(img.name)
+        continue
+      }
       // false while a refetch is in flight: the canvas would still export the previous mask.
       if (ready[img.id] === false) {
         pending.push(img.name)
@@ -93,6 +105,12 @@ export default function WatermarkRemover() {
       // null means no proposal ever landed; sending nothing would "succeed" on an empty mask.
       if (mask) masks[img.id] = mask
       else pending.push(img.name)
+    }
+    if (broken.length > 0) {
+      setError(
+        `Could not load the mask for ${broken.join(', ')} — nudge the sensitivity slider to retry.`,
+      )
+      return
     }
     if (pending.length > 0) {
       setError(`Still detecting ${pending.join(', ')} — try again in a moment.`)
@@ -105,6 +123,7 @@ export default function WatermarkRemover() {
     setBatch(null)
     setReady({})
     setNoPattern({})
+    setFailed({})
     previews.current = {}
   }
 
@@ -193,7 +212,9 @@ export default function WatermarkRemover() {
               <div className="row" style={{ justifyContent: 'space-between' }}>
                 <strong>{img.name}</strong>
                 <span className="wm-dims">
-                  {ready[img.id] === false && 'detecting… · '}
+                  {failed[img.id]
+                    ? 'detection failed — nudge the sensitivity slider to retry · '
+                    : ready[img.id] === false && 'detecting… · '}
                   {/* Not "no watermark found": an empty mask may mean it cannot be isolated. */}
                   {noPattern[img.id] && 'nothing to remove — will be left alone · '}
                   {img.width}×{img.height}
@@ -213,6 +234,7 @@ export default function WatermarkRemover() {
                 height={img.height}
                 onReady={(isReady) => markReady(img.id, isReady)}
                 onEmpty={(empty) => markEmpty(img.id, empty)}
+                onError={(isFailed) => markFailed(img.id, isFailed)}
               />
               <div className="row">
                 <label className="wm-slider">

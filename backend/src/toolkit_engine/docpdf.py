@@ -4,6 +4,7 @@ import io
 import shutil
 import subprocess
 import tempfile
+import time
 import zipfile
 from pathlib import Path
 
@@ -51,6 +52,37 @@ def find_soffice():
     return app if Path(app).exists() else None
 
 
+def _mark_deleted(para):
+    """True when the paragraph's own mark is a tracked deletion or move-out."""
+    rpr = para.find(_w("pPr") + "/" + _w("rPr"))
+    return rpr is not None and (
+        rpr.find(_w("del")) is not None or rpr.find(_w("moveFrom")) is not None
+    )
+
+
+def _merge_into_next(para):
+    """Accepting a deleted paragraph mark joins the paragraph with the next one."""
+    parent = para.getparent()
+    following = para.getnext()
+    if parent is None or following is None or following.tag != _w("p"):
+        return
+    # The surviving mark is the next paragraph's, so its pPr stays first.
+    at = 1 if len(following) and following[0].tag == _w("pPr") else 0
+    for offset, child in enumerate([el for el in para if el.tag != _w("pPr")]):
+        following.insert(at + offset, child)
+    parent.remove(para)
+
+
+def _apply_structural_deletions(root):
+    """Drop rows and merge paragraphs whose deletion markers Word would honour."""
+    for trpr in [el for el in root.iter(_w("trPr")) if el.find(_w("del")) is not None]:
+        row = trpr.getparent()
+        if row is not None and row.getparent() is not None:
+            row.getparent().remove(row)
+    for para in [el for el in root.iter(_w("p")) if _mark_deleted(el)]:
+        _merge_into_next(para)
+
+
 def _flatten_revisions(root):
     """Accept all tracked changes in a parsed Word XML part, in place."""
     # Unwrap insertions repeatedly so nested ins/moveTo are fully resolved.
@@ -66,6 +98,8 @@ def _flatten_revisions(root):
             for child in reversed(list(el)):
                 parent.insert(idx, child)
             parent.remove(el)
+    # Before the generic pass, which would strip the markers off their containers.
+    _apply_structural_deletions(root)
     for el in [el for el in root.iter() if el.tag in _DROP]:
         parent = el.getparent()
         if parent is not None:
@@ -115,27 +149,53 @@ def clean_docx(src_path, dst_path):
     return dst_path
 
 
-def batch_to_pdf(soffice, docx_paths, out_dir):
+def _terminate(proc):
+    # SIGTERM first: a killed soffice leaves a lock file in the shared profile.
+    proc.terminate()
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+
+
+def batch_to_pdf(soffice, docx_paths, out_dir, is_cancelled=None, poll=0.5):
     """Render many .docx to PDF in a single LibreOffice run (one cold start)."""
     docx_paths = [str(p) for p in docx_paths]
-    return subprocess.run(
-        [
-            soffice,
-            f"-env:UserInstallation=file://{LO_PROFILE}",
-            "--headless",
-            "--convert-to",
-            "pdf",
-            "--outdir",
-            str(out_dir),
-            *docx_paths,
-        ],
-        capture_output=True,
-        text=True,
-        timeout=max(120, 20 * len(docx_paths)),
+    cmd = [
+        soffice,
+        f"-env:UserInstallation=file://{LO_PROFILE}",
+        "--headless",
+        "--convert-to",
+        "pdf",
+        "--outdir",
+        str(out_dir),
+        *docx_paths,
+    ]
+    timeout = max(120, 20 * len(docx_paths))
+    proc = subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
     )
+    deadline = time.monotonic() + timeout
+    # The context manager closes the pipes however this returns.
+    with proc:
+        while True:
+            try:
+                # Retrying communicate() after a timeout keeps the output read so far.
+                stdout, stderr = proc.communicate(timeout=poll)
+            except subprocess.TimeoutExpired:
+                pass
+            else:
+                return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
+            if is_cancelled is not None and is_cancelled():
+                _terminate(proc)
+                return None
+            if time.monotonic() >= deadline:
+                _terminate(proc)
+                raise subprocess.TimeoutExpired(cmd, timeout)
 
 
-def convert_batch(named_files, on_progress, soffice):
+def convert_batch(named_files, on_progress, soffice, is_cancelled=None):
     """Clean and convert (name, bytes) uploads to a zip of PDFs."""
     done, failed, zip_bytes = [], [], None
     total = len(named_files)
@@ -146,8 +206,10 @@ def convert_batch(named_files, on_progress, soffice):
         clean_dir.mkdir()
         out_dir.mkdir()
 
-        jobs = []  # (cleaned_path, arcname, original_name)
+        jobs = []  # (index, cleaned_path, arcname, original_name)
         for idx, (name, content) in enumerate(named_files):
+            if is_cancelled is not None and is_cancelled():
+                break
             on_progress(
                 int(idx / total * 50),
                 f"Cleaning {idx + 1}/{total} — {name}…",
@@ -158,21 +220,23 @@ def convert_batch(named_files, on_progress, soffice):
                 src.write_bytes(content)
                 cleaned = clean_dir / f"{idx}_{stem}.docx"
                 clean_docx(src, cleaned)
-                jobs.append((cleaned, f"{stem}.pdf", name))
+                jobs.append((idx, cleaned, f"{stem}.pdf", name))
             except Exception as e:
                 failed.append((idx, name, str(e)))
 
         if jobs:
             on_progress(50, f"Converting {len(jobs)} file(s) with LibreOffice…")
-            # A LibreOffice timeout keeps whatever PDFs it produced; the rest fail.
+            # A LibreOffice timeout or cancel keeps whatever PDFs it made; rest fail.
             try:
-                result = batch_to_pdf(soffice, [job[0] for job in jobs], out_dir)
-                stderr = result.stderr.strip()
+                result = batch_to_pdf(
+                    soffice, [job[1] for job in jobs], out_dir, is_cancelled
+                )
+                stderr = "cancelled" if result is None else result.stderr.strip()
             except subprocess.TimeoutExpired:
                 stderr = "LibreOffice timed out"
             buffer = io.BytesIO()
             with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
-                for i, (cleaned, arcname, name) in enumerate(jobs):
+                for i, (idx, cleaned, arcname, name) in enumerate(jobs):
                     on_progress(
                         50 + int((i + 1) / len(jobs) * 50),
                         f"Bundling {i + 1}/{len(jobs)} — {arcname}…",
@@ -180,10 +244,8 @@ def convert_batch(named_files, on_progress, soffice):
                     produced = out_dir / f"{cleaned.stem}.pdf"
                     if produced.exists():
                         archive.write(produced, arcname)
-                        done.append(arcname)
+                        done.append((idx, arcname))
                     else:
-                        # cleaned stem is "{idx}_{stem}"; recover the input index.
-                        idx = int(cleaned.stem.split("_", 1)[0])
                         failed.append((idx, name, stderr or "no PDF produced"))
             if done:
                 zip_bytes = buffer.getvalue()

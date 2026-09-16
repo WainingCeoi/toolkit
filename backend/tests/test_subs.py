@@ -52,6 +52,21 @@ def test_identical_generate_dedups_to_same_id(tool_client):
     assert second["sub_id"] == first["sub_id"]
 
 
+def test_dedup_preview_describes_the_stored_subscription(tool_client):
+    a = "trojan://pw@a.example.com:443#A"
+    b = "trojan://pw@b.example.com:443#B"
+    # The source hash sorts lines, so a reordered paste dedups to the same id.
+    first = _generate(tool_client, node_links=f"{a}\n{b}").json()
+    second = _generate(tool_client, node_links=f"{b}\n{a}").json()
+    assert second["dedup"] is True
+    assert second["sub_id"] == first["sub_id"]
+    assert second["preview"] == first["preview"]
+    assert second["counts"] == first["counts"]
+
+    stored = tool_client.get(f"/api/subs/{first['sub_id']}").json()
+    assert second["preview"] == stored["preview"]
+
+
 def test_generate_rejects_empty_node_links(tool_client):
     resp = _generate(tool_client, node_links="")
     assert resp.status_code == 400

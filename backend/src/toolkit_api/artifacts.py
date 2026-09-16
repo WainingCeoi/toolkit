@@ -20,7 +20,6 @@ class ArtifactStore:
         self.ttl = ttl
 
     def put_bytes(self, filename: str, content: bytes, media_type: str) -> str:
-        """Store raw bytes under a fresh id; returns the artifact id."""
         artifact_id = uuid.uuid4().hex[:12]
         path = self._dir / f"{artifact_id}_{filename}"
         path.write_bytes(content)
@@ -54,7 +53,6 @@ class ArtifactStore:
         staging.replace(item["path"])
 
     def put_file(self, filename: str, src: Path, media_type: str) -> str:
-        """Move an existing file (e.g. from a job's tempdir) into the store."""
         artifact_id = uuid.uuid4().hex[:12]
         path = self._dir / f"{artifact_id}_{filename}"
         shutil.move(str(src), path)

@@ -86,14 +86,6 @@ class StatusOut(BaseModel):
     save_folders: list[str] = []
 
 
-def _folders(torrents) -> list[str]:
-    """The active BitComet's save folders, or [] if it cannot be asked."""
-    try:
-        return torrents.client.save_folders()
-    except BitCometError:
-        return []
-
-
 @router.get("/status", response_model=StatusOut)
 def status(state: StateDep) -> dict:
     """Always answers, even with no engine: this is the diagnostic endpoint."""
@@ -114,7 +106,7 @@ def status(state: StateDep) -> dict:
             ),
         }
 
-    server = torrents.client.probe()
+    server, folders = torrents.client.probe_folders()
     detail = None
     if server is None:
         if torrents.client.is_local:
@@ -133,11 +125,23 @@ def status(state: StateDep) -> dict:
         "url": torrents.client.base_url,
         "device": device.public() if device else None,
         "is_local": torrents.client.is_local,
-        "save_folders": _folders(torrents) if server is not None else [],
+        "save_folders": folders,
     }
 
 
 # --- DEVICES ---
+def _retarget(state, device, previous) -> None:
+    """Point the tool at ``device``; a rebuild loses every in-flight magnet watch."""
+    unchanged = previous is not None and (
+        previous.id,
+        previous.url,
+        previous.username,
+        previous.password,
+    ) == (device.id, device.url, device.username, device.password)
+    if not unchanged or state.torrents is None:
+        app_state.use_device(state, device)
+
+
 def _listing(book) -> dict:
     return {
         "active": book.active().id,
@@ -153,13 +157,14 @@ def list_devices(book: DevicesDep) -> dict:
 @router.post("/devices", response_model=DeviceListOut)
 def add_device(payload: DeviceIn, book: DevicesDep, state: StateDep) -> dict:
     """Save a remote BitComet and switch to it."""
+    previous = book.active()
     try:
         device = book.add(
             payload.label, payload.url, payload.username, payload.password
         )
     except BitCometError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    app_state.use_device(state, device)
+    _retarget(state, device, previous)
     return _listing(book)
 
 
@@ -167,6 +172,7 @@ def add_device(payload: DeviceIn, book: DevicesDep, state: StateDep) -> dict:
 def update_device(
     device_id: str, payload: DeviceIn, book: DevicesDep, state: StateDep
 ) -> dict:
+    previous = book.active()
     try:
         device = book.update(
             device_id,
@@ -179,13 +185,14 @@ def update_device(
         raise HTTPException(status_code=404, detail="No such device.") from exc
     except BitCometError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    if book.active().id == device.id:
-        app_state.use_device(state, device)
+    if previous.id == device.id:
+        _retarget(state, device, previous)
     return _listing(book)
 
 
 @router.delete("/devices/{device_id}", response_model=DeviceListOut)
 def remove_device(device_id: str, book: DevicesDep, state: StateDep) -> dict:
+    previous = book.active()
     try:
         book.remove(device_id)
     except KeyError as exc:
@@ -193,17 +200,18 @@ def remove_device(device_id: str, book: DevicesDep, state: StateDep) -> dict:
     except BitCometError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     # book.remove may have changed the active device; the manager must follow.
-    app_state.use_device(state, book.active())
+    _retarget(state, book.active(), previous)
     return _listing(book)
 
 
 @router.post("/devices/{device_id}/select", response_model=DeviceListOut)
 def select_device(device_id: str, book: DevicesDep, state: StateDep) -> dict:
+    previous = book.active()
     try:
         device = book.select(device_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="No such device.") from exc
-    app_state.use_device(state, device)
+    _retarget(state, device, previous)
     return _listing(book)
 
 
@@ -248,7 +256,6 @@ def resolve(
 ) -> dict:
     """Stage a magnet or a .torrent and report its file list when known."""
     # Keep this a sync def: blocking BitComet calls in an async def stall the loop.
-    # BitComet fixes the save folder at task creation, so save_dir is taken here.
     if file is not None:
         data = file.file.read()
         try:

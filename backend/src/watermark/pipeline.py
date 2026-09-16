@@ -13,12 +13,12 @@ from .detect import (
     DEFAULT_DETECTOR,
     DEFAULT_SENSITIVITY,
     PATTERN,
+    _propose_with_evidence,
     collect_marks,
-    propose_mask,
     repeating_evidence,
 )
-from .imgio import encode_png, load_rgb
-from .inpaint import get_inpainter
+from .imgio import encode_png, load_rgb, load_rgba, with_alpha
+from .inpaint import get_inpainter, inpaint_cv2
 
 # Only the formats the whole pipeline, browser canvas included, is exercised on.
 IMAGE_TYPES = ("png", "jpg", "jpeg", "webp")
@@ -26,8 +26,7 @@ IMAGE_TYPES = ("png", "jpg", "jpeg", "webp")
 # A mask hugging the watermark too tightly leaves a one-pixel ghost outline.
 DEFAULT_DILATE_PX = 3
 
-# LaMa's peak memory grows with the frame handed to it; tiles keep it flat.
-# 640/96 is tuned: larger tiles cost far more memory, smaller ones more time.
+# Tiles keep LaMa's peak memory flat; 640/96 tuned: bigger costs memory, smaller time.
 TILE_PX = 640
 CONTEXT_PX = 96
 
@@ -35,10 +34,15 @@ CONTEXT_PX = 96
 MAX_DESTRUCTION = 88.0
 
 
+class CancelledError(Exception):
+    """Raised out of a tiled inpaint when ``should_stop`` asked it to stop."""
+
+
 def _inpaint_tiled(
     rgb: np.ndarray,
     mask: np.ndarray,
     inpaint: Callable[[np.ndarray, np.ndarray], np.ndarray],
+    should_stop: Callable[[], bool] | None = None,
 ) -> np.ndarray:
     """Inpaint tile by tile, touching only tiles that contain masked pixels."""
     height, width = mask.shape
@@ -48,6 +52,9 @@ def _inpaint_tiled(
             bottom, right = min(top + TILE_PX, height), min(left + TILE_PX, width)
             if not mask[top:bottom, left:right].any():
                 continue
+            # A big LaMa image is minutes of tiles; cancel cannot wait for the image.
+            if should_stop is not None and should_stop():
+                raise CancelledError
             # Context so tile-edge pixels are filled from real surroundings.
             ctop, cleft = max(0, top - CONTEXT_PX), max(0, left - CONTEXT_PX)
             cbottom = min(height, bottom + CONTEXT_PX)
@@ -68,6 +75,7 @@ def remove_watermark(
     mask: np.ndarray,
     inpaint: Callable[[np.ndarray, np.ndarray], np.ndarray],
     dilate_px: int = DEFAULT_DILATE_PX,
+    should_stop: Callable[[], bool] | None = None,
 ) -> np.ndarray:
     """Inpaint ``mask`` out of ``rgb``; only masked pixels are ever written."""
     if dilate_px > 0:
@@ -75,18 +83,30 @@ def remove_watermark(
         mask = cv2.dilate(mask, kernel)
     if not mask.any():
         return rgb.copy()
-    return _inpaint_tiled(rgb, mask, inpaint)
+    return _inpaint_tiled(rgb, mask, inpaint, should_stop)
+
+
+def _destruction_of(rgb: np.ndarray, probe: np.ndarray) -> float:
+    moved = np.abs(rgb.astype(np.int16) - probe.astype(np.int16)).max(axis=2)
+    changed = moved > 2
+    if not changed.any():
+        return 0.0
+    return float(np.percentile(moved[changed], 90))
+
+
+def probe_removal(
+    rgb: np.ndarray, mask: np.ndarray, dilate_px: int
+) -> tuple[np.ndarray, bool]:
+    """The cv2 removal of ``mask``, and whether it rewrites more than it is worth."""
+    probe = remove_watermark(rgb, mask, get_inpainter("cv2"), dilate_px)
+    return probe, _destruction_of(rgb, probe) > MAX_DESTRUCTION
 
 
 def destruction(rgb: np.ndarray, mask: np.ndarray, dilate_px: int) -> float:
     """How violently removing ``mask`` rewrites the image, in grey levels."""
     # Always probed with cv2 so the reading is comparable across inpainters.
     probe = remove_watermark(rgb, mask, get_inpainter("cv2"), dilate_px)
-    moved = np.abs(rgb.astype(np.int16) - probe.astype(np.int16)).max(axis=2)
-    changed = moved > 2
-    if not changed.any():
-        return 0.0
-    return float(np.percentile(moved[changed], 90))
+    return _destruction_of(rgb, probe)
 
 
 def would_destroy_content(rgb: np.ndarray, mask: np.ndarray, dilate_px: int) -> bool:
@@ -161,24 +181,37 @@ def clean_folder(
         zip(files, _unique_names(files), strict=True)
     ):
         try:
-            rgb = load_rgb(path.read_bytes())
-            mask = propose_mask(rgb, sensitivity, detector, marks)
+            rgb, alpha = load_rgba(path.read_bytes())
+            mask, _used, evidence, probe = _propose_with_evidence(
+                rgb, sensitivity, detector, marks
+            )
             if not mask.any():
                 # A mark is demonstrably there but could not be isolated: protected.
-                if detector in (PATTERN, AUTO) and repeating_evidence(rgb):
+                if evidence is None and detector in (PATTERN, AUTO):
+                    evidence = repeating_evidence(rgb)
+                if evidence:
                     protected.append(path.name)
                 else:
                     skipped.append(path.name)
                 if on_progress is not None and on_progress(idx + 1, len(files)):
                     break
                 continue
-            if would_destroy_content(rgb, mask, dilate_px):
+            # The auto gate already probed its own mask, but only at the default.
+            destroys = False
+            if probe is None or dilate_px != DEFAULT_DILATE_PX:
+                probe, destroys = probe_removal(rgb, mask, dilate_px)
+            if destroys:
                 protected.append(path.name)
                 if on_progress is not None and on_progress(idx + 1, len(files)):
                     break
                 continue
-            out = remove_watermark(rgb, mask, inpaint, dilate_px)
-            (dst / out_name).write_bytes(encode_png(out))
+            # The probe is a finished cv2 pass; redoing it would be the same array.
+            out = (
+                probe
+                if inpaint is inpaint_cv2
+                else remove_watermark(rgb, mask, inpaint, dilate_px)
+            )
+            (dst / out_name).write_bytes(encode_png(with_alpha(out, alpha)))
             cleaned.append(out_name)
         except Exception as e:  # noqa: BLE001 — reported per file, batch goes on
             failed.append((path.name, str(e)))

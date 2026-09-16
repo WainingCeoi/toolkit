@@ -8,6 +8,7 @@ import sqlite3
 import subprocess
 import threading
 import time
+import unicodedata
 from contextlib import closing
 from pathlib import Path
 
@@ -96,7 +97,7 @@ def wait_for_job(client, job_id, timeout=5.0):
     raise AssertionError(f"job {job_id} did not finish within {timeout}s")
 
 
-# --- rules ------------------------------------------------------------------
+# --- rules ---
 
 
 def test_rules_match_rsync_subset():
@@ -136,7 +137,7 @@ def test_default_rules_drop_caches_and_keep_originals_and_renders():
     assert pf.first_match(rules, "database/Photos.sqlite") is None
 
 
-# --- plan / snapshot --------------------------------------------------------
+# --- plan / snapshot ---
 
 
 def test_plan_classifies_files(tmp_path):
@@ -194,7 +195,7 @@ def test_snapshot_includes_unflushed_wal(tmp_path):
     assert not list(dest.parent.glob("*.tmp"))
 
 
-# --- run --------------------------------------------------------------------
+# --- run ---
 
 
 def test_run_copies_snapshots_skips_and_deletes(tmp_path):
@@ -296,6 +297,25 @@ def test_refuses_overlapping_or_unsafe_dest(tmp_path):
     assert sorted(p.name for p in tmp_path.iterdir()) == ["Outer.photoslibrary"]
 
 
+def test_refuses_a_dest_that_only_looks_different_from_the_source(tmp_path):
+    outer = tmp_path / "Café.photoslibrary"
+    src = build_src(outer)
+    if not os.path.samefile(src, outer / "SRC.photoslibrary"):
+        pytest.skip("case-sensitive volume")
+    rules = pf.compile_rules(RULES)
+
+    # Same directory, spelt in another case or in NFD: still the live library.
+    with pytest.raises(pf.PhotoFilterError, match="overlap"):
+        pf.run(src, outer / "SRC.photoslibrary", rules)
+    with pytest.raises(pf.PhotoFilterError, match="overlap"):
+        pf.run(src, tmp_path / "CAFÉ.photoslibrary", rules)
+    nfd = Path(unicodedata.normalize("NFD", str(outer))) / src.name
+    assert str(nfd) != str(src)
+    with pytest.raises(pf.PhotoFilterError, match="overlap"):
+        pf.run(src, nfd, rules)
+    assert (src / ".DS_Store").exists()
+
+
 def test_copy_failure_is_recorded_and_the_run_carries_on(tmp_path, monkeypatch):
     src, dest = build_src(tmp_path), tmp_path / "Dest.photoslibrary"
     real_copy = pf.copy_file
@@ -336,6 +356,103 @@ def test_stop_request_returns_the_partial_result_unverified(tmp_path):
     assert seen[-1] == ("copy", 1, 3)
     assert (dest / "database").is_dir()
     assert not (dest / "database/Photos.sqlite").exists()
+
+
+def test_an_unreadable_source_dir_is_reported_and_spares_the_mirror(tmp_path):
+    # scandir-rs omits a directory it cannot open and reports no error for it.
+    src, dest = build_src(tmp_path), tmp_path / "Dest.photoslibrary"
+    pf.run(src, dest, pf.compile_rules(RULES))
+    os.chmod(src / "originals/A", 0)
+    try:
+        r = pf.run(src, dest, pf.compile_rules(RULES))
+    finally:
+        os.chmod(src / "originals/A", 0o755)
+
+    assert "unreadable directory: originals/A" in r.errors
+    assert "delete skipped: the scan of SRC was incomplete" in r.errors
+    assert r.deleted == []
+    assert (dest / "originals/A/AAAA-1.heic").exists()
+
+
+def test_a_symlinked_directory_does_not_abort_the_delete_phase(tmp_path):
+    src, dest = build_src(tmp_path), tmp_path / "Dest.photoslibrary"
+    elsewhere = tmp_path / "elsewhere"
+    touch(elsewhere, "inner.txt")
+    os.symlink(elsewhere, src / "linkdir")
+
+    r = pf.run(src, dest, pf.compile_rules(RULES))
+
+    assert r.errors == [] and r.verified
+    assert os.path.islink(dest / "linkdir")
+
+    # A symlinked dir left in the destination is unlinked, never walked through.
+    os.symlink(elsewhere, dest / "stale-link")
+    r2 = pf.run(src, dest, pf.compile_rules(RULES))
+
+    assert r2.deleted == ["stale-link"]
+    assert (elsewhere / "inner.txt").exists()
+
+
+def test_an_undeletable_entry_is_reported_and_the_run_carries_on(tmp_path):
+    src, dest = build_src(tmp_path), tmp_path / "Dest.photoslibrary"
+    pf.run(src, dest, pf.compile_rules(RULES))
+    stale = touch(dest, "resources/derivatives/stale.jpeg")
+    os.chmod(stale.parent, 0o500)
+    try:
+        r = pf.run(src, dest, pf.compile_rules(RULES))
+    finally:
+        os.chmod(stale.parent, 0o700)
+
+    assert r.errors == [
+        "delete failed for resources/derivatives/stale.jpeg: "
+        f"[Errno 13] Permission denied: '{stale}'"
+    ]
+    assert r.deleted == [] and r.verified
+
+
+def test_a_snapshot_failure_does_not_let_verify_discard_the_report(
+    tmp_path, monkeypatch
+):
+    src, dest = build_src(tmp_path), tmp_path / "Dest.photoslibrary"
+
+    def locked(source, target):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(pf, "snapshot_sqlite", locked)
+
+    r = pf.run(src, dest, pf.compile_rules(RULES))
+
+    assert r.copied == 3 and r.snapshotted == 0
+    assert r.errors == [
+        "snapshot failed for database/Photos.sqlite: database is locked",
+        "verify failed: unable to open database file",
+    ]
+    assert not r.verified and (r.problems, r.assets, r.edited) == ([], 0, 0)
+    assert (dest / "originals/A/AAAA-1.heic").exists()
+
+
+def test_an_unreadable_database_does_not_discard_the_dry_run_report(tmp_path):
+    src, dest = build_src(tmp_path), tmp_path / "Dest.photoslibrary"
+    (src / "database/Photos.sqlite").write_bytes(b"not a database, just bytes here")
+
+    r = pf.run(src, dest, pf.compile_rules(RULES), dry_run=True)
+
+    assert r.errors == ["verify failed: file is not a database"]
+    assert not r.verified and (r.problems, r.assets, r.edited) == ([], 0, 0)
+    assert r.plan.keep and not dest.exists()
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_a_cancel_before_the_verify_leaves_the_run_unverified(tmp_path, dry_run):
+    src, dest = build_src(tmp_path), tmp_path / "Dest.photoslibrary"
+
+    def stop_at_verify(phase, done, total):
+        return phase == "verify"
+
+    r = pf.run(src, dest, pf.compile_rules(RULES), dry_run, stop_at_verify)
+
+    assert not r.verified
+    assert (r.assets, r.edited, r.problems) == (0, 0, [])
 
 
 def test_skip_needs_the_exact_mtime_not_a_near_one(tmp_path):
@@ -394,7 +511,7 @@ def test_summary_sizes_the_excluded_files_per_rule(tmp_path):
     assert (s["copied"], s["skipped"], s["snapshotted"], s["deleted"]) == (0, 0, 0, [])
 
 
-# --- API --------------------------------------------------------------------
+# --- API ---
 
 
 def test_photofilter_dry_run_then_run_end_to_end(client, tmp_path):
@@ -548,11 +665,15 @@ def test_photofilter_refuses_a_second_writer_on_the_same_destination(
     first = client.post("/api/photofilter/run", json=body).json()["job_id"]
     assert started.wait(3.0)
     second = client.post("/api/photofilter/run", json=body).json()["job_id"]
+    # A case variant of the path names the same destination on APFS.
+    variant = {"source": str(src), "dest": str(tmp_path / "DEST.photoslibrary")}
+    variant_job = client.post("/api/photofilter/run", json=variant).json()["job_id"]
     # A dry run reads only, so it is not turned away.
     dry = client.post("/api/photofilter/dry-run", json=body).json()["job_id"]
-    snap = wait_for_job(client, second)
-    assert snap["state"] == "failed"
-    assert "already writing" in snap["error"]
+    for job_id in (second, variant_job):
+        snap = wait_for_job(client, job_id)
+        assert snap["state"] == "failed"
+        assert "already writing" in snap["error"]
     release.set()
 
     assert wait_for_job(client, first)["state"] == "done"

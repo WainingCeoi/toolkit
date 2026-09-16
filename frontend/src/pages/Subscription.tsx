@@ -7,19 +7,16 @@ import type { Subscription as SubscriptionData, SubsHistoryItem } from '../types
 const PREVIEW_COLS = ['name', 'type', 'server', 'port', 'host', 'sni', 'network', 'tls']
 
 export default function Subscription() {
-  // inputs
   const [nodeLinks, setNodeLinks] = useState('')
   const [preferredIps, setPreferredIps] = useState('')
   const [namePrefix, setNamePrefix] = useState('')
   const [keepHost, setKeepHost] = useState(true)
 
-  // result panel
   const [result, setResult] = useState<SubscriptionData | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [dlError, setDlError] = useState<string | null>(null)
 
-  // history
   const [history, setHistory] = useState<SubsHistoryItem[]>([])
   const [historyError, setHistoryError] = useState<string | null>(null)
 
@@ -118,7 +115,6 @@ export default function Subscription() {
       </p>
 
       <div className="station">
-        {/* -------------------------------------------------- inputs (left) */}
         <div className="panel">
           <div className="step"><span className="n">01</span><span>Original node links</span></div>
           <div className="field">
@@ -176,7 +172,6 @@ export default function Subscription() {
           </Button>
         </div>
 
-        {/* ------------------------------------------------- result (right) */}
         <div className="panel">
           <div className="step"><span>Result</span></div>
 
@@ -291,7 +286,6 @@ export default function Subscription() {
         </div>
       </div>
 
-      {/* ---------------------------------------------------------- history */}
       <div className="panel" style={{ marginTop: 18 }}>
         <div className="step"><span>Subscription history</span></div>
 

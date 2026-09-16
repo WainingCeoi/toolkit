@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import threading
 import time
 import uuid
 
@@ -15,6 +16,7 @@ from toolkit_engine.bitcomet import (
     DESELECTED,
     HEADER_LEN,
     MAC_LEN,
+    PROBE_TIMEOUT,
     BitCometClient,
     BitCometError,
     Credentials,
@@ -29,7 +31,6 @@ from toolkit_engine.torrent import bencode
 
 
 def make_torrent(files, name="Example.Release"):
-    """A real multi-file .torrent, as bytes."""
     return bencode(
         {
             b"announce": b"udp://tracker.example:80",
@@ -148,7 +149,6 @@ def test_read_credentials_reports_a_corrupt_config(tmp_path):
 # --- TRANSPORT ---
 @pytest.fixture
 def save_folder(tmp_path):
-    """A registered save folder that exists on disk."""
     folder = tmp_path / "Downloads"
     folder.mkdir()
     return folder
@@ -271,6 +271,28 @@ def test_reauth_is_attempted_only_once_before_giving_up(fake, client):
     with pytest.raises(BitCometError):
         client.task_list()
     assert fake.logins == 2
+
+
+def test_threads_starting_together_share_one_handshake(fake, client):
+    """A send window puts ten calls on one tokenless client at the same moment."""
+    ready = threading.Barrier(10)
+    failures: list[BaseException] = []
+
+    def call():
+        try:
+            ready.wait(10.0)
+            client.task_list()
+        except BaseException as exc:  # noqa: BLE001 - reported by the assertion below
+            failures.append(exc)
+
+    threads = [threading.Thread(target=call) for _ in range(10)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(15.0)
+
+    assert not failures
+    assert fake.logins == 1
 
 
 # --- TASK IDS ---
@@ -430,6 +452,16 @@ def test_ensure_save_folder_registers_an_unknown_folder(fake, client, tmp_path):
     client.add_torrent(make_torrent(SAMPLE_FILES), folder)
 
 
+def test_a_relative_local_save_folder_is_refused(fake, client, tmp_path, monkeypatch):
+    # "Save to" is a free-text box; a bare name would land in the backend's cwd.
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(BitCometError, match="full path"):
+        client.ensure_save_folder("Torrents")
+
+    assert not (tmp_path / "Torrents").exists()
+    assert not any(path.endswith("directories/add") for _m, path, _p in fake.calls)
+
+
 def test_ensure_save_folder_does_not_re_register_a_known_one(fake, client, save_folder):
     # A trailing slash must not make one folder look like two.
     assert client.ensure_save_folder(f"{save_folder}/") == str(save_folder)
@@ -500,12 +532,6 @@ def test_the_size_cap_is_asked_for_once_and_remembered(fake, client, save_folder
 
 
 # --- TIMEOUTS ---
-def test_deadline_applies_only_inside_the_block(client):
-    with client.deadline(0.25):
-        assert client.timeout == 0.25
-    assert client.timeout == 10.0
-
-
 def test_probe_gives_up_quickly_on_a_wedged_bitcomet(client):
     client.base_url = "http://10.255.255.1:19377"  # black-holes, never refuses
     started = time.monotonic()
@@ -515,10 +541,88 @@ def test_probe_gives_up_quickly_on_a_wedged_bitcomet(client):
     assert client.timeout == 10.0
 
 
-def test_deadline_restores_the_timeout_even_when_the_block_fails(client):
-    with pytest.raises(BitCometError), client.deadline(0.25):
-        raise BitCometError("boom")
-    assert client.timeout == 10.0
+def test_a_probe_racing_a_slow_login_keeps_its_own_budget(client):
+    """Waiting for another thread's handshake must not outlast the probe's budget."""
+    logging_in, release = threading.Event(), threading.Event()
+    request = client._session.request
+
+    def wrapped(*args, **kwargs):
+        if threading.current_thread() is not threading.main_thread():
+            logging_in.set()
+            release.wait(5.0)
+        return request(*args, **kwargs)
+
+    client._session.request = wrapped
+    thread = threading.Thread(target=client.task_list)
+    thread.start()
+    try:
+        assert logging_in.wait(5.0)
+        started = time.monotonic()
+        answer = client.probe()
+        elapsed = time.monotonic() - started
+    finally:
+        release.set()
+        thread.join(10.0)
+
+    assert elapsed < PROBE_TIMEOUT + 1.0, (
+        f"probe spent {elapsed:.1f}s on another thread's login"
+    )
+    assert answer is None  # it gave up on the lock, not on a dead BitComet
+
+
+def test_a_401_retry_racing_a_slow_login_keeps_its_own_budget(fake, client):
+    """Dropping a stale token takes the handshake lock too, so it needs that bound."""
+    client.task_list()  # cache the token the probe below will present
+    fake.revoke_tokens()  # BitComet restarted; that token now 401s
+    holding, release = threading.Event(), threading.Event()
+
+    def hold_the_handshake():
+        client._login_lock.acquire()
+        holding.set()
+        release.wait(5.0)
+        client._login_lock.release()
+
+    thread = threading.Thread(target=hold_the_handshake)
+    thread.start()
+    try:
+        assert holding.wait(5.0)
+        started = time.monotonic()
+        answer = client.probe()
+        elapsed = time.monotonic() - started
+    finally:
+        release.set()
+        thread.join(10.0)
+
+    assert elapsed < PROBE_TIMEOUT + 1.0, (
+        f"the 401 retry spent {elapsed:.1f}s on another thread's login"
+    )
+    assert answer is None
+
+
+def test_a_probe_cannot_shorten_a_call_running_beside_it(client):
+    """One client serves every request thread, so no call may set the timeout."""
+    client.task_list()  # log in first, so each call below is a single request
+    probing, release, seen = threading.Event(), threading.Event(), []
+    request = client._session.request
+
+    def wrapped(*args, **kwargs):
+        seen.append(kwargs["timeout"])
+        if threading.current_thread() is not threading.main_thread():
+            probing.set()
+            release.wait(5.0)
+        return request(*args, **kwargs)
+
+    client._session.request = wrapped
+    thread = threading.Thread(target=client.probe)
+    thread.start()
+    try:
+        assert probing.wait(5.0)
+        client.task_list()
+    finally:
+        release.set()
+        thread.join(5.0)
+
+    assert seen == [PROBE_TIMEOUT, 10.0]
 
 
 # --- DEVICE IDENTITY ---

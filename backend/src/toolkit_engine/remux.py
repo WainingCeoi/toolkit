@@ -15,7 +15,6 @@ from toolkit_engine.fsutil import natural_sort_key
 __all__ = ["SUBTITLE_EXTENSIONS", "VIDEO_EXTENSIONS"]
 
 
-# --- CORE REMUX LOGIC ---
 def build_ffmpeg_cmd(
     input_video, input_subtitle, output_video, track_configs, sub_lang
 ):
@@ -80,7 +79,6 @@ def run_remux_task(task, progress_state, lock, ff_registry=None):
                 ff_registry.pop(task_id, None)
 
 
-# --- FOLDER SCANNING & SUBTITLE MATCHING ---
 def list_videos(folder: str) -> tuple[list[str], str | None]:
     """List video files in `folder`, natural-sorted, as absolute path strings."""
     folder_path = Path(folder).expanduser()
@@ -121,12 +119,12 @@ def match_subtitles(
     return {}, "❌ Subtitle folder not found — use an absolute path."
 
 
-# --- BATCH EXECUTION ---
 def run_remux_batch(tasks: list[dict], max_workers: int, job) -> list[dict]:
     """Run the remux tasks in a thread pool, mirroring progress into `job`."""
     progress_state = {t["task_id"]: 0.0 for t in tasks}
     ff_registry: dict = {}  # task_id -> live FfmpegProgress (for cancel-kill)
     lock = threading.Lock()
+    killed: set = set()
 
     for i in range(len(tasks)):
         job.update_item(i, state="running")
@@ -142,10 +140,11 @@ def run_remux_batch(tasks: list[dict], max_workers: int, job) -> list[dict]:
                 for f in futures:
                     f.cancel()
                 with lock:
-                    live = list(ff_registry.values())
-                for ff in live:
+                    live = list(ff_registry.items())
+                for task_id, ff in live:
                     try:
                         ff.quit()
+                        killed.add(task_id)
                     except Exception:
                         pass  # already exited between snapshot and kill
             with lock:
@@ -159,9 +158,14 @@ def run_remux_batch(tasks: list[dict], max_workers: int, job) -> list[dict]:
     results_by_id = {r["task_id"]: r for r in results}
     for i, t in enumerate(tasks):
         res = results_by_id.get(t["task_id"])
-        if res is None:  # cancelled before it started
-            continue
-        if res["success"]:
+        if res is not None and not res["success"] and t["task_id"] in killed:
+            # SIGKILL surfaces inside ffmpeg_progress_yield as an AttributeError.
+            res["cancelled"] = True
+            res["error"] = "Cancelled"
+            Path(t["output_video"]).unlink(missing_ok=True)
+        if res is None or res.get("cancelled"):
+            job.update_item(i, pct=0, state="pending")
+        elif res["success"]:
             job.update_item(i, pct=100, state="done")
         else:
             job.update_item(i, pct=0, state="failed", error=res["error"])

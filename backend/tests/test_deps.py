@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import sys
+import threading
 import time
 from pathlib import Path
 
@@ -142,6 +144,36 @@ def test_find_manifests_walks_subfolders_and_skips_heavy_dirs(tmp_path):
     }
 
 
+def test_find_manifests_leaves_poetry_and_pdm_projects_alone(tmp_path):
+    poetry = tmp_path / "poetry"
+    poetry.mkdir()
+    (poetry / "pyproject.toml").write_text(
+        '[project]\nname = "p"\nversion = "0.1.0"\ndependencies = ["fastapi>=0.1.0"]\n'
+        "[tool.poetry]\npackages = []\n",
+        encoding="utf-8",
+    )
+    assert depsync.find_manifests(str(tmp_path))[0] == []
+
+    # A uv.lock beside it means the user does drive this one with uv.
+    (poetry / "uv.lock").write_text(SAMPLE_LOCK, encoding="utf-8")
+    assert [m.rel for m in depsync.find_manifests(str(tmp_path))[0]] == [
+        "poetry/pyproject.toml"
+    ]
+
+
+def test_find_manifests_leaves_pnpm_yarn_and_bun_projects_alone(tmp_path):
+    for i, lock in enumerate(("pnpm-lock.yaml", "yarn.lock", "bun.lock", "bun.lockb")):
+        project = _npm_project(tmp_path / f"p{i}")
+        (project / lock).write_text("", encoding="utf-8")
+    assert depsync.find_manifests(str(tmp_path))[0] == []
+
+    # A package-lock.json beside it means the user does drive this one with npm.
+    (tmp_path / "p0" / "package-lock.json").write_text("{}", encoding="utf-8")
+    assert [m.rel for m in depsync.find_manifests(str(tmp_path))[0]] == [
+        "p0/package.json"
+    ]
+
+
 def test_find_manifests_rejects_empty_and_relative(tmp_path):
     _, err = depsync.find_manifests("")
     assert err and "No folder given" in err
@@ -149,6 +181,41 @@ def test_find_manifests_rejects_empty_and_relative(tmp_path):
     assert err and "absolute" in err
     _, err = depsync.find_manifests(str(tmp_path / "nope"))
     assert err and "Not a folder" in err
+
+
+# --- Subprocess streaming ---
+
+
+def test_stream_survives_non_utf8_output(tmp_path):
+    done: list[tuple[bool, str]] = []
+    reader = threading.Thread(
+        target=lambda: done.append(
+            depsync._stream(
+                [sys.executable, "-c", "import os; os.write(1, b'hi\\n\\xff bad\\n')"],
+                str(tmp_path),
+            )
+        ),
+        daemon=True,
+    )
+    reader.start()
+    reader.join(15)
+    assert done, "_stream never returned"
+    ok, log = done[0]
+    assert ok and "hi" in log
+
+
+def test_scan_upgrades_the_lockfiles_without_installing(tmp_path, monkeypatch):
+    seen = []
+    monkeypatch.setattr(depsync.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        depsync, "_stream", lambda cmd, *a, **k: (seen.append(cmd), (True, "ok"))[1]
+    )
+    depsync.run_uv_upgrade(str(tmp_path))
+    depsync.run_npm_upgrade(str(tmp_path))
+    assert seen == [
+        ["/usr/bin/uv", "lock", "-U"],
+        ["/usr/bin/npm", "install", "--package-lock-only"],
+    ]
 
 
 # --- uv: which floors get bumped ---
@@ -266,6 +333,35 @@ def test_apply_uv_bumps_raises_when_string_missing(tmp_path):
         depsync.apply_uv_bumps(path, [ghost])
 
 
+# --- npm: reading the registry ---
+
+
+def _fake_npm_outdated(monkeypatch, stdout):
+    monkeypatch.setattr(depsync.shutil, "which", lambda name: "/usr/bin/npm")
+    monkeypatch.setattr(
+        depsync.subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(a[0], 1, stdout, ""),
+    )
+
+
+def test_npm_outdated_reports_a_registry_failure(tmp_path, monkeypatch):
+    _fake_npm_outdated(
+        monkeypatch,
+        '{"error":{"code":"ECONNREFUSED","summary":"FetchError: refused"}}',
+    )
+    outdated, err = depsync.npm_outdated(str(tmp_path))
+    assert outdated == {} and err and "FetchError: refused" in err
+    latest, err = depsync.npm_latest(str(tmp_path))
+    assert latest == {} and err and "npm outdated failed" in err
+
+
+def test_npm_outdated_keeps_a_package_actually_named_error(tmp_path, monkeypatch):
+    _fake_npm_outdated(monkeypatch, '{"error":{"current":"1.0.0","latest":"1.2.0"}}')
+    outdated, err = depsync.npm_outdated(str(tmp_path))
+    assert err is None and outdated["error"]["latest"] == "1.2.0"
+
+
 # --- npm: bump rules ---
 
 
@@ -306,6 +402,30 @@ def test_apply_npm_bumps_rewrites_ranges_and_leaves_others(tmp_path):
     assert '"eslint": "^10.7.0"' in text
     assert '"wild": "1.x"' in text
     assert '"workspace-dep": "workspace:*"' in text
+
+
+def test_apply_npm_bumps_only_touches_the_bumps_own_table(tmp_path):
+    (tmp_path / "package.json").write_text(
+        '{\n  "peerDependencies": {"react": "^18.2.0"},\n'
+        '  "devDependencies": {"react": "^18.2.0"}\n}\n',
+        encoding="utf-8",
+    )
+    path = tmp_path / "package.json"
+    bumps = depsync.compute_npm_bumps(path, {"react": "19.1.0"})
+    assert [b.table for b in bumps] == ["devDependencies"]
+    depsync.apply_npm_bumps(path, bumps)
+    text = path.read_text(encoding="utf-8")
+    assert '"peerDependencies": {"react": "^18.2.0"}' in text
+    assert '"devDependencies": {"react": "^19.1.0"}' in text
+
+
+def test_apply_npm_bumps_raises_when_the_table_is_missing(tmp_path):
+    path = _npm_project(tmp_path) / "package.json"
+    ghost = depsync.Bump(
+        "react", "peerDependencies", "^18.2.0", "^19.1.0", True, "", ""
+    )
+    with pytest.raises(ValueError, match="could not locate"):
+        depsync.apply_npm_bumps(path, [ghost])
 
 
 def test_apply_npm_bumps_tolerates_spacing(tmp_path):
@@ -374,6 +494,22 @@ def test_commit_paths_includes_untracked_lock_and_skips_unrelated(tmp_path):
     )
     assert files == ["pyproject.toml", "uv.lock"]
     assert "A  other.txt" in _git(repo, "status", "--porcelain").stdout  # left staged
+
+
+@requires_git
+def test_commit_paths_unstages_when_a_hook_rejects_the_commit(tmp_path):
+    repo = _init_repo(tmp_path / "repo")
+    hook = repo / ".git" / "hooks" / "pre-commit"
+    hook.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    hook.chmod(0o755)
+    path = repo / "pyproject.toml"
+    depsync.apply_uv_bumps(path, depsync.compute_uv_bumps(path, RESOLVED))
+
+    sha, rels, err = depsync.commit_paths(str(repo), depsync.COMMIT_SUBJECT, [path])
+
+    assert sha is None and rels == []
+    assert err and "a git hook rejected the commit" in err
+    assert _git(repo, "diff", "--cached", "--name-only").stdout == ""
 
 
 @requires_git
@@ -457,6 +593,31 @@ def test_write_manifest_uv_rolls_back_when_relock_fails(tmp_path, monkeypatch):
     assert (root / "uv.lock").read_text(encoding="utf-8") == original_lock
 
 
+@requires_git
+def test_write_manifest_uses_the_workspace_root_lock(tmp_path, monkeypatch):
+    repo = tmp_path / "ws"
+    member = repo / "pkgs" / "a"
+    member.mkdir(parents=True)
+    (member / "pyproject.toml").write_text(SAMPLE_PYPROJECT, encoding="utf-8")
+    (repo / "uv.lock").write_text(SAMPLE_LOCK, encoding="utf-8")  # members have none
+    _init_git(repo)
+
+    resolved, err = depsync.resolved_versions(str(member))
+    assert err is None and resolved["fastapi"] == "0.115.0"
+
+    monkeypatch.setattr(depsync, "uv_lock_refresh", lambda folder: (True, "ok"))
+    manifest = depsync.Manifest(
+        member / "pyproject.toml", "uv", "pkgs/a/pyproject.toml"
+    )
+    result = depsync.write_manifest(manifest)
+
+    assert result["written"] == 3 and result["error"] is None
+    assert result["changed"] == [
+        member / "pyproject.toml",
+        repo.resolve() / "uv.lock",
+    ]
+
+
 def test_write_manifest_npm_skips_peer_conflicts_and_keeps_the_rest(
     tmp_path, monkeypatch
 ):
@@ -519,9 +680,9 @@ def _monorepo(root):
 
 
 def _fake_syncs(monkeypatch):
-    monkeypatch.setattr(depsync, "run_uv_sync", lambda *a, **k: (True, "Resolved"))
+    monkeypatch.setattr(depsync, "run_uv_upgrade", lambda *a, **k: (True, "Resolved"))
     monkeypatch.setattr(
-        depsync, "run_npm_install", lambda *a, **k: (True, "up to date")
+        depsync, "run_npm_upgrade", lambda *a, **k: (True, "up to date")
     )
     monkeypatch.setattr(depsync, "npm_latest", lambda folder: (LATEST, None))
 
@@ -557,6 +718,22 @@ def test_scan_returns_per_manifest_bumps(client, tmp_path, monkeypatch):
 def test_apply_rejects_empty_folder(client):
     r = client.post("/api/deps/apply", json={"folder": "", "commit": True})
     assert r.status_code == 400 and r.json()["detail"].startswith("❌")
+
+
+def test_apply_reports_an_unwritable_manifest_and_keeps_going(
+    client, tmp_path, monkeypatch
+):
+    root = _monorepo(tmp_path / "plain")
+    _fake_locks(monkeypatch)
+    (root / "backend" / "pyproject.toml").chmod(0o444)
+
+    r = client.post("/api/deps/apply", json={"folder": str(root), "commit": False})
+
+    assert r.status_code == 200
+    results = {t["rel"]: t for t in r.json()["results"]}
+    assert "Permission denied" in results["backend/pyproject.toml"]["error"]
+    assert results["backend/pyproject.toml"]["written"] == 0
+    assert results["frontend/package.json"]["written"] == 5
 
 
 def test_apply_refuses_non_git_folder_before_writing(client, tmp_path):
@@ -621,6 +798,21 @@ def test_apply_commits_the_relocked_uv_lock(client, tmp_path, monkeypatch):
 
 
 @requires_git
+def test_apply_commits_through_a_symlinked_folder(client, tmp_path, monkeypatch):
+    repo = _committed_monorepo(tmp_path / "repo")
+    link = tmp_path / "link"
+    link.symlink_to(repo)
+    _fake_locks(monkeypatch)
+
+    r = client.post("/api/deps/apply", json={"folder": str(link), "commit": True})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["written_total"] == 8
+    assert len(body["commits"]) == 1
+    assert [r["error"] for r in body["results"]] == [None, None]
+
+
+@requires_git
 def test_apply_uses_a_custom_commit_message(client, tmp_path, monkeypatch):
     repo = _committed_monorepo(tmp_path / "repo")
     _fake_locks(monkeypatch)
@@ -644,18 +836,99 @@ def test_apply_falls_back_to_default_message_when_blank(client, tmp_path, monkey
     assert subject == depsync.COMMIT_SUBJECT
 
 
-def test_apply_refuses_a_second_run_on_the_same_folder():
-    from fastapi import HTTPException
+def _uv_workspace(root):
+    """A git repo whose members share the root uv.lock and have none of their own."""
+    for name in ("a", "b"):
+        member = root / "pkgs" / name
+        member.mkdir(parents=True)
+        (member / "pyproject.toml").write_text(SAMPLE_PYPROJECT, encoding="utf-8")
+    (root / "uv.lock").write_text(SAMPLE_LOCK, encoding="utf-8")
+    _init_git(root)
+    _git(root, "add", "-A")
+    _git(root, "commit", "-qm", "init")
+    return root
 
-    from toolkit_api.routers.depsync import _exclusive_apply
 
-    with _exclusive_apply("/tmp/some-root"):
-        with pytest.raises(HTTPException) as excinfo:
-            with _exclusive_apply("/tmp/some-root"):
+def _fake_workspace_relock(monkeypatch):
+    """Relock the shared lock the way uv does: one marker line per member run."""
+
+    def relock(folder):
+        lock = depsync._lock_path(folder, "uv.lock")
+        lock.write_text(
+            lock.read_text(encoding="utf-8") + f"\n# relocked by {folder}\n",
+            encoding="utf-8",
+        )
+        return True, "ok"
+
+    monkeypatch.setattr(depsync, "uv_lock_refresh", relock)
+
+
+@requires_git
+def test_apply_rolls_a_shared_workspace_lock_back_to_its_first_snapshot(
+    client, tmp_path, monkeypatch
+):
+    repo = _uv_workspace(tmp_path / "ws")
+    original_lock = (repo / "uv.lock").read_text(encoding="utf-8")
+    _fake_workspace_relock(monkeypatch)
+    hook = repo / ".git" / "hooks" / "pre-commit"
+    hook.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    hook.chmod(0o755)
+
+    r = client.post("/api/deps/apply", json={"folder": str(repo), "commit": True})
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["written_total"] == 0
+    assert all("rolled back" in t["error"] for t in body["results"])
+    assert (repo / "uv.lock").read_text(encoding="utf-8") == original_lock
+    assert _git(repo, "status", "--porcelain").stdout == ""
+
+
+@requires_git
+def test_apply_commits_a_shared_workspace_lock_once(client, tmp_path, monkeypatch):
+    repo = _uv_workspace(tmp_path / "ws")
+    _fake_workspace_relock(monkeypatch)
+
+    r = client.post("/api/deps/apply", json={"folder": str(repo), "commit": True})
+
+    assert r.status_code == 200
+    files = r.json()["commits"][0]["files"]
+    assert sorted(files) == [
+        "pkgs/a/pyproject.toml",
+        "pkgs/b/pyproject.toml",
+        "uv.lock",
+    ]
+
+
+def test_apply_refuses_a_second_run_on_the_same_or_nested_folder():
+    from toolkit_api.routers.depsync import _BusyError, _exclusive_root
+
+    with _exclusive_root("/tmp/some-root"):
+        with pytest.raises(_BusyError):
+            with _exclusive_root("/tmp/some-root"):
                 pass
-        assert excinfo.value.status_code == 409
-        with _exclusive_apply("/tmp/other-root"):
+        with pytest.raises(_BusyError):  # a subfolder shares the manifests
+            with _exclusive_root("/tmp/some-root/backend"):
+                pass
+        with _exclusive_root("/tmp/other-root"):
             pass
 
-    with _exclusive_apply("/tmp/some-root"):
+    with _exclusive_root("/tmp/some-root"):
         pass
+
+
+def test_scan_and_apply_refuse_to_run_on_the_same_folder(client, tmp_path, monkeypatch):
+    from toolkit_api.routers.depsync import _exclusive_root
+
+    root = _monorepo(tmp_path)
+    _fake_syncs(monkeypatch)
+    with _exclusive_root(str(root.resolve())):
+        started = client.post("/api/deps/scan", json={"folder": str(root)})
+        assert started.status_code == 200
+        snap = _wait(client, started.json()["job_id"])
+        assert snap["state"] == "failed" and "already running" in snap["error"]
+
+        busy = client.post(
+            "/api/deps/apply", json={"folder": str(root), "commit": False}
+        )
+        assert busy.status_code == 409

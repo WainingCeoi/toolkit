@@ -6,8 +6,7 @@ import Layout from './Layout'
 import { JobsProvider } from './JobsProvider'
 import ErrorBoundary from './components/ErrorBoundary'
 
-// Hash routing needs no server-side fallback. One catch-all route: a route table would
-// unmount open tools on every navigation.
+// Hash routing needs no server fallback; one catch-all route keeps open tools mounted.
 const router = createHashRouter([{ path: '*', element: <Layout /> }])
 
 const rootElement = document.getElementById('root')

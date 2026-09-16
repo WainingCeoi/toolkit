@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../api'
 import { useToolActive, useToolBusy } from '../toolHost'
 import Button from '../components/Button'
@@ -8,14 +8,13 @@ import FolderField from '../components/FolderField'
 import {
   CATEGORIES,
   DEFAULT_SAVE_DIR,
-  MB,
   addTorrent,
   formatBytes,
   magnetLink,
   parseMagnetLines,
   retryableSend,
   ruleKey,
-  selectionFor,
+  selectionUnder,
   truncateMiddle,
   updateTorrent,
   windowedRun,
@@ -24,12 +23,11 @@ import type {
   TorrentDevice,
   TorrentDeviceList,
   TorrentDeviceTest,
-  TorrentFileRow,
   TorrentResolve,
   TorrentStatus,
 } from '../types/api'
 
-const NO_OVERRIDES: ReadonlyMap<number, boolean> = new Map()
+const NO_SELECTION: ReadonlySet<number> = new Set()
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 const errMsg = (e: unknown, fallback: string) => (e as Error).message || fallback
 
@@ -45,6 +43,7 @@ const RESOLVE_WINDOW = 10
 interface Failure {
   id: string
   magnet: string | null
+  reason: string | null
 }
 
 interface DeviceForm {
@@ -61,23 +60,24 @@ function magnetLabel(uri: string): string {
   return uri.match(/btih:([a-z0-9]+)/i)?.[1]?.slice(0, 12) ?? uri.slice(0, 24)
 }
 
-function FileList({
-  files,
+// Memoized: a season pack is thousands of rows, and every page keystroke re-renders.
+const FileList = memo(function FileList({
+  torrent,
   selected,
   onToggle,
 }: {
-  files: TorrentFileRow[]
-  selected: Set<number>
-  onToggle: (index: number) => void
+  torrent: TorrentResolve
+  selected: ReadonlySet<number>
+  onToggle: (t: TorrentResolve, index: number) => void
 }) {
   return (
     <div className="tor-files">
-      {files.map((file) => (
+      {torrent.files.map((file) => (
         <label key={file.index} className="tor-file" title={file.path}>
           <input
             type="checkbox"
             checked={selected.has(file.index)}
-            onChange={() => onToggle(file.index)}
+            onChange={() => onToggle(torrent, file.index)}
           />
           {/* Middle-truncated: the tail carries the extension and episode tag. */}
           <span className="tor-path">{truncateMiddle(file.path, 56)}</span>
@@ -87,12 +87,11 @@ function FileList({
       ))}
     </div>
   )
-}
+})
 
 export default function TorrentDownloader() {
   const [status, setStatus] = useState<TorrentStatus | null>(null)
 
-  // --- which BitComet (step 0) ---
   const [devices, setDevices] = useState<TorrentDeviceList | null>(null)
   const [picking, setPicking] = useState(false)
   const [form, setForm] = useState<DeviceForm | null>(null)
@@ -101,18 +100,15 @@ export default function TorrentDownloader() {
   const [deviceBusy, setDeviceBusy] = useState(false)
   const [deviceError, setDeviceError] = useState<string | null>(null)
 
-  // --- inputs (step 1) ---
   const [magnets, setMagnets] = useState('')
   const [pendingFiles, setPendingFiles] = useState<File[]>([])
   const [staging, setStaging] = useState(false)
   const [heldCount, setHeldCount] = useState(0)
 
-  // --- shared filter + destination (step 2) ---
   const [categories, setCategories] = useState<Set<string>>(new Set(['video']))
   const [minMb, setMinMb] = useState(100)
   const [saveDir, setSaveDir] = useState(DEFAULT_SAVE_DIR)
 
-  // --- resolved torrents under review (step 3) ---
   const [resolved, setResolved] = useState<TorrentResolve[]>([])
   const [resolvingHashes, setResolvingHashes] = useState<Set<string>>(new Set())
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
@@ -125,7 +121,6 @@ export default function TorrentDownloader() {
   // The pasted magnet per infohash, handed back on failure; a ref since nothing renders it.
   const sources = useRef<Map<string, string>>(new Map())
 
-  // --- handed over ---
   const [sentCount, setSentCount] = useState(0)
   const [batching, setBatching] = useState(false)
   const [sending, setSending] = useState<Set<string>>(new Set())
@@ -136,9 +131,12 @@ export default function TorrentDownloader() {
 
   // Keyed on tab visibility, not mount: keep-alive keeps this page mounted all session.
   const tabActive = useToolActive()
+  // Probing a sleeping remote takes seconds; only the newest probe may write status.
+  const statusSeq = useRef(0)
   useEffect(() => {
     if (!tabActive) return
     let cancelled = false
+    const seq = (statusSeq.current += 1)
     void (async () => {
       const [next, book] = await Promise.all([
         api.torrentStatus().catch(
@@ -146,7 +144,7 @@ export default function TorrentDownloader() {
         ),
         api.torrentDevices().catch(() => null),
       ])
-      if (cancelled) return
+      if (cancelled || seq !== statusSeq.current) return
       setStatus(next)
       setDevices(book)
     })()
@@ -174,15 +172,18 @@ export default function TorrentDownloader() {
   }
 
   async function refreshStatus() {
+    const seq = (statusSeq.current += 1)
+    let next: TorrentStatus
     try {
-      setStatus(await api.torrentStatus())
+      next = await api.torrentStatus()
     } catch {
-      setStatus({ running: false, server: null, detail: null, url: null })
+      next = { running: false, server: null, detail: null, url: null }
     }
+    if (seq === statusSeq.current) setStatus(next)
   }
 
-  function pushFailure(id: string, magnet: string | null = null) {
-    setFailures((prev) => [...prev, { id, magnet }])
+  function pushFailure(id: string, magnet: string | null = null, reason: string | null = null) {
+    setFailures((prev) => [...prev, { id, magnet, reason }])
   }
 
   function magnetFor(infohash: string, name?: string | null): string {
@@ -267,26 +268,43 @@ export default function TorrentDownloader() {
   liveSelection.current = { overrides, categories, minMb }
 
   function selectedFor(t: TorrentResolve): Set<number> {
-    const { overrides: live, categories: cats, minMb: floor } = liveSelection.current
-    const entry = live.get(t.infohash)
-    const active = entry && entry.key === ruleKey(t.infohash, cats, floor) ? entry.map : NO_OVERRIDES
-    return selectionFor(t, cats, floor * MB, active)
+    return selectionUnder(t, liveSelection.current)
   }
 
+  // Rendered ticks, computed once per torrent: unrelated state must not re-tick every file.
+  const selections = useMemo(() => {
+    const rules = { overrides, categories, minMb }
+    return new Map(resolved.map((t) => [t.infohash, selectionUnder(t, rules)]))
+  }, [resolved, overrides, categories, minMb])
+
+  // Discard deletes the task in BitComet, so a poll crossing it 404s; that is not a failure.
+  const discarded = useRef<Set<string>>(new Set())
+
   async function pollUntilReady(infohash: string) {
+    discarded.current.delete(infohash)
     for (;;) {
       await sleep(1500)
+      if (discarded.current.delete(infohash)) return
       let next: TorrentResolve
       try {
         next = await api.torrentPollResolve(infohash)
       } catch (e) {
+        if (discarded.current.delete(infohash)) return
         clearResolving(infohash)
-        pushFailure(infohash.slice(0, 12), magnetFor(infohash))
+        pushFailure(
+          infohash.slice(0, 12),
+          magnetFor(infohash),
+          errMsg(e, 'That magnet could not be resolved.'),
+        )
         return
       }
       if (next.state === 'error') {
         clearResolving(infohash)
-        pushFailure(next.name ?? infohash.slice(0, 12), magnetFor(infohash, next.name))
+        pushFailure(
+          next.name ?? infohash.slice(0, 12),
+          magnetFor(infohash, next.name),
+          'No metadata arrived in time — no peer answered for it.',
+        )
         return
       }
       if (next.ready) {
@@ -308,7 +326,7 @@ export default function TorrentDownloader() {
         await pollUntilReady(out.infohash)
       }
     } catch (e) {
-      pushFailure(magnetLabel(uri), uri)
+      pushFailure(magnetLabel(uri), uri, errMsg(e, 'That magnet could not be staged.'))
     }
   }
 
@@ -317,7 +335,7 @@ export default function TorrentDownloader() {
       const out = await api.torrentResolveFile(file, saveDir.trim())
       setResolved((prev) => addTorrent(prev, out))
     } catch (e) {
-      pushFailure(file.name)
+      pushFailure(file.name, null, errMsg(e, 'That .torrent could not be read.'))
     }
   }
 
@@ -379,7 +397,11 @@ export default function TorrentDownloader() {
       return 'ok'
     } catch (e) {
       if (!final && retryableSend(e)) return 'retry'
-      pushFailure(t.name ?? t.infohash.slice(0, 12), magnetFor(t.infohash, t.name))
+      pushFailure(
+        t.name ?? t.infohash.slice(0, 12),
+        magnetFor(t.infohash, t.name),
+        errMsg(e, 'BitComet would not take it.'),
+      )
       // The row stays in the review list so a manual Send needs no re-pasting.
       return 'failed'
     } finally {
@@ -436,11 +458,17 @@ export default function TorrentDownloader() {
 
   // A staged magnet already runs in BitComet; closing the card alone would leave it downloading.
   async function discardOne(t: TorrentResolve) {
+    discarded.current.add(t.infohash)
+    clearResolving(t.infohash)
     closeCard(t.infohash)
     try {
       await api.torrentDiscard(t.infohash)
     } catch (e) {
-      pushFailure(t.name ?? t.infohash.slice(0, 12), magnetFor(t.infohash, t.name))
+      pushFailure(
+        t.name ?? t.infohash.slice(0, 12),
+        magnetFor(t.infohash, t.name),
+        errMsg(e, 'BitComet would not drop it.'),
+      )
     }
   }
 
@@ -453,9 +481,10 @@ export default function TorrentDownloader() {
     })
   }
 
-  function toggleFile(t: TorrentResolve, index: number) {
-    const key = ruleKey(t.infohash, categories, minMb)
-    const current = selectedFor(t)
+  const toggleFile = useCallback((t: TorrentResolve, index: number) => {
+    const { categories: cats, minMb: floor } = liveSelection.current
+    const key = ruleKey(t.infohash, cats, floor)
+    const current = selectionUnder(t, liveSelection.current)
     setOverrides((prev) => {
       const entry = prev.get(t.infohash)
       const map = new Map(entry && entry.key === key ? entry.map : [])
@@ -464,7 +493,7 @@ export default function TorrentDownloader() {
       next.set(t.infohash, { key, map })
       return next
     })
-  }
+  }, [])
 
   function setAllFiles(t: TorrentResolve, on: boolean) {
     const key = ruleKey(t.infohash, categories, minMb)
@@ -487,7 +516,9 @@ export default function TorrentDownloader() {
   const bitcometDown = status !== null && !status.running
   const nothingToResolve = parseMagnetLines(magnets).length === 0 && pendingFiles.length === 0
   const noDestination = !saveDir.trim()
-  const readyCount = resolved.filter((t) => t.ready && selectedFor(t).size > 0).length
+  const readyCount = resolved.filter(
+    (t) => t.ready && (selections.get(t.infohash) ?? NO_SELECTION).size > 0,
+  ).length
   const active = status?.device ?? devices?.devices.find((d) => d.id === devices.active) ?? null
   const remote = status?.is_local === false
   const folders = status?.save_folders ?? []
@@ -504,7 +535,6 @@ export default function TorrentDownloader() {
         remove it in its own window.
       </p>
 
-      {/* ---------- which BitComet ---------- */}
       <div className="tor-device">
         <span className={`lamp${status?.running ? '' : ' off'}`}>
           <i />
@@ -671,9 +701,9 @@ export default function TorrentDownloader() {
                   )}
                 </div>
               )}
-              {deviceError && <div className="note error">{deviceError}</div>}
             </div>
           )}
+          {deviceError && <div className="note error">{deviceError}</div>}
         </div>
       )}
 
@@ -831,7 +861,7 @@ export default function TorrentDownloader() {
 
           <div className="tor-list">
             {resolved.map((t) => {
-              const selected = selectedFor(t)
+              const selected = selections.get(t.infohash) ?? NO_SELECTION
               const bytes = t.files
                 .filter((f) => selected.has(f.index))
                 .reduce((sum, f) => sum + f.size, 0)
@@ -897,11 +927,7 @@ export default function TorrentDownloader() {
                           ticks override the filter above
                         </span>
                       </div>
-                      <FileList
-                        files={t.files}
-                        selected={selected}
-                        onToggle={(index) => toggleFile(t, index)}
-                      />
+                      <FileList torrent={t} selected={selected} onToggle={toggleFile} />
                     </div>
                   )}
 
@@ -932,13 +958,12 @@ export default function TorrentDownloader() {
           {copyableFailures.length > 0 && (
             <CodeBox text={copyableFailures.map((f) => f.magnet).join('\n')} />
           )}
-          {failures
-            .filter((f) => f.magnet === null)
-            .map((f, i) => (
-              <div key={`${f.id}-${i}`} className="note error" style={{ margin: '6px 0 0' }}>
-                {truncateMiddle(f.id, 60)}
-              </div>
-            ))}
+          {failures.map((f, i) => (
+            <div key={`${f.id}-${i}`} className="note error" style={{ margin: '6px 0 0' }}>
+              {truncateMiddle(f.id, 60)}
+              {f.reason && ` — ${f.reason}`}
+            </div>
+          ))}
         </div>
       )}
 

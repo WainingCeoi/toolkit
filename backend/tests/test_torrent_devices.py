@@ -25,7 +25,6 @@ def fake():
 
 @pytest.fixture
 def local_is_the_fake(fake, tmp_path, monkeypatch):
-    """Make the local BitComet the fake, and the data dir tmp_path."""
     from toolkit_api import state as state_module
     from toolkit_engine import bitcomet
 
@@ -236,6 +235,14 @@ def test_status_offers_the_active_devices_own_folders(client):
     ]
 
 
+def test_status_asks_the_peer_for_its_config_only_once(client, fake):
+    # The lamp and the folder list come from one body; a remote peer answers slowly.
+    fake.calls.clear()
+    client.get("/api/torrent/status")
+    reads = [p for _m, path, p in fake.calls if path.endswith("new_task/get")]
+    assert len(reads) == 1
+
+
 def test_status_explains_an_unreachable_peer_in_lan_terms(client):
     add(client, "192.168.1.50:19377", label="Basement NAS")
     detail = client.get("/api/torrent/status").json()["detail"]
@@ -321,6 +328,46 @@ def test_a_remote_add_with_no_folder_falls_back_to_the_peers_own(
         )
     assert resp.status_code == 200
     assert fake.save_folders == ["/volume1/downloads"]
+
+
+# --- DEVICE EDITS DURING A BATCH ---
+def test_forgetting_another_device_keeps_a_fetching_magnet_watched(
+    client, fake, tmp_path
+):
+    """A rebuilt manager forgets the magnets it staged, and stops disabling them."""
+    from test_torrent_api import HASH, MAGNET
+
+    spare = add(client, "192.168.1.50:19377", label="Spare").json()["active"]
+    client.post(f"/api/torrent/devices/{LOCAL_ID}/select")
+    client.post(
+        "/api/torrent/resolve",
+        data={"magnet": MAGNET, "save_dir": str(tmp_path / "dl")},
+    )
+
+    assert client.delete(f"/api/torrent/devices/{spare}").status_code == 200
+
+    fake.publish_metadata(HASH, [("Movie.mkv", 2_000_000_000), ("RARBG.txt", 30)])
+    polled = client.get(f"/api/torrent/resolve/{HASH}").json()
+    assert polled["state"] == "awaiting_selection"
+    (task,) = fake.tasks.values()
+    assert {f["priority"] for f in task["files"]} == {"disabled"}
+
+
+def test_renaming_the_active_device_does_not_reconnect_it(client, app_state):
+    device_id = add(client, "192.168.1.50:19377").json()["active"]
+    before = app_state.torrents
+
+    client.patch(f"/api/torrent/devices/{device_id}", json={"label": "Basement NAS"})
+    assert app_state.torrents is before
+
+
+def test_changing_the_active_devices_address_does_reconnect_it(client, app_state):
+    device_id = add(client, "192.168.1.50:19377").json()["active"]
+    before = app_state.torrents
+
+    client.patch(f"/api/torrent/devices/{device_id}", json={"url": "192.168.1.51"})
+    assert app_state.torrents is not before
+    assert app_state.torrents.client.base_url == "http://192.168.1.51:19377"
 
 
 # --- TIMEOUTS ---

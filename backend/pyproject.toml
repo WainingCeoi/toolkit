@@ -4,7 +4,6 @@ version = "0.1.0"
 description = "FastAPI backend for Toolkit — media & file utilities engine + web API."
 requires-python = ">=3.14"
 dependencies = [
-    # --- web layer ---
     "fastapi>=0.141.1",
     "uvicorn>=0.52.1",
     "python-multipart>=0.0.32",

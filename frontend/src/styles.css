@@ -1,5 +1,3 @@
-/* Tokens first; every component below derives from them. */
-
 :root {
   /* --- theme-agnostic --- */
   --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
@@ -23,7 +21,7 @@
   --bench: #14171c;        /* page background — blue-black graphite */
   --panel: #1e232b;        /* drawers / cards */
   --panel-2: #232a34;      /* raised panel (hover, inputs) */
-  --edge: #2c333e;         /* machined edge */
+  --edge: #2c333e;
   --edge-hi: rgba(255, 255, 255, 0.05);
   --text: #e8eaed;
   --muted: #98a2b3;

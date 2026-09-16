@@ -3,19 +3,21 @@ import { api } from '../api'
 import { useToolJob } from '../jobs'
 import FolderField from '../components/FolderField'
 import JobPanel from '../components/JobPanel'
+import CodeBox from '../components/CodeBox'
 import Button from '../components/Button'
 import type { GatherResult as GatherResultData } from '../types/api'
 
 // Mirrors the backend's presets; keep them in sync.
 const FILE_TYPE_PRESETS: Record<string, string[]> = {
-  Video: ['*.mkv', '*.mp4', '*.mov', '*.ts', '*.flv', '*.avi', '*.webm', '*.m4v', '*.wmv', '*.mpg', '*.mpeg'],
+  Video: ['*.mkv', '*.mp4', '*.mov', '*.ts', '*.m2ts', '*.flv', '*.avi', '*.webm', '*.m4v', '*.wmv', '*.mpg', '*.mpeg'],
   Audio: ['*.mp3', '*.flac', '*.aac', '*.wav', '*.m4a', '*.ogg', '*.opus', '*.wma'],
   Image: ['*.jpg', '*.jpeg', '*.png', '*.gif', '*.heic', '*.webp', '*.bmp', '*.tiff'],
   Subtitle: ['*.srt', '*.ass', '*.ssa', '*.sub', '*.vtt'],
-  Document: ['*.pdf', '*.docx', '*.doc', '*.txt', '*.epub', '*.pptx', '*.xlsx'],
-  Archive: ['*.zip', '*.rar', '*.7z', '*.tar', '*.gz'],
+  Document: ['*.pdf', '*.docx', '*.doc', '*.txt', '*.epub', '*.pptx', '*.xlsx', '*.nfo'],
+  Archive: ['*.zip', '*.rar', '*.7z', '*.tar', '*.gz', '*.bz2'],
 }
 const CATEGORY_NAMES = Object.keys(FILE_TYPE_PRESETS)
+const LIST_LIMIT = 200
 
 function normalizePattern(token: string): string | null {
   const t = token.trim()
@@ -34,6 +36,8 @@ const captionStyle: CSSProperties = {
 function GatherResult({ result }: { result: GatherResultData }) {
   const { moved, failed, scan_errors: scanErrors, target, warning } = result
   const nothingFound = moved.length === 0 && failed.length === 0
+  // A target that fills up or goes away fails every remaining file; the count stays exact.
+  const shownFailed = failed.slice(0, LIST_LIMIT)
   return (
     <div>
       {scanErrors.length > 0 && (
@@ -63,14 +67,17 @@ function GatherResult({ result }: { result: GatherResultData }) {
           </div>
 
           {failed.length > 0 && (
-            <div className="field">
-              <span className="label">⚠️ Failures</span>
-              {failed.map((f, i) => (
-                <div className="note error" key={i} style={{ overflowWrap: 'anywhere' }}>
-                  🔴 {f.name}: {f.error}
-                </div>
-              ))}
-            </div>
+            <details className="expander">
+              <summary>❌ {failed.length} failed</summary>
+              <div className="body">
+                <CodeBox text={shownFailed.map((f) => `${f.name}: ${f.error}`).join('\n')} />
+                {failed.length > shownFailed.length && (
+                  <p style={captionStyle}>
+                    Showing first {shownFailed.length} of {failed.length}.
+                  </p>
+                )}
+              </div>
+            </details>
           )}
 
           {warning ? (

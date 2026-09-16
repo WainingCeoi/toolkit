@@ -34,6 +34,11 @@ def _file(index: int, path: str, size: int) -> dict:
     }
 
 
+class _Server(ThreadingHTTPServer):
+    # A send window opens ten sockets at once; the default backlog of 5 resets them.
+    request_queue_size = 64
+
+
 class _DeniedError(Exception):
     """Answered as HTTP 401: the bearer token is missing, stale or revoked."""
 
@@ -68,7 +73,7 @@ class FakeBitComet:
         self.reject_every_token = False
 
         self._next_task_id = 1001
-        self._server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
+        self._server = _Server(("127.0.0.1", 0), self._handler())
         self._thread = threading.Thread(
             target=self._server.serve_forever,
             # shutdown() waits a full poll tick; the 0.5s default dominates the suite.
@@ -90,7 +95,7 @@ class FakeBitComet:
         """Invalidate every issued device_token, as a BitComet restart does."""
         self.live_tokens.clear()
 
-    # --- state ------------------------------------------------------------
+    # --- state ---
     def add_task(
         self, name: str, files: list[tuple[str, int]], infohash: str = ""
     ) -> str:
@@ -165,7 +170,7 @@ class FakeBitComet:
         if folder not in {f.rstrip("/") for f in self.save_folders}:
             raise _RejectedError("INVALID_SAVE_FOLDER", "save_folder invalid")
 
-    # --- dispatch ---------------------------------------------------------
+    # --- dispatch ---
     def _dispatch(
         self, method: str, path: str, payload: dict, token: str | None
     ) -> dict:
@@ -347,7 +352,7 @@ class FakeBitComet:
             self.deleted.append((task_id, verb == "delete_all"))
         return {"error_code": "OK"}
 
-    # --- wire -------------------------------------------------------------
+    # --- wire ---
     def _handler(self):
         fake = self
 

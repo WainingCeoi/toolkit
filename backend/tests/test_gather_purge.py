@@ -31,7 +31,7 @@ def wait_for_job(client, job_id, timeout=5.0):
     raise AssertionError(f"job {job_id} did not finish within {timeout}s")
 
 
-# --- engine units -----------------------------------------------------------
+# --- engine units ---
 
 
 def test_normalize_pattern():
@@ -40,6 +40,31 @@ def test_normalize_pattern():
     assert gather.normalize_pattern("*.mkv") == "*.mkv"
     assert gather.normalize_pattern("report*.pdf") == "report*.pdf"
     assert gather.normalize_pattern("   ") is None
+
+
+def test_move_files_numbers_duplicates_around_an_occupied_name(tmp_path):
+    tgt = tmp_path / "tgt"
+    tgt.mkdir()
+    (tgt / "cover_1.jpg").write_text("already there")
+    files = []
+    for i in range(3):
+        folder = tmp_path / f"src{i}"
+        folder.mkdir()
+        cover = folder / "cover.jpg"
+        cover.write_text(str(i))
+        files.append(str(cover))
+
+    moved, failed = gather.move_files(files, tgt)
+
+    assert failed == []
+    assert moved == ["cover.jpg"] * 3
+    assert sorted(p.name for p in tgt.iterdir()) == [
+        "cover.jpg",
+        "cover_1.jpg",
+        "cover_2.jpg",
+        "cover_3.jpg",
+    ]
+    assert (tgt / "cover_1.jpg").read_text() == "already there"
 
 
 @pytest.mark.parametrize(
@@ -55,7 +80,7 @@ def test_purge_normalize_pattern_keeps_real_globs(token):
     assert purge.normalize_pattern(token) is not None
 
 
-# --- File Gatherer API ------------------------------------------------------
+# --- File Gatherer API ---
 
 
 def test_gather_moves_files_and_autonumbers_duplicates(tool_client, tmp_path):
@@ -178,6 +203,29 @@ def test_gather_rejects_target_inside_source(tool_client, tmp_path):
     )
 
 
+def test_gather_rejects_a_case_variant_target(tool_client, tmp_path):
+    src = tmp_path / "Movies"
+    src.mkdir()
+    (src / "ep1.mkv").write_bytes(b"one")
+    alt = tmp_path / "movies"
+    if not alt.is_dir():
+        pytest.skip("case-sensitive filesystem")
+
+    resp = tool_client.post(
+        "/api/gather/start",
+        json={
+            "source": str(src),
+            "target": str(alt),
+            "categories": ["Video"],
+            "custom": "",
+        },
+    )
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == (
+        "❌ Target must be a different folder, outside the source."
+    )
+
+
 def test_gather_rejects_relative_paths(tool_client, tmp_path):
     resp = tool_client.post(
         "/api/gather/start",
@@ -194,7 +242,7 @@ def test_gather_rejects_relative_paths(tool_client, tmp_path):
     )
 
 
-# --- Cache Purge API --------------------------------------------------------
+# --- Cache Purge API ---
 
 
 def test_purge_scan_and_delete_end_to_end(tool_client, tmp_path):
@@ -377,6 +425,76 @@ def test_gather_reports_per_file_move_failures(tool_client, tmp_path, monkeypatc
     assert snap["result"]["failed"] == [
         {"name": "b.mkv", "error": "cross-device link failed"}
     ]
+
+
+def test_purge_delete_cancel_reports_every_file_it_removed(tmp_path, monkeypatch):
+    paths = []
+    for i in range(40):
+        p = tmp_path / f"f{i:02d}.log"
+        p.write_text("x")
+        paths.append(str(p))
+
+    real_unlink = Path.unlink
+
+    def slow_unlink(self, *args, **kwargs):
+        time.sleep(0.02)
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", slow_unlink)
+
+    deleted, failed = purge.delete_files(paths, lambda done, total: done >= 4)
+
+    assert failed == []
+    gone = [p for p in paths if not Path(p).exists()]
+    assert len(gone) < len(paths)  # cancelling actually stopped the run
+    assert sorted(deleted) == sorted(gone)
+
+
+@pytest.mark.parametrize("token", ["[", "*.[abc"])
+def test_purge_scan_rejects_a_malformed_bracket_pattern(tool_client, tmp_path, token):
+    resp = tool_client.post(
+        "/api/purge/scan",
+        json={"folder": str(tmp_path), "patterns_raw": token},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["detail"].startswith("❌ Invalid pattern:")
+
+
+def test_gather_presets_cover_the_shared_file_type_table(tool_client, tmp_path):
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "disc.m2ts").write_bytes(b"x")  # a video to Remux, but not to Gather
+    tgt = tmp_path / "tgt"
+
+    resp = tool_client.post(
+        "/api/gather/start",
+        json={
+            "source": str(src),
+            "target": str(tgt),
+            "categories": ["Video"],
+            "custom": "",
+        },
+    )
+    assert resp.status_code == 200
+    snap = wait_for_job(tool_client, resp.json()["job_id"])
+    assert snap["state"] == "done"
+    assert snap["result"]["moved"] == ["disc.m2ts"]
+
+
+def test_gather_rejects_an_unknown_category(tool_client, tmp_path):
+    src = tmp_path / "src"
+    src.mkdir()
+    resp = tool_client.post(
+        "/api/gather/start",
+        json={
+            "source": str(src),
+            "target": str(tmp_path / "tgt"),
+            "categories": ["video"],
+            "custom": "",
+        },
+    )
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "❌ Unknown file type: video"
 
 
 def test_purge_scan_rejects_catch_all_only_patterns(tool_client, tmp_path):

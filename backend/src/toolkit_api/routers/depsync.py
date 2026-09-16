@@ -17,25 +17,36 @@ from ..schemas import JobStartedOut
 
 router = APIRouter(prefix="/deps", tags=["deps"])
 
-# Folders with an apply in flight: a concurrent apply's rollback clobbers the first.
-_applying: set[str] = set()
-_applying_lock = threading.Lock()
+# Folders with a scan or an apply in flight: either one rewrites the same lockfiles.
+_busy_roots: set[str] = set()
+_busy_lock = threading.Lock()
+_BUSY = "⏳ An upgrade is already running for this folder."
+
+
+class _BusyError(Exception):
+    """Another scan or apply already owns this folder."""
+
+
+def _root_key(folder: str) -> str:
+    return str(Path(folder).expanduser().resolve())
 
 
 @contextmanager
-def _exclusive_apply(root: str) -> Iterator[None]:
-    with _applying_lock:
-        if root in _applying:
-            raise HTTPException(
-                status_code=409,
-                detail="⏳ An upgrade is already running for this folder.",
-            )
-        _applying.add(root)
+def _exclusive_root(root: str) -> Iterator[None]:
+    here = Path(root)
+    with _busy_lock:
+        # Nested roots clash too: /repo and /repo/backend share the same manifests.
+        if any(
+            here.is_relative_to(other) or Path(other).is_relative_to(here)
+            for other in _busy_roots
+        ):
+            raise _BusyError(_BUSY)
+        _busy_roots.add(root)
     try:
         yield
     finally:
-        with _applying_lock:
-            _applying.discard(root)
+        with _busy_lock:
+            _busy_roots.discard(root)
 
 
 _NO_MANIFESTS = (
@@ -101,27 +112,28 @@ def scan(req: ScanIn, jobs: JobsDep) -> JobStartedOut:
     root = str(Path(req.folder).expanduser())
 
     def worker(job):
-        targets = []
-        for manifest in manifests:
+        with _exclusive_root(_root_key(req.folder)):
+            targets = []
+            for manifest in manifests:
+                if job.cancelled:
+                    return None
+                job.set_message(f"Scanning {manifest.rel} …")
+                targets.append(
+                    depsync.scan_manifest(
+                        manifest,
+                        on_message=lambda line, rel=manifest.rel: job.set_message(
+                            f"{rel}: {line}"
+                        ),
+                        is_cancelled=lambda: job.cancelled,
+                    )
+                )
             if job.cancelled:
                 return None
-            job.set_message(f"Scanning {manifest.rel} …")
-            targets.append(
-                depsync.scan_manifest(
-                    manifest,
-                    on_message=lambda line, rel=manifest.rel: job.set_message(
-                        f"{rel}: {line}"
-                    ),
-                    is_cancelled=lambda: job.cancelled,
-                )
-            )
-        if job.cancelled:
-            return None
-        return {
-            "root": root,
-            "targets": targets,
-            "total_bumps": sum(len(t["bumps"]) for t in targets),
-        }
+            return {
+                "root": root,
+                "targets": targets,
+                "total_bumps": sum(len(t["bumps"]) for t in targets),
+            }
 
     job = jobs.submit("dep-upgrade", [], worker)
     return JobStartedOut(job_id=job.id)
@@ -141,8 +153,11 @@ def apply(req: ApplyIn) -> ApplyOut:
             if depsync.git_root(str(manifest.path.parent)) is None:
                 raise HTTPException(status_code=400, detail=_NOT_A_REPO)
 
-    with _exclusive_apply(str(Path(req.folder).expanduser().resolve())):
-        return _apply_manifests(manifests, req)
+    try:
+        with _exclusive_root(_root_key(req.folder)):
+            return _apply_manifests(manifests, req)
+    except _BusyError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
 
 
 def _apply_manifests(manifests: list, req: ApplyIn) -> ApplyOut:
@@ -151,25 +166,30 @@ def _apply_manifests(manifests: list, req: ApplyIn) -> ApplyOut:
 
     if req.commit:
         subject = (req.message or "").strip() or depsync.COMMIT_SUBJECT
-        groups: dict[str, list[Path]] = {}
+        groups: dict[str, dict[Path, None]] = {}
         for result in results:
             for path in result["changed"]:
                 root = depsync.git_root(str(path.parent))
                 if root:
-                    groups.setdefault(root, []).append(path)
+                    # A workspace lock is listed by every member; git wants it once.
+                    groups.setdefault(root, {})[path] = None
 
         commit_error = None
         for root, paths in groups.items():
-            sha, rels, git_err = depsync.commit_paths(root, subject, paths)
+            sha, rels, git_err = depsync.commit_paths(root, subject, list(paths))
             if git_err:
                 commit_error = git_err
                 break
             commits.append({"sha": sha, "files": rels})
 
         if commit_error:
-            # All-or-nothing: nothing lands unless the commit lands.
+            originals: dict[str, str | None] = {}
             for result in results:
-                depsync.restore(result["originals"])
+                for path_str, text in result["originals"].items():
+                    # Members snapshot a shared lock in turn; the first is the original.
+                    originals.setdefault(path_str, text)
+            depsync.restore(originals)
+            for result in results:
                 result["written"] = 0
                 result["bumps"] = []
                 result["error"] = f"{commit_error} (rolled back)"

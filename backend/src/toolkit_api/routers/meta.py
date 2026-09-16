@@ -149,7 +149,6 @@ def disabled_slugs() -> set[str]:
 
 @router.get("/tools", response_model=list[CategoryOut])
 def tools() -> list[CategoryOut]:
-    """The nav + home manifest, minus any tool disabled for this machine."""
     disabled = disabled_slugs()
     if not disabled:
         return CATEGORIES

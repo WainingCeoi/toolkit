@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import ipaddress
 import os
 import socket
@@ -12,11 +13,12 @@ APP = "toolkit_api.main:app"
 BASE_PORT = 8000
 PORT_TRIES = 20
 _LOOPBACK = {"127.0.0.1", "localhost", "::1"}
+# Where to knock when probing a wildcard bind address.
+_WILDCARD = {"0.0.0.0": "127.0.0.1", "": "127.0.0.1", "::": "::1"}
 _BAR = "─" * 64
 
 
 def _run(cmd: list[str]) -> str | None:
-    """Run a short command and return its trimmed stdout, or None on failure."""
     try:
         proc = subprocess.run(
             cmd, capture_output=True, text=True, timeout=5, check=False
@@ -45,7 +47,6 @@ def mdns_name() -> str | None:
 
 
 def _is_private_lan(ip: str) -> bool:
-    """True for a real IPv4 LAN address (RFC1918), excluding loopback/link-local."""
     try:
         addr = ipaddress.ip_address(ip)
     except ValueError:
@@ -91,8 +92,19 @@ def lan_ip() -> str | None:
     return candidates[0] if candidates else None
 
 
+def _already_serving(family: int, host: str, port: int) -> bool:
+    """True when something already accepts here; SO_REUSEADDR hides it from bind()."""
+    with socket.socket(family, socket.SOCK_STREAM) as sock:
+        sock.settimeout(0.25)
+        try:
+            sock.connect((_WILDCARD.get(host, host), port))
+        except OSError:
+            return False
+    return True
+
+
 def free_port(host: str, base: int, tries: int = PORT_TRIES) -> int:
-    """First port >= ``base`` that actually binds on ``host`` (real bind test)."""
+    """First port >= ``base`` that binds on ``host`` and has no listener already."""
     # Resolve the family first; an AF_INET-only probe fails for ::1.
     try:
         family = socket.getaddrinfo(host, base, type=socket.SOCK_STREAM)[0][0]
@@ -101,12 +113,17 @@ def free_port(host: str, base: int, tries: int = PORT_TRIES) -> int:
     last_err: OSError | None = None
     for port in range(base, base + tries):
         with socket.socket(family, socket.SOCK_STREAM) as sock:
+            # Kept so a port left in TIME_WAIT is not skipped; uvicorn sets it too.
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
                 sock.bind((host, port))
-                return port
             except OSError as err:
                 last_err = err
+                continue
+        if _already_serving(family, host, port):
+            last_err = OSError(errno.EADDRINUSE, os.strerror(errno.EADDRINUSE))
+            continue
+        return port
     raise SystemExit(
         f"No free port in {base}..{base + tries - 1} on {host} "
         f"(last error: {last_err}). Free one up or set PORT=<n>."

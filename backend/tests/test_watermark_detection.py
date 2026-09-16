@@ -628,7 +628,7 @@ def test_auto_withholds_a_fallback_mask_it_would_not_be_allowed_to_use():
     assert np.count_nonzero(mask) == 0
 
     real = detect._worth_removing
-    detect._worth_removing = lambda rgb, m: True
+    detect._worth_removing = lambda rgb, m: (None, True)
     try:
         ungated, kind = propose_mask_detailed(page, 50, detector="auto")
     finally:
@@ -738,6 +738,13 @@ def test_near_duplicate_frames_are_refused_not_read_as_one_big_mark():
     assert recover_stacked(_reloadable(marked)) is None
     clean, _ = stacked_batch(n=5, duplicates=True, watermarked=False)
     assert recover_stacked(_reloadable(clean)) is None
+
+
+def test_a_batch_of_banners_too_thin_to_roll_is_refused_not_a_crash():
+    # A working frame under twice the null roll: refuse the batch, never raise.
+    frames, _truth = stacked_batch(n=4, size=(600, 79))
+    assert recover_stacked(_reloadable(frames)) is None
+    assert collect_marks(_reloadable(frames)) == []
 
 
 def test_a_stack_of_two_proves_nothing():

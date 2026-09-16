@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import ipaddress
 import json
 import re
 from copy import deepcopy
@@ -14,7 +15,7 @@ SUPPORTED_PROTOCOLS = ("vmess", "vless", "trojan")
 DEFAULT_TEST_URL = "http://cp.cloudflare.com/generate_204"
 
 
-# ---------------------------------------------------------------- base64 / text
+# --- base64 / text ---
 def _b64encode_utf8(text: str) -> str:
     return base64.b64encode(text.encode("utf-8")).decode("ascii")
 
@@ -33,7 +34,7 @@ def split_csv_like(text: str) -> list[str]:
     return [p.strip() for p in re.split(r"[\n,;]+", normalize_text(text)) if p.strip()]
 
 
-# ------------------------------------------------------------------- primitives
+# --- primitives ---
 def _to_int(value, fallback: int = 0) -> int:
     try:
         return int(str(value).strip())
@@ -94,7 +95,19 @@ def _get_effective_tls_host(node: dict) -> str:
     ).strip()
 
 
-# ----------------------------------------------------------------- target / urls
+def _has_tls_domain(node: dict) -> bool:
+    """True when the node carries a real domain to present as SNI/Host."""
+    host = _get_effective_tls_host(node).strip("[]")
+    if not host:
+        return False
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return True
+    return False
+
+
+# --- target / urls ---
 def detect_target(user_agent: str = "", explicit_target: str = "") -> str:
     """Resolve the output format from an explicit target or the client User-Agent."""
     target = (explicit_target or "").strip().lower()
@@ -108,7 +121,7 @@ def detect_target(user_agent: str = "", explicit_target: str = "") -> str:
     return "raw"
 
 
-# ---------------------------------------------------------------------- parsing
+# --- parsing ---
 def _maybe_expand_raw_subscription(input_text: str) -> str:
     text = normalize_text(input_text)
     if not text or "://" in text:
@@ -287,8 +300,9 @@ def _split_host_and_port(value: str) -> tuple[str, int | None]:
         return value, None  # bare IPv6
     if ":" in value:
         host, _, port = value.partition(":")
-        if port.isdigit():
-            return host, _normalize_port(port)
+        if not port.isdigit():
+            raise ValueError(f"Invalid port: {port}")
+        return host, _normalize_port(port)
     return value, None
 
 
@@ -332,7 +346,7 @@ def parse_preferred_endpoints(input_text: str) -> dict:
     return {"endpoints": endpoints, "warnings": warnings}
 
 
-# --------------------------------------------------------------------- expansion
+# --- expansion ---
 def _build_node_name(base_name: str, suffix: str) -> str:
     clean_base = str(base_name or "").strip() or "node"
     clean_suffix = str(suffix or "").strip()
@@ -350,7 +364,7 @@ def expand_nodes(
     expanded: list[dict] = []
     seq = 0
     for base_node in base_nodes:
-        if keep_original_host and not _get_effective_tls_host(base_node):
+        if keep_original_host and not _has_tls_domain(base_node):
             warnings.append(
                 f"Node '{base_node.get('name')}' has no Host/SNI/original domain; "
                 "the TLS handshake may fail after swapping in the optimized IP."
@@ -408,7 +422,7 @@ def summarize_nodes(nodes: list[dict], limit: int = 20) -> list[dict]:
     ]
 
 
-# ------------------------------------------------------------------- node URIs
+# --- node URIs ---
 def _render_vmess_uri(node: dict) -> str:
     payload = {
         "v": "2",
@@ -501,7 +515,7 @@ def render_node_uri(node: dict) -> str:
     raise ValueError(f"Unknown node type: {kind}")
 
 
-# ------------------------------------------------------------------- renderers
+# --- renderers ---
 def render_raw_subscription(nodes: list[dict]) -> str:
     return _b64encode_utf8("\n".join(render_node_uri(node) for node in nodes))
 
@@ -553,11 +567,17 @@ def _clash_proxy(node: dict) -> dict:
         proxy["ws-opts"] = ws_opts
     elif net == "grpc":
         proxy["grpc-opts"] = {"grpc-service-name": node.get("service_name") or ""}
-    elif net in ("http", "h2"):
+    elif net == "http":
         http_opts: dict = {"path": [node.get("path") or "/"]}
         if node.get("host_header"):
             http_opts["headers"] = {"Host": [node["host_header"]]}
         proxy["http-opts"] = http_opts
+    elif net == "h2":
+        # mihomo reads h2-opts for network: h2 and ignores http-opts.
+        h2_opts: dict = {"path": node.get("path") or "/"}
+        if node.get("host_header"):
+            h2_opts["host"] = [node["host_header"]]
+        proxy["h2-opts"] = h2_opts
     return proxy
 
 

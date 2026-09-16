@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import gc
+import importlib
+import os
 import shutil
 import threading
 import time
+import weakref
 
 import pytest
 
@@ -249,6 +253,26 @@ def test_disabled_tools_are_not_mounted_at_all(app_state, monkeypatch):
         assert disabled_client.post("/api/remux/scan", json={}).status_code != 404
 
 
+def test_disabling_subscription_also_unmounts_the_public_sub_route(
+    app_state, monkeypatch
+):
+    monkeypatch.setenv("TOOLKIT_DISABLED_TOOLS", "subscription")
+    app = create_app(state=app_state)
+    assert "/sub/{sub_id}" not in app.openapi()["paths"]
+
+
+def test_a_blank_sub_db_path_still_lands_under_backend_data(monkeypatch):
+    from toolkit_api import main
+
+    monkeypatch.setenv("SUB_DB_PATH", "")  # an uncommented `SUB_DB_PATH=` in .env
+    try:
+        importlib.reload(main)
+        assert os.environ["SUB_DB_PATH"] == str(main.BACKEND_DIR / "data" / "sub.db")
+    finally:
+        monkeypatch.undo()
+        importlib.reload(main)
+
+
 def test_cancelling_a_queued_job_stops_it_ever_running():
     reg = JobRegistry(max_workers=1)
     release = threading.Event()
@@ -293,6 +317,28 @@ def test_pool_recovers_from_a_worker_thread_dying():
     survivor = reg.submit("quick", [], lambda job: {"ok": True})
     _wait_finished(reg, survivor.id)
     assert reg.get(survivor.id).state == "done"
+
+
+def test_idle_worker_releases_the_finished_jobs_closure():
+    class Payload:
+        pass
+
+    reg = JobRegistry(max_workers=1)
+    payload = Payload()
+    alive = weakref.ref(payload)
+
+    def worker(job, payload=payload):  # the uploads a real worker closes over
+        return {"ok": True}
+
+    job = reg.submit("holder", [], worker)
+    _wait_finished(reg, job.id)
+    del worker, payload
+
+    deadline = time.monotonic() + 2.0
+    while alive() is not None and time.monotonic() < deadline:
+        gc.collect()
+        time.sleep(0.01)
+    assert alive() is None, "an idle worker still pins the finished job's payload"
 
 
 def test_worker_pool_is_bounded_by_max_workers():

@@ -6,6 +6,7 @@ import base64
 import io
 import subprocess
 import sys
+import threading
 import time
 import zipfile
 
@@ -206,6 +207,65 @@ def test_run_inpaints_only_the_masked_pixels(client):
     assert np.array_equal(cleaned[:10, :10], rgb[:10, :10])
 
 
+def test_the_cv2_run_writes_the_same_pixels_as_a_plain_removal(client):
+    from watermark.inpaint import inpaint_cv2
+    from watermark.pipeline import DEFAULT_DILATE_PX, remove_watermark
+
+    rgb = np.full((60, 80, 3), 128, np.uint8)
+    rgb[20:36, 30:50] = 160
+    buffer = io.BytesIO()
+    Image.fromarray(rgb).save(buffer, format="PNG")
+    batch = upload(client, ("square.png", buffer.getvalue())).json()
+    image = batch["images"][0]
+    resp = client.post(
+        "/api/watermark/run",
+        json={
+            "batch_id": batch["batch_id"],
+            "inpainter": "cv2",
+            "masks": {image["id"]: mask_b64(80, 60, box=(30, 20, 50, 36))},
+        },
+    )
+    snap = wait_for_job(client, resp.json()["job_id"])
+    mask = np.zeros((60, 80), np.uint8)
+    mask[20:36, 30:50] = 255
+    expected = remove_watermark(rgb, mask, inpaint_cv2, DEFAULT_DILATE_PX)
+
+    download = client.get(f"/api/artifacts/{snap['result']['artifact_id']}")
+    with zipfile.ZipFile(io.BytesIO(download.content)) as archive:
+        cleaned = np.asarray(Image.open(io.BytesIO(archive.read("square.png"))))
+    assert np.array_equal(cleaned, expected)
+
+
+def test_a_transparent_upload_keeps_its_transparency(client):
+    rgba = np.full((60, 80, 4), 255, np.uint8)
+    rgba[:, :, :3] = 128
+    rgba[20:36, 30:50, :3] = 160
+    rgba[0:10, 0:10, 3] = 0  # a cut-out corner, as a logo or sticker has
+    buffer = io.BytesIO()
+    Image.fromarray(rgba).save(buffer, format="PNG")
+
+    batch = upload(client, ("logo.png", buffer.getvalue())).json()
+    image = batch["images"][0]
+    working = client.get(f"/api/watermark/{batch['batch_id']}/{image['id']}/image")
+    assert np.asarray(Image.open(io.BytesIO(working.content)))[0:10, 0:10, 3].max() == 0
+
+    resp = client.post(
+        "/api/watermark/run",
+        json={
+            "batch_id": batch["batch_id"],
+            "inpainter": "cv2",
+            "masks": {image["id"]: mask_b64(80, 60, box=(30, 20, 50, 36))},
+        },
+    )
+    snap = wait_for_job(client, resp.json()["job_id"])
+    assert snap["result"]["done"] == ["logo.png"]
+    download = client.get(f"/api/artifacts/{snap['result']['artifact_id']}")
+    with zipfile.ZipFile(io.BytesIO(download.content)) as archive:
+        cleaned = Image.open(io.BytesIO(archive.read("logo.png")))
+    assert cleaned.mode == "RGBA"
+    assert np.asarray(cleaned)[0:10, 0:10, 3].max() == 0
+
+
 def test_run_processes_only_images_that_got_a_mask(client):
     batch = upload(
         client, ("a.png", png_bytes((20, 10))), ("b.png", png_bytes((20, 10)))
@@ -290,7 +350,6 @@ def test_a_crash_midway_still_hands_back_what_finished(client, app_state, monkey
 
     assert snap["state"] == "failed"
     assert "out of memory" in snap["error"]
-    # ...and the first image is still there, inside the already-published zip.
     assert snap["result"]["done"] == ["first.png"]
     download = client.get(f"/api/artifacts/{snap['result']['artifact_id']}")
     assert download.status_code == 200
@@ -362,6 +421,125 @@ def test_an_empty_mask_on_a_visible_repeat_is_protected(client, monkeypatch):
     assert snap["state"] == "done"
     assert snap["result"]["protected"] == ["sheet.png"]
     assert snap["result"]["skipped"] == []
+
+
+def test_the_spool_is_staged_inside_the_batch_directory(client, app_state, monkeypatch):
+    from toolkit_api.routers import watermark as router
+    from watermark.inpaint import inpaint_cv2
+
+    batch = upload(client, ("a.png", png_bytes((20, 10)))).json()
+    image = batch["images"][0]
+    batch_dir = app_state.watermarks.get(batch["batch_id"])["dir"]
+    seen = []
+
+    def spying_inpaint(rgb, mask):
+        seen.append([p.name for p in batch_dir.iterdir() if p.is_dir()])
+        return inpaint_cv2(rgb, mask)
+
+    monkeypatch.setattr(router, "get_inpainter", lambda name: spying_inpaint)
+    resp = client.post(
+        "/api/watermark/run",
+        json={
+            "batch_id": batch["batch_id"],
+            "inpainter": "cv2",
+            "masks": {image["id"]: mask_b64(20, 10, box=(0, 0, 5, 5))},
+        },
+    )
+    wait_for_job(client, resp.json()["job_id"])
+    # In the batch dir the store already sweeps, not a temp dir nothing cleans.
+    assert seen and seen[0], "the spool was staged outside the batch directory"
+    assert [p for p in batch_dir.iterdir() if p.is_dir()] == []
+
+
+def test_cancelling_stops_partway_through_a_big_image(client, app_state, monkeypatch):
+    from toolkit_api.routers import watermark as router
+    from watermark.inpaint import inpaint_cv2
+
+    wide = np.full((80, 1500, 3), 130, np.uint8)
+    buffer = io.BytesIO()
+    Image.fromarray(wide).save(buffer, format="PNG")
+    batch = upload(client, ("wide.png", buffer.getvalue())).json()
+    image = batch["images"][0]
+
+    running = []
+    real_submit = app_state.jobs.submit
+
+    def spy_submit(tool, names, worker):
+        def wrapper(job):
+            running.append(job)
+            return worker(job)
+
+        return real_submit(tool, names, wrapper)
+
+    app_state.jobs.submit = spy_submit
+
+    tiles = []
+
+    def cancelling_inpaint(rgb, mask):
+        tiles.append(rgb.shape)
+        app_state.jobs.cancel(running[0].id)
+        return inpaint_cv2(rgb, mask)
+
+    monkeypatch.setattr(router, "get_inpainter", lambda name: cancelling_inpaint)
+
+    mask = np.zeros((80, 1500), np.uint8)
+    mask[10:30, 10:30] = 255
+    mask[10:30, 800:820] = 255  # a second tile, so the cancel lands mid-image
+    resp = client.post(
+        "/api/watermark/run",
+        json={
+            "batch_id": batch["batch_id"],
+            "inpainter": "cv2",
+            "masks": {image["id"]: base64.b64encode(imgio.encode_png(mask)).decode()},
+        },
+    )
+    snap = wait_for_job(client, resp.json()["job_id"])
+    assert snap["state"] == "cancelled"
+    assert len(tiles) == 1, f"inpainted {len(tiles)} tiles after the cancel"
+    assert snap["result"]["done"] == []
+
+
+def test_lama_is_loaded_while_the_loading_message_is_up(client, app_state, monkeypatch):
+    from toolkit_api.routers import watermark as router
+    from watermark.inpaint import inpaint_cv2
+
+    running = []
+    real_submit = app_state.jobs.submit
+
+    def spy_submit(tool, names, worker):
+        def wrapper(job):
+            running.append(job)
+            return worker(job)
+
+        return real_submit(tool, names, wrapper)
+
+    app_state.jobs.submit = spy_submit
+    messages = []
+
+    class FakeLama:
+        def load(self):
+            messages.append(running[0].snapshot()["message"])
+
+        def __call__(self, rgb, mask):
+            return inpaint_cv2(rgb, mask)
+
+    monkeypatch.setattr(router, "lama_available", lambda: True)
+    monkeypatch.setattr(router, "get_inpainter", lambda name: FakeLama())
+    batch = upload(client, ("a.png", png_bytes((20, 10)))).json()
+    image = batch["images"][0]
+    resp = client.post(
+        "/api/watermark/run",
+        json={
+            "batch_id": batch["batch_id"],
+            "inpainter": "lama",
+            "masks": {image["id"]: mask_b64(20, 10, box=(0, 0, 5, 5))},
+        },
+    )
+    snap = wait_for_job(client, resp.json()["job_id"])
+    assert snap["state"] == "done"
+    assert messages and "Loading LaMa" in messages[0], (
+        f"the model was loaded under the message {messages!r}"
+    )
 
 
 def test_run_rejects_an_unknown_inpainter(client):
@@ -454,6 +632,26 @@ def test_a_pinned_batch_survives_its_own_expiry(tmp_path):
         store.create([("b.png", png_bytes(), 64, 48)])  # sweeps on create
         assert batch["images"][0]["path"].is_file()
     assert store.get(batch["id"]) is None
+
+
+def test_concurrent_callers_collect_the_batch_marks_once(tmp_path):
+    store = WatermarkBatches(tmp_path / "wm")
+    batch = store.create([("a.png", png_bytes(), 64, 48)])
+    entered = threading.Event()
+    calls = []
+
+    def collect(paths):
+        calls.append(len(paths))
+        entered.set()
+        time.sleep(0.1)
+        return ["mark"]
+
+    first = threading.Thread(target=store.marks, args=(batch["id"], collect))
+    first.start()
+    assert entered.wait(2.0)
+    assert store.marks(batch["id"], collect) == ["mark"]
+    first.join(2.0)
+    assert calls == [1], "the second caller recomputed the whole batch"
 
 
 def test_startup_clears_leftovers_from_a_previous_process(tmp_path):

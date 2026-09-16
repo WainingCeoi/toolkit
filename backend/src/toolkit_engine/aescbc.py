@@ -6,7 +6,6 @@ KEY_LEN = 32  # AES-256 only; the envelope's PBKDF2 keys are always dklen=32
 BLOCK = 16
 
 
-# --- GF(2^8) AND THE S-BOX ---
 # Computed, not transcribed: one mistyped S-box literal still round-trips.
 def _xtime(a: int) -> int:
     """Multiply by x (i.e. by 2) in GF(2^8) modulo AES's polynomial 0x11B."""
@@ -60,7 +59,6 @@ def _mul(a: int, factor: int) -> int:
     return product
 
 
-# --- THE BLOCK CIPHER ---
 # State is flat, column-major (byte i: row i%4, column i//4); ShiftRows permutes it.
 _SHIFT_ROWS = [r + 4 * ((c + r) % 4) for c in range(4) for r in range(4)]
 _INV_SHIFT_ROWS = [r + 4 * ((c - r) % 4) for c in range(4) for r in range(4)]
@@ -124,7 +122,6 @@ def _decrypt_block(block: bytes, keys: list[bytes]) -> bytes:
     return bytes(b ^ k for b, k in zip(state, keys[0], strict=True))
 
 
-# --- CBC ---
 def _check(key: bytes, iv: bytes, data: bytes) -> None:
     if len(key) != KEY_LEN:
         raise ValueError(f"AES-256 needs a {KEY_LEN}-byte key, got {len(key)}")
@@ -161,7 +158,6 @@ def _decrypt_cbc_py(key: bytes, iv: bytes, ciphertext: bytes) -> bytes:
     return bytes(out)
 
 
-# --- BACKEND CHOICE ---
 try:
     from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 except ImportError:  # Intel Mac: no wheel, sdist needs Rust; pyproject skips it

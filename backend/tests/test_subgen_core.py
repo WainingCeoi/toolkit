@@ -33,7 +33,7 @@ def _decode_vmess(raw_sub):
     return json.loads(base64.b64decode(line[len("vmess://") :]).decode())
 
 
-# --- parsing -----------------------------------------------------------------
+# --- parsing ---
 
 
 def test_parse_mixed_valid_and_invalid_collects_warnings():
@@ -51,7 +51,7 @@ def test_parse_base64_subscription_blob_expands():
     assert len(parsed["nodes"]) == 2
 
 
-# --- round-trips (parse -> render -> parse) ----------------------------------
+# --- round-trips (parse -> render -> parse) ---
 
 
 def test_vmess_roundtrip_carries_allow_insecure():
@@ -85,6 +85,54 @@ def test_trojan_renders_to_all_three_targets():
     assert filename
 
 
+def test_ip_only_origin_warns_that_there_is_no_domain_for_sni():
+    nodes = core.parse_node_links("vless://u@1.2.3.4:443?security=tls#ip")["nodes"]
+    eps = core.parse_preferred_endpoints("5.6.7.8")["endpoints"]
+    expanded = core.expand_nodes(nodes, eps, {"keep_original_host": True})
+    assert len(expanded["warnings"]) == 1
+    assert "no Host/SNI/original domain" in expanded["warnings"][0]
+
+
+def test_domain_origin_does_not_warn():
+    nodes = core.parse_node_links("vless://u@host.example.com:443?security=tls#d")[
+        "nodes"
+    ]
+    eps = core.parse_preferred_endpoints("5.6.7.8")["endpoints"]
+    assert core.expand_nodes(nodes, eps, {"keep_original_host": True})["warnings"] == []
+
+
+def test_h2_node_renders_h2_opts_not_http_opts_in_clash():
+    link = "vless://uuid-1@example.com:443?type=h2&security=tls&host=a.b&path=/x#h2"
+    nodes = core.parse_node_links(link)["nodes"]
+    proxy = yaml.safe_load(core.render_clash_subscription(nodes))["proxies"][0]
+    assert proxy["network"] == "h2"
+    assert proxy["h2-opts"] == {"path": "/x", "host": ["a.b"]}
+    assert "http-opts" not in proxy
+
+
+def test_http_node_still_renders_http_opts_in_clash():
+    link = "vless://uuid-1@example.com:443?type=http&security=tls&host=a.b&path=/x#h"
+    nodes = core.parse_node_links(link)["nodes"]
+    proxy = yaml.safe_load(core.render_clash_subscription(nodes))["proxies"][0]
+    assert proxy["http-opts"] == {"path": ["/x"], "headers": {"Host": ["a.b"]}}
+    assert "h2-opts" not in proxy
+
+
+def test_endpoint_with_non_numeric_port_warns_instead_of_becoming_the_host():
+    parsed = core.parse_preferred_endpoints("1.2.3.4:8o80, 1.2.3.4:, 9.9.9.9")
+    assert [e["host"] for e in parsed["endpoints"]] == ["9.9.9.9"]
+    assert len(parsed["warnings"]) == 2
+    assert "Invalid port: 8o80" in parsed["warnings"][0]
+
+
+def test_endpoint_keeps_bare_and_bracketed_ipv6():
+    parsed = core.parse_preferred_endpoints("2001:db8::1, [2001:db8::2]:8443")
+    assert [(e["host"], e["port"]) for e in parsed["endpoints"]] == [
+        ("2001:db8::1", None),
+        ("2001:db8::2", 8443),
+    ]
+
+
 def test_expand_nodes_crosses_every_node_with_every_endpoint():
     nodes = core.parse_node_links("\n".join([_vmess_link(), _vmess_link(ps="b")]))[
         "nodes"
@@ -95,7 +143,7 @@ def test_expand_nodes_crosses_every_node_with_every_endpoint():
     assert len({n["name"] for n in expanded["nodes"]}) == 4
 
 
-# --- store -------------------------------------------------------------------
+# --- store ---
 
 
 @pytest.fixture

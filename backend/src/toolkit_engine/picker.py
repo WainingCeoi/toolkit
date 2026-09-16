@@ -3,9 +3,11 @@
 import subprocess
 from pathlib import Path
 
+# A dialog nobody dismisses would pin a threadpool worker and its child forever.
+DIALOG_TIMEOUT = 600
+
 
 def _applescript_str(value):
-    """Quote a Python string as an AppleScript string literal."""
     escaped = value.replace("\\", "\\\\").replace('"', '\\"')
     return f'"{escaped}"'
 
@@ -22,10 +24,14 @@ def pick_folder(start_dir=None, packages=False):
         options += " showing package contents true"
     script = f"POSIX path of (choose folder {options})"
 
-    result = subprocess.run(
-        ["osascript", "-e", script],
-        capture_output=True,
-        text=True,
-    )
+    try:
+        result = subprocess.run(
+            ["osascript", "-e", script],
+            capture_output=True,
+            text=True,
+            timeout=DIALOG_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        return ""  # run() has already killed osascript
     path = result.stdout.strip()
     return path.rstrip("/") if len(path) > 1 else path

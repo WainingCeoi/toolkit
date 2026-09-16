@@ -17,9 +17,7 @@ HIGHPASS_SIGMA = 18
 MIN_PERIOD = 45
 # How far off-axis a peak may sit and still count as the row/column period.
 AXIS_TOLERANCE = 8
-# Harmonics summed when scoring a candidate pitch.
 _HARMONICS = 4
-# Peaks considered, off-integer tolerance, and peaks a basis must explain.
 _PEAK_COUNT = 60
 _LATTICE_TOL = 0.18
 _MIN_SUPPORT = 5
@@ -52,8 +50,7 @@ _MIN_NCC_UNPROMPTED = 0.45
 # Normalised correlation scores 1.0 over a flat window (0/0), so peaks need substance.
 _MIN_WINDOW_STD_SHARE = 0.25
 
-# Share of a cell a match may sit off a node, and share of matches that must be
-# on one: the only gate that tells an overlay from a lattice fitted to scenery.
+# The only gate that tells an overlay from a lattice fitted to scenery.
 _NODE_TOLERANCE = 0.2
 _MIN_ON_LATTICE = 0.65
 
@@ -72,35 +69,29 @@ _FILL_ERODE_PX = 3
 # Fixed footprint the evidence gate is measured over, so sensitivity cannot move it.
 _GATE_PCT = 90.0
 
-# --- the sparse route (see pooled_marks) ----------------------------------
+# --- sparse route (see pooled_marks) ---
 # Half-extents of the patch cut around an anchor; it is both matched and stamped.
 _ANCHOR_HALF_H = 34
 _ANCHOR_HALF_W = 78
-# Candidate anchors tried per image, and the response filter that ranks them.
 _ANCHOR_COUNT = 12
 _ANCHOR_KERNEL = 13
 _NORM_WIN = 81
 _NORM_FLOOR = 2.0
-# Correlation a match needs to join a run, how many matches make one, how far off
-# an even spacing a member may sit, and how many matches are considered at all.
 _RUN_NCC = 0.35
 MIN_RUN = 3
 _RUN_TOL = 0.06
 _MAX_SITES = 40
-# Images that must independently produce a run, and how closely their pitches
-# must agree, before the batch is believed to share one overlay.
+# Before the batch is believed to share one overlay.
 _MIN_POOL_IMAGES = 3
 _PITCH_TOL = 0.04
 # Range the pitch across a run is voted over, and the snap around each predicted site.
 _CROSS_MAX = 500
 _CROSS_SNAP = 6
-# Fewest candidates the vote needs, the margin a doubled pitch must beat the voted
-# one by (see _true_pitch), and how prominent the winner must be (robust deviations).
+# Doubled-pitch margin (_true_pitch); prominence is in robust deviations.
 _CROSS_MIN_CANDIDATES = 60
 _SUBHARMONIC_EDGE = 1.25
 _CROSS_PROMINENCE = 4.5
-# Ink: a share of the mark's own peak, plus slack; the trimmed mark must leave a
-# quarter of the cell empty in both axes (see _fold_on_grid).
+# Ink is a share of the mark's own peak, not an absolute floor (_fold_on_grid).
 _INK_SHARE = 0.25
 _INK_MARGIN = 6
 _INK_CELL_SHARE = 0.75
@@ -163,12 +154,10 @@ def _pitch(profile: np.ndarray) -> int | None:
     return best
 
 
-def _rect_period(hp: np.ndarray, texture: np.ndarray) -> tuple[int, int] | None:
+def _rect_period(ac: np.ndarray | None) -> tuple[int, int] | None:
     """The (vertical, horizontal) period the overlay repeats on, or None."""
-    quiet = (texture < np.percentile(texture, _QUIET_PCT)).astype(np.float32)
-    if quiet.mean() < 0.05:
+    if ac is None:  # no quiet share, so the caller had no autocorrelation to give
         return None
-    ac = _masked_autocorrelation(hp, quiet)
     cy, cx = ac.shape[0] // 2, ac.shape[1] // 2
     vertical = ac[cy:, cx - AXIS_TOLERANCE : cx + AXIS_TOLERANCE + 1].mean(axis=1)
     horizontal = ac[cy - AXIS_TOLERANCE : cy + AXIS_TOLERANCE + 1, cx:].mean(axis=0)
@@ -205,21 +194,20 @@ def _peaks(prominence: np.ndarray, count: int) -> list[tuple[float, float]]:
     """The strongest autocorrelation offsets, as (dy, dx) in the half-plane."""
     height, width = prominence.shape
     cy, cx = height // 2, width // 2
-    work = prominence.copy()
-    yy, xx = np.mgrid[0:height, 0:width]
-    work[(yy - cy) ** 2 + (xx - cx) ** 2 < MIN_PERIOD**2] = -np.inf
-    work[:cy, :] = -np.inf  # autocorrelation is symmetric; one half is enough
-    # Past the usable reach the estimate is zero, and that cliff would win as a peak.
+    # Past the usable reach the AC is zero -- a cliff that would win as a peak.
     reach_y, reach_x = int(height * _MAX_LAG_SHARE), int(width * _MAX_LAG_SHARE)
-    work[cy + reach_y :, :] = -np.inf
-    work[:, : cx - reach_x] = -np.inf
-    work[:, cx + reach_x :] = -np.inf
+    left = max(0, cx - reach_x)
+    work = prominence[cy : cy + reach_y, left : cx + reach_x].copy()
+    if work.size == 0:
+        return []
+    yy, xx = np.mgrid[0 : work.shape[0], left - cx : left - cx + work.shape[1]]
+    work[yy * yy + xx * xx < MIN_PERIOD**2] = -np.inf
     found = []
     for _ in range(count):
         idx = np.unravel_index(int(np.argmax(work)), work.shape)
         if not np.isfinite(work[idx]) or work[idx] <= 0:
             break
-        found.append((float(idx[0] - cy), float(idx[1] - cx)))
+        found.append((float(idx[0]), float(left + idx[1] - cx)))
         y0, x0 = idx
         radius = max(8, MIN_PERIOD // 2)
         work[
@@ -230,32 +218,33 @@ def _peaks(prominence: np.ndarray, count: int) -> list[tuple[float, float]]:
 
 def _fit_lattice(peaks: list[tuple[float, float]]) -> np.ndarray | None:
     """A 2x2 basis whose integer combinations explain the peaks, or None."""
-    best_basis, best_key = None, None
-    for a_index, first in enumerate(peaks):
-        for second in peaks[a_index + 1 :]:
-            basis = np.array(
-                [[first[1], second[1]], [first[0], second[0]]], np.float64
-            )  # columns are the vectors, rows are (x, y)
-            area = abs(np.linalg.det(basis))
-            if area < MIN_PERIOD**2 * 0.25:  # near-collinear or far too small
-                continue
-            inverse = np.linalg.inv(basis)
-            supported = []
-            for peak in peaks:
-                coords = inverse @ np.array([peak[1], peak[0]], np.float64)
-                if np.all(np.abs(coords - np.round(coords)) <= _LATTICE_TOL):
-                    supported.append((np.round(coords), peak))
-            length = np.hypot(*first) + np.hypot(*second)
-            key = (len(supported), -length)  # shorter wins; a doubled vector fits too
-            if len(supported) >= _MIN_SUPPORT and (best_key is None or key > best_key):
-                best_basis, best_key = (basis, supported), key
-
-    if best_basis is None:
+    if len(peaks) < 2:
         return None
-    basis, supported = best_basis
+    points = np.array([(dx, dy) for dy, dx in peaks], np.float64)  # rows are (x, y)
+    # triu_indices walks the pairs in the order the nested loops did, for the tie-break.
+    left, right = np.triu_indices(len(peaks), 1)
+    bases = np.stack([points[left], points[right]], axis=2)  # columns are the vectors
+    usable = np.abs(np.linalg.det(bases)) >= MIN_PERIOD**2 * 0.25  # not near-collinear
+    left, right, bases = left[usable], right[usable], bases[usable]
+    if len(bases) == 0:
+        return None
+
+    coords = np.linalg.inv(bases) @ points.T  # every peak's lattice coords, per pair
+    on = np.all(np.abs(coords - np.round(coords)) <= _LATTICE_TOL, axis=1)
+    support = on.sum(axis=1)
+    enough = np.nonzero(support >= _MIN_SUPPORT)[0]
+    if len(enough) == 0:
+        return None
+    # shorter wins; a doubled vector fits too
+    length = np.hypot(points[left, 1], points[left, 0]) + np.hypot(
+        points[right, 1], points[right, 0]
+    )
+    best = enough[np.lexsort((enough, length[enough], -support[enough]))[0]]
+
+    basis = bases[best]
     # Refit from every supported peak, putting the vectors on a sub-pixel footing.
-    integer_coords = np.array([c for c, _p in supported]).T  # 2 x N
-    observed = np.array([[p[1], p[0]] for _c, p in supported]).T  # 2 x N
+    integer_coords = np.round(coords[best][:, on[best]])  # 2 x N
+    observed = points[on[best]].T  # 2 x N
     gram = integer_coords @ integer_coords.T
     if abs(np.linalg.det(gram)) < 1e-9:
         return basis
@@ -515,11 +504,11 @@ def recover_mark(rgb: np.ndarray) -> Mark | None:
     texture = _local_texture(gray)
 
     # Rectify onto the overlay's own grid first; downstream works in rows and columns.
-    basis = None
+    basis, ac = None, None
     quiet = (texture < np.percentile(texture, _QUIET_PCT)).astype(np.float32)
     if quiet.mean() >= 0.05:
-        ac = _masked_autocorrelation(hp, quiet).astype(np.float32)
-        basis = _fit_rectifying_lattice(ac)
+        ac = _masked_autocorrelation(hp, quiet)
+        basis = _fit_rectifying_lattice(ac.astype(np.float32))
     rectify = _rectify(hp, basis)
 
     cover = None
@@ -536,10 +525,9 @@ def recover_mark(rgb: np.ndarray) -> Mark | None:
             texture, forward, (out_w, out_h), flags=cv2.INTER_LINEAR
         )
     else:
-        # No usable lattice: fall back to a plain row/column pitch. The basis is
-        # dropped, since nothing downstream was rectified with it.
+        # No lattice: hp is unwarped, so the basis is dropped and the AC gives pitch.
         basis = None
-        period = _rect_period(hp, texture)
+        period = _rect_period(ac)
         if period is None:
             return None
         py, px = period
@@ -612,8 +600,7 @@ def apply_mark(
         * max(0, min(100, sensitivity))
         / 100
     )
-    # Blur before thresholding (bare pixels pick specks), and threshold the WHOLE
-    # tile: the mark's lettering runs outside the crop that correlation matched.
+    # Threshold the whole tile: the lettering runs outside the matched crop.
     energy = cv2.GaussianBlur(np.abs(template), (0, 0), sigmaX=2.0)
 
     def _stamp_at(percentile: float) -> np.ndarray:
@@ -634,7 +621,6 @@ def apply_mark(
     for y, x in zip(*np.nonzero(peaks), strict=True):
         sites.add((int(y), int(x)))
 
-    # Presence is judged on confident copies alone, before the lattice is walked.
     # A pooled mark was already proven across the batch, so it answers to MIN_RUN.
     least_sites = MIN_RUN if mark.pooled else MIN_INSTANCES
     if len(sites) < least_sites:
@@ -653,8 +639,7 @@ def apply_mark(
         if float(np.mean(on_node)) < _MIN_ON_LATTICE:
             return None
 
-    # Stamp every site of the grid: a faint or edge-clipped copy can never prove
-    # itself. Sites snap to a local peak where one exists; _paint clips the edges.
+    # Stamp every grid site: a faint or edge-clipped copy can never prove itself.
     if grid is not None:
         step_y, step_x = grid
         rows = range(-(anchor_y // step_y) - 2, (hp.shape[0] - anchor_y) // step_y + 3)
@@ -696,8 +681,7 @@ def apply_mark(
 
     _paint(mask, stamp)
 
-    # Keep a stamped pixel only where the photo deviates from its own neighbourhood;
-    # a global cut would delete exactly the faint marks on smooth sky.
+    # A global cut would delete exactly the faint marks on smooth sky.
     deviation = np.abs(hp)
     baseline = cv2.blur(deviation, (_EVIDENCE_WINDOW, _EVIDENCE_WINDOW))
     supported = deviation >= _EVIDENCE_RATIO * (baseline + _EVIDENCE_FLOOR)
@@ -711,8 +695,7 @@ def apply_mark(
     if int(np.count_nonzero(reference & supported)) < _MIN_EVIDENCE_SHARE * gate_area:
         return None
 
-    # The fill is unconditional per site (per-site evidence lost the faintest copies)
-    # and cut tighter than the stamp, so the sensitivity halo is not filled whole.
+    # Unconditional per site: per-site evidence lost the faintest copies.
     fill = _stamp_at(max(footprint_pct, _FILL_PCT))
     pieces, labels, stats, _mids = cv2.connectedComponentsWithStats(fill, 8)
     for label in range(1, pieces):
@@ -771,8 +754,7 @@ def propose_pattern_mask(rgb: np.ndarray, sensitivity: int) -> np.ndarray | None
     own = _propose_own_folded(rgb, sensitivity)
     if own is not None:
         return own
-    # Last resort: a cell too big to fold. Imported at call time because tiled.py
-    # imports this module.
+    # Deferred import: tiled.py imports this module.
     from .tiled import propose_tiled_mask
 
     return propose_tiled_mask(rgb, sensitivity)
@@ -886,7 +868,8 @@ def _anchored_run(rgb: np.ndarray) -> dict | None:
             continue
         run, pitch, step = _best_run(points)
         if len(run) >= MIN_RUN and (best is None or len(run) > len(best["sites"])):
-            best = {"hp": hp, "sites": run, "pitch": pitch, "step": step}
+            # The gray, not hp: pooled_marks holds one run per image of the batch.
+            best = {"gray": gray, "sites": run, "pitch": pitch, "step": step}
     return best
 
 
@@ -895,8 +878,7 @@ def pooled_marks(images: Iterable[np.ndarray]) -> list[Mark]:
     runs = [run for run in (_anchored_run(rgb) for rgb in images) if run is not None]
     if len(runs) < _MIN_POOL_IMAGES:
         return []
-    # Grouped by pitch: a batch can carry more than one overlay.
-    # Known risk: scenery that recurs across the batch at one pitch would pass here.
+    # Known risk: scenery recurring across the batch at one pitch would pass here.
     return [
         mark
         for group in _pitch_groups(runs)
@@ -933,11 +915,13 @@ def _cross_pitch(runs: list[dict], template: np.ndarray) -> tuple[int, int] | No
     for run in runs:
         # matchTemplate raises on a frame smaller than the template; skip such runs.
         if (
-            template.shape[0] > run["hp"].shape[0]
-            or template.shape[1] > run["hp"].shape[1]
+            template.shape[0] > run["gray"].shape[0]
+            or template.shape[1] > run["gray"].shape[1]
         ):
             continue
-        score = cv2.matchTemplate(run["hp"], template, cv2.TM_CCOEFF_NORMED)
+        score = cv2.matchTemplate(
+            _highpass(run["gray"]), template, cv2.TM_CCOEFF_NORMED
+        )
         # Transposed so the run lies along the rows either way.
         surface = score if horizontal else score.T
         sites = [(y, x) if horizontal else (x, y) for y, x in run["sites"]]
@@ -1036,10 +1020,11 @@ def _fold_on_grid(
     tiles: list[np.ndarray] = []
     for run in runs:
         mine: list[np.ndarray] = []
-        hp = run["hp"]
+        frame = run["gray"].shape
         # Anchor on the pooled template's best match; runs' own sites differ in offset.
-        if template.shape[0] > hp.shape[0] or template.shape[1] > hp.shape[1]:
+        if template.shape[0] > frame[0] or template.shape[1] > frame[1]:
             continue
+        hp = _highpass(run["gray"])
         agreement = cv2.matchTemplate(hp, template, cv2.TM_CCOEFF_NORMED)
         _lo, _hi, _at, best = cv2.minMaxLoc(agreement)
         base_y, base_x = best[1] % cell_y, best[0] % cell_x
@@ -1077,8 +1062,7 @@ def _fold_on_grid(
     if folded.std() <= 1e-3:
         return None
 
-    # Trim the cell to the ink touching the matched window. Ink is a share of the
-    # mark's own peak: a floor-relative cut bridges faint streaks to the cell edge.
+    # Ink is a share of the peak: a floor-relative cut bridges streaks to the edge.
     energy = cv2.GaussianBlur(np.abs(folded), (0, 0), sigmaX=3)
     ink = (energy >= _INK_SHARE * float(energy.max())).astype(np.uint8)
     ink = cv2.morphologyEx(ink, cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8))
@@ -1122,14 +1106,15 @@ def _pool_group(runs: list[dict]) -> Mark | None:
     """One mark from a group of runs that agree on their pitch, or None."""
     patches = []
     for run in runs:
-        hp = run["hp"]
+        hp = _highpass(run["gray"])
         for y, x in run["sites"]:
             if (
                 y + 2 * _ANCHOR_HALF_H <= hp.shape[0]
                 and x + 2 * _ANCHOR_HALF_W <= hp.shape[1]
             ):
+                # Copied, not a view: each run's high-pass is freed as we leave it.
                 patches.append(
-                    hp[y : y + 2 * _ANCHOR_HALF_H, x : x + 2 * _ANCHOR_HALF_W]
+                    hp[y : y + 2 * _ANCHOR_HALF_H, x : x + 2 * _ANCHOR_HALF_W].copy()
                 )
     if len(patches) < MIN_TILES:
         return None
@@ -1138,7 +1123,6 @@ def _pool_group(runs: list[dict]) -> Mark | None:
     if template.std() <= 1e-3:
         return None
     # No significance test: rolling a patch moves the mark rather than removing it.
-    # A grid is kept only if folding on it produces a mark; otherwise it is dropped.
     grid = _cross_pitch(runs, template)
     folded = None if grid is None else _fold_on_grid(runs, template, grid)
     if folded is None:

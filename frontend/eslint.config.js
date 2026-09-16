@@ -6,8 +6,6 @@ import reactHooks from 'eslint-plugin-react-hooks'
 import reactRefresh from 'eslint-plugin-react-refresh'
 
 // @babel/eslint-parser, not typescript-eslint: TypeScript 7 has no compiler API for it to load.
-// Plugins go in parserOpts.plugins: @babel/eslint-parser ignores presets.
-// jsx only for .tsx: in a .ts file `<T>expr` is a type assertion and would mis-parse.
 const tsLanguageOptions = (plugins) => ({
   ecmaVersion: 2023,
   sourceType: 'module',
@@ -40,7 +38,7 @@ export default [
   },
   {
     files: ['src/**/*.ts'],
-    languageOptions: tsLanguageOptions(['typescript']),
+    languageOptions: tsLanguageOptions(['typescript']), // no jsx: in .ts, <T>expr is a cast
     plugins: tsPlugins,
     rules: tsRules,
   },

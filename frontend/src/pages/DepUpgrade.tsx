@@ -66,8 +66,9 @@ export default function DepUpgrade() {
 
   const result = snapshot?.state === 'done' ? snapshot.result : null
 
-  // Seeded from the restored scan rather than synced by an effect, so a remount is not stale.
-  const [folder, setFolder] = useState(() => result?.root ?? '')
+  // null until the user edits it: an untouched field follows a scan restored after mount.
+  const [typedFolder, setTypedFolder] = useState<string | null>(null)
+  const folder = typedFolder ?? result?.root ?? ''
   const scannedFolder = scannedThisMount ?? result?.root ?? null
 
   const targets = result?.targets ?? []
@@ -113,7 +114,7 @@ export default function DepUpgrade() {
           <FolderField
             label="Project folder"
             value={folder}
-            onChange={setFolder}
+            onChange={setTypedFolder}
             placeholder="/Users/you/my-monorepo"
             startDir={folder}
           />
@@ -148,7 +149,7 @@ export default function DepUpgrade() {
             variant="primary"
             onClick={runScan}
             loading={running}
-            disabled={!folder.trim() || running}
+            disabled={!folder.trim() || running || applying}
             style={{ marginTop: 10 }}
           >
             🔍 Scan &amp; upgrade

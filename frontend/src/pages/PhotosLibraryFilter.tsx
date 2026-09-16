@@ -127,11 +127,12 @@ function Report({ result }: { result: PhotoFilterResult }) {
 
       <ListExpander title={`🗑️ Deleted from the destination (${result.deleted.length})`} items={result.deleted} />
 
-      {result.errors.map((e) => (
-        <div key={e} className="note error" style={{ overflowWrap: 'anywhere' }}>
-          {e}
-        </div>
-      ))}
+      {result.errors.length > 0 && (
+        <>
+          <div className="note error">{result.errors.length} error(s) during the run.</div>
+          <ListExpander title={`⚠️ Errors (${result.errors.length})`} items={result.errors} />
+        </>
+      )}
 
       {!verify.ran ? (
         <div className="note warn">Not verified — the run stopped before the check.</div>

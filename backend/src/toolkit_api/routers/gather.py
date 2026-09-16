@@ -28,7 +28,10 @@ def start_gather(req: GatherStartIn, jobs: JobsDep) -> JobStartedOut:
     src_raw = Path(req.source).expanduser()
     tgt_raw = Path(req.target).expanduser()
     src, tgt = src_raw.resolve(), tgt_raw.resolve()
-    patterns = gather.build_patterns(req.categories, req.custom)
+    try:
+        patterns = gather.build_patterns(req.categories, req.custom)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
     # Relative paths would resolve against the app's CWD.
     if not (src_raw.is_absolute() and tgt_raw.is_absolute()):
@@ -40,11 +43,13 @@ def start_gather(req: GatherStartIn, jobs: JobsDep) -> JobStartedOut:
         raise HTTPException(status_code=400, detail="❌ Source folder not found.")
     if not patterns:
         raise HTTPException(status_code=400, detail="❌ Select at least one file type.")
-    if tgt == src or src in tgt.parents:
-        raise HTTPException(
-            status_code=400,
-            detail="❌ Target must be a different folder, outside the source.",
-        )
+    # By inode, not by string: resolve() folds neither APFS's case nor its NFC form.
+    for candidate in (tgt, *tgt.parents):
+        if candidate.exists() and candidate.samefile(src):
+            raise HTTPException(
+                status_code=400,
+                detail="❌ Target must be a different folder, outside the source.",
+            )
 
     def worker(job: Job) -> dict | None:
         job.set_message("Scanning source folder…")

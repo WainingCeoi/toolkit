@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
+import unicodedata
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
@@ -17,8 +18,7 @@ from ..schemas import JobStartedOut
 
 router = APIRouter(prefix="/photofilter", tags=["photofilter"])
 
-# Destinations with a mirror in flight. Guard inside the worker, not at submit:
-# a job cancelled while queued never runs its worker and would never release it.
+# Guard in the worker, not at submit: a job cancelled while queued never releases it.
 _writing: set[str] = set()
 _writing_lock = threading.Lock()
 
@@ -60,7 +60,8 @@ def _submit(req: PhotoFilterIn, jobs: JobsDep, *, dry_run: bool) -> JobStartedOu
         raise HTTPException(status_code=400, detail=f"❌ {e}") from e
     rules_text = photofilter.DEFAULT_RULES if req.rules is None else req.rules
     rules = photofilter.compile_rules(rules_text)
-    key = str(dest)
+    # APFS ignores case and Unicode normalisation: one destination, one key.
+    key = unicodedata.normalize("NFC", str(dest)).casefold()
 
     def worker(job: Job) -> dict:
         def on_progress(phase: str, done: int, total: int) -> bool:
@@ -102,4 +103,4 @@ def _message(phase: str, done: int, total: int) -> str:
         return f"Snapshotting database {done + 1}/{total}…"
     if phase == "delete":
         return f"Deleting… {done}"
-    return f"{phase.capitalize()}…"  # plan, verify
+    return f"{phase.capitalize()}…"

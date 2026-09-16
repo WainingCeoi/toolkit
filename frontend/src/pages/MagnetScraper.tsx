@@ -83,15 +83,12 @@ function ScrapeResult({ result }: { result: MagnetResult | null }) {
 export default function MagnetScraper() {
   const [mode, setMode] = useState<MagnetMode>('auto')
 
-  // Automatic mode
   const [startPage, setStartPage] = useState('1')
   const [config, setConfig] = useState<MagnetConfig | null>(null)
   const [configError, setConfigError] = useState<string | null>(null)
 
-  // Manual mode
   const [manualRaw, setManualRaw] = useState('')
 
-  // Remove duplicated
   const [dedupeRaw, setDedupeRaw] = useState('')
   const [dedupeResult, setDedupeResult] = useState<DedupeResult | null>(null)
   const [dedupeError, setDedupeError] = useState<string | null>(null)

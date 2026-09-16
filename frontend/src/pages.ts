@@ -1,5 +1,3 @@
-// Lazy tool-page registry, keyed by slug.
-
 import { lazy } from 'react'
 
 export const PAGES = {

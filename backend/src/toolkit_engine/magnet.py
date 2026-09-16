@@ -15,7 +15,6 @@ MAX_PAGES = 100  # hard cap so Automatic mode can never loop forever
 ENV_PATH = Path(__file__).resolve().parents[2] / ".env"
 
 
-# --- CORE FUNCTIONS ---
 def get_magnet_link(url):
     try:
         response = requests.get(url, timeout=10)
@@ -70,7 +69,6 @@ def find_unwatched_urls(
             break
 
     if found:
-        # Keep only the videos newer than the cutoff.
         cutoff_idx = unwatched_video_urls.index(cutoff_video)
         unwatched_video_urls = unwatched_video_urls[:cutoff_idx]
 

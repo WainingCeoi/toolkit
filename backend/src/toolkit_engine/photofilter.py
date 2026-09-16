@@ -40,7 +40,7 @@ class PhotoFilterError(ValueError):
     """A run that must not start: SRC is not a library, or DEST is unsafe."""
 
 
-# ---------------------------------------------------------------- rules
+# --- rules ---
 
 
 @dataclass(frozen=True)
@@ -87,7 +87,7 @@ def first_match(rules: list[Rule], relpath: str, is_dir: bool = False) -> str | 
     return None
 
 
-# ---------------------------------------------------------------- plan
+# --- plan ---
 
 
 class FileStat(NamedTuple):
@@ -136,10 +136,14 @@ def plan(src: Path | str, rules: list[Rule]) -> Plan:
             p.snapshot.append(rel)
         else:
             p.keep.append(rel)
+    # scandir-rs drops a directory it cannot open without reporting an error.
+    for rel in ("", *p.dirs):
+        if not os.access(os.path.join(src, rel), os.R_OK | os.X_OK):
+            p.errors.append(f"unreadable directory: {rel or '.'}")
     return p
 
 
-# ---------------------------------------------------------------- execute
+# --- execute ---
 
 
 def _uri(path: Path | str, query: str) -> str:
@@ -223,6 +227,14 @@ class Result:
     edited: int = 0
 
 
+def _same_dir(a: Path, b: Path) -> bool:
+    # APFS ignores case and Unicode normalisation, so only the inode identifies a dir.
+    try:
+        return os.path.samestat(os.stat(a), os.stat(b))
+    except OSError:
+        return False
+
+
 def check_paths(src: Path | str, dest: Path | str) -> tuple[Path, Path]:
     """The guards every run starts with. Returns the resolved pair."""
     src, dest = Path(src).resolve(), Path(dest).resolve()
@@ -232,9 +244,31 @@ def check_paths(src: Path | str, dest: Path | str) -> tuple[Path, Path]:
         )
     if dest.suffix != ".photoslibrary":
         raise PhotoFilterError(f"DEST must be a *.photoslibrary path, got {dest}")
-    if src == dest or src in dest.parents or dest in src.parents:
+    if (
+        _same_dir(src, dest)
+        or any(_same_dir(src, up) for up in dest.parents)
+        or any(_same_dir(dest, up) for up in src.parents)
+    ):
         raise PhotoFilterError("SRC and DEST overlap")
     return src, dest
+
+
+def _delete(remove: Callable[[str], None], path: str, rel: str, r: Result) -> None:
+    try:
+        remove(path)
+    except OSError as e:
+        r.errors.append(f"delete failed for {rel}: {e}")
+    else:
+        r.deleted.append(rel)
+
+
+def _verify(r: Result, db_path: Path, exists: Callable[[str], bool]) -> None:
+    try:
+        r.problems, r.assets, r.edited = verify(db_path, exists)
+    except sqlite3.Error as e:
+        r.errors.append(f"verify failed: {e}")
+    else:
+        r.verified = True
 
 
 # (phase, done, total) -> True to stop; total is 0 when unknown up front.
@@ -257,15 +291,16 @@ def run(
     def stop(phase: str, done: int = 0, total: int = 0) -> bool:
         return on_progress is not None and on_progress(phase, done, total)
 
-    stop("plan")
+    if stop("plan"):
+        return Result(plan=Plan())
     p = plan(src, rules)
     r = Result(plan=p, errors=list(p.errors))
     db = "database/Photos.sqlite"
     if dry_run:
         planned = set(p.keep) | set(p.snapshot)
-        stop("verify")
-        r.problems, r.assets, r.edited = verify(src / db, planned.__contains__)
-        r.verified = True
+        if stop("verify"):
+            return r
+        _verify(r, src / db, planned.__contains__)
         return r
 
     dest.mkdir(parents=True, exist_ok=True)
@@ -282,8 +317,7 @@ def run(
                 ds.st_size == st.size
                 and abs(ds.st_mtime_ns - st.mtime_ns) <= _TIME_WINDOW_NS
             ):
-                # Stat SRC: an xattr-only edit (a favourite) bumps ctime, not mtime.
-                # The scanner's "ctime" is the birth time, so it cannot be used here.
+                # Stat SRC: an xattr edit bumps ctime not mtime; scan ctime is birth.
                 ss = os.stat(src / rel)
                 if (
                     ss.st_mtime_ns == ds.st_mtime_ns
@@ -311,32 +345,36 @@ def run(
             r.errors.append(f"snapshot failed for {rel}: {e}")
 
     wanted_files, wanted_dirs = set(p.keep) | set(p.snapshot), set(p.dirs)
-    for root, dnames, fnames in os.walk(dest, topdown=False):
-        if stop("delete", len(r.deleted)):
-            r.deleted.sort()
-            return r
-        rel_root = os.path.relpath(root, dest)
-        for f in fnames:
-            rel = _join(rel_root, f)
-            if rel not in wanted_files:
-                os.remove(os.path.join(root, f))
-                r.deleted.append(rel)
-        for d in dnames:
-            rel = _join(rel_root, d)
-            if rel not in wanted_dirs:
-                shutil.rmtree(os.path.join(root, d))
-                r.deleted.append(rel + "/")
-    r.deleted.sort()
+    if p.errors:
+        # An incomplete scan must never prune the mirror down to what it did see.
+        r.errors.append("delete skipped: the scan of SRC was incomplete")
+    else:
+        for root, dnames, fnames in os.walk(dest, topdown=False):
+            if stop("delete", len(r.deleted)):
+                r.deleted.sort()
+                return r
+            rel_root = os.path.relpath(root, dest)
+            for f in fnames:
+                rel = _join(rel_root, f)
+                if rel not in wanted_files:
+                    _delete(os.remove, os.path.join(root, f), rel, r)
+            for d in dnames:
+                rel, path = _join(rel_root, d), os.path.join(root, d)
+                if os.path.islink(path):
+                    # os.walk files a symlink to a dir here, and rmtree refuses one.
+                    if rel not in wanted_files:
+                        _delete(os.remove, path, rel, r)
+                elif rel not in wanted_dirs:
+                    _delete(shutil.rmtree, path, rel + "/", r)
+        r.deleted.sort()
 
-    stop("verify")
-    r.problems, r.assets, r.edited = verify(
-        dest / db, lambda rel: (dest / rel).exists()
-    )
-    r.verified = True
+    if stop("verify"):
+        return r
+    _verify(r, dest / db, lambda rel: (dest / rel).exists())
     return r
 
 
-# ---------------------------------------------------------------- report
+# --- report ---
 
 
 def summary(result: Result, rules: list[Rule]) -> dict:
