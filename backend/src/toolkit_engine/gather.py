@@ -56,6 +56,8 @@ def build_patterns(categories: list[str], custom_raw: str) -> list[str]:
     """Assemble the dedup-sorted glob list from presets and custom tokens."""
     patterns = []
     for category in categories:
+        if category not in FILE_TYPE_PRESETS:
+            raise ValueError(f"❌ Unknown file type: {category}")
         patterns.extend(FILE_TYPE_PRESETS[category])
     for token in custom_raw.replace(",", " ").split():
         pattern = normalize_pattern(token)

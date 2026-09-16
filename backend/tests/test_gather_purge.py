@@ -425,6 +425,32 @@ def test_purge_delete_cancel_reports_every_file_it_removed(tmp_path, monkeypatch
     assert sorted(deleted) == sorted(gone)
 
 
+@pytest.mark.parametrize("token", ["[", "*.[abc"])
+def test_purge_scan_rejects_a_malformed_bracket_pattern(tool_client, tmp_path, token):
+    resp = tool_client.post(
+        "/api/purge/scan",
+        json={"folder": str(tmp_path), "patterns_raw": token},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["detail"].startswith("❌ Invalid pattern:")
+
+
+def test_gather_rejects_an_unknown_category(tool_client, tmp_path):
+    src = tmp_path / "src"
+    src.mkdir()
+    resp = tool_client.post(
+        "/api/gather/start",
+        json={
+            "source": str(src),
+            "target": str(tmp_path / "tgt"),
+            "categories": ["video"],
+            "custom": "",
+        },
+    )
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "❌ Unknown file type: video"
+
+
 def test_purge_scan_rejects_catch_all_only_patterns(tool_client, tmp_path):
     resp = tool_client.post(
         "/api/purge/scan",

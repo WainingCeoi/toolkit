@@ -28,7 +28,10 @@ def start_gather(req: GatherStartIn, jobs: JobsDep) -> JobStartedOut:
     src_raw = Path(req.source).expanduser()
     tgt_raw = Path(req.target).expanduser()
     src, tgt = src_raw.resolve(), tgt_raw.resolve()
-    patterns = gather.build_patterns(req.categories, req.custom)
+    try:
+        patterns = gather.build_patterns(req.categories, req.custom)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
     # Relative paths would resolve against the app's CWD.
     if not (src_raw.is_absolute() and tgt_raw.is_absolute()):
