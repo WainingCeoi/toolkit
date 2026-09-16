@@ -441,6 +441,49 @@ def test_cancelling_stops_partway_through_a_big_image(client, app_state, monkeyp
     assert snap["result"]["done"] == []
 
 
+def test_lama_is_loaded_while_the_loading_message_is_up(client, app_state, monkeypatch):
+    from toolkit_api.routers import watermark as router
+    from watermark.inpaint import inpaint_cv2
+
+    running = []
+    real_submit = app_state.jobs.submit
+
+    def spy_submit(tool, names, worker):
+        def wrapper(job):
+            running.append(job)
+            return worker(job)
+
+        return real_submit(tool, names, wrapper)
+
+    app_state.jobs.submit = spy_submit
+    messages = []
+
+    class FakeLama:
+        def load(self):
+            messages.append(running[0].snapshot()["message"])
+
+        def __call__(self, rgb, mask):
+            return inpaint_cv2(rgb, mask)
+
+    monkeypatch.setattr(router, "lama_available", lambda: True)
+    monkeypatch.setattr(router, "get_inpainter", lambda name: FakeLama())
+    batch = upload(client, ("a.png", png_bytes((20, 10)))).json()
+    image = batch["images"][0]
+    resp = client.post(
+        "/api/watermark/run",
+        json={
+            "batch_id": batch["batch_id"],
+            "inpainter": "lama",
+            "masks": {image["id"]: mask_b64(20, 10, box=(0, 0, 5, 5))},
+        },
+    )
+    snap = wait_for_job(client, resp.json()["job_id"])
+    assert snap["state"] == "done"
+    assert messages and "Loading LaMa" in messages[0], (
+        f"the model was loaded under the message {messages!r}"
+    )
+
+
 def test_run_rejects_an_unknown_inpainter(client):
     batch = upload(client, ("a.png", png_bytes())).json()
     resp = client.post(

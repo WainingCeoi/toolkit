@@ -259,6 +259,8 @@ def run(req: WatermarkRunIn, state: StateDep, watermarks: WatermarksDep):
         inpaint = get_inpainter(req.inpainter)
         if req.inpainter == "lama":
             job.set_message("Loading LaMa — the first run downloads a ~200 MB model…")
+            # Up front: the lazy load would happen under the first image's message.
+            inpaint.load()
         done: list[str] = []
         failed: list[tuple[str, str]] = []
         skipped: list[str] = []

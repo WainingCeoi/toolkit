@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import threading
 import warnings
 
 import cv2
@@ -61,6 +62,8 @@ def inpaint_cv2(rgb: np.ndarray, mask: np.ndarray) -> np.ndarray:
 
 # Loaded TorchScript models by device, so a rerun does not re-read the checkpoint.
 _models: dict[str, object] = {}
+# Held across the download too: two jobs starting together want the same file.
+_models_lock = threading.Lock()
 
 
 class LamaInpainter:
@@ -70,14 +73,22 @@ class LamaInpainter:
         self.device = device or resolve_device()
         self._model = None
 
-    def __call__(self, rgb: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    def load(self) -> None:
+        """Fetch and load the checkpoint now, instead of on the first call."""
         import torch  # deferred: torch is an optional extra
 
-        if self._model is None:
+        if self._model is not None:
+            return
+        with _models_lock:
             cached = _models.get(self.device)
             if cached is None:
                 cached = _models[self.device] = self._load(torch)
-            self._model = cached
+        self._model = cached
+
+    def __call__(self, rgb: np.ndarray, mask: np.ndarray) -> np.ndarray:
+        import torch  # deferred: torch is an optional extra
+
+        self.load()
 
         # big-lama needs dimensions in multiples of 8; the padding is cropped back.
         h, w = rgb.shape[:2]

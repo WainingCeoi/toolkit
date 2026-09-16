@@ -274,6 +274,34 @@ def test_an_empty_mask_returns_the_image_unchanged():
     assert np.array_equal(out, rgb)
 
 
+def test_two_jobs_load_the_lama_checkpoint_once(monkeypatch):
+    import threading
+    import time
+    import types
+
+    from watermark import inpaint as inpaint_module
+
+    # A stand-in torch: the load is stubbed, so nothing here touches the real one.
+    monkeypatch.setattr(inpaint_module, "_models", {})
+    monkeypatch.setitem(sys.modules, "torch", types.SimpleNamespace())
+    loaded = []
+
+    def slow_load(self, torch):
+        loaded.append(self.device)
+        time.sleep(0.1)
+        return "big-lama"
+
+    monkeypatch.setattr(inpaint_module.LamaInpainter, "_load", slow_load)
+    painters = [inpaint_module.LamaInpainter(device="cpu") for _ in range(2)]
+    threads = [threading.Thread(target=painter.load) for painter in painters]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(5.0)
+    assert loaded == ["cpu"], "both jobs downloaded and loaded the checkpoint"
+    assert all(painter._model == "big-lama" for painter in painters)
+
+
 def test_get_inpainter_rejects_unknown_names():
     with pytest.raises(ValueError, match="Unknown inpainter 'photoshop'"):
         get_inpainter("photoshop")
