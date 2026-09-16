@@ -130,6 +130,18 @@ def status(state: StateDep) -> dict:
 
 
 # --- DEVICES ---
+def _retarget(state, device, previous) -> None:
+    """Point the tool at ``device``; a rebuild loses every in-flight magnet watch."""
+    unchanged = previous is not None and (
+        previous.id,
+        previous.url,
+        previous.username,
+        previous.password,
+    ) == (device.id, device.url, device.username, device.password)
+    if not unchanged or state.torrents is None:
+        app_state.use_device(state, device)
+
+
 def _listing(book) -> dict:
     return {
         "active": book.active().id,
@@ -145,13 +157,14 @@ def list_devices(book: DevicesDep) -> dict:
 @router.post("/devices", response_model=DeviceListOut)
 def add_device(payload: DeviceIn, book: DevicesDep, state: StateDep) -> dict:
     """Save a remote BitComet and switch to it."""
+    previous = book.active()
     try:
         device = book.add(
             payload.label, payload.url, payload.username, payload.password
         )
     except BitCometError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    app_state.use_device(state, device)
+    _retarget(state, device, previous)
     return _listing(book)
 
 
@@ -159,6 +172,7 @@ def add_device(payload: DeviceIn, book: DevicesDep, state: StateDep) -> dict:
 def update_device(
     device_id: str, payload: DeviceIn, book: DevicesDep, state: StateDep
 ) -> dict:
+    previous = book.active()
     try:
         device = book.update(
             device_id,
@@ -171,13 +185,14 @@ def update_device(
         raise HTTPException(status_code=404, detail="No such device.") from exc
     except BitCometError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    if book.active().id == device.id:
-        app_state.use_device(state, device)
+    if previous.id == device.id:
+        _retarget(state, device, previous)
     return _listing(book)
 
 
 @router.delete("/devices/{device_id}", response_model=DeviceListOut)
 def remove_device(device_id: str, book: DevicesDep, state: StateDep) -> dict:
+    previous = book.active()
     try:
         book.remove(device_id)
     except KeyError as exc:
@@ -185,17 +200,18 @@ def remove_device(device_id: str, book: DevicesDep, state: StateDep) -> dict:
     except BitCometError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     # book.remove may have changed the active device; the manager must follow.
-    app_state.use_device(state, book.active())
+    _retarget(state, book.active(), previous)
     return _listing(book)
 
 
 @router.post("/devices/{device_id}/select", response_model=DeviceListOut)
 def select_device(device_id: str, book: DevicesDep, state: StateDep) -> dict:
+    previous = book.active()
     try:
         device = book.select(device_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="No such device.") from exc
-    app_state.use_device(state, device)
+    _retarget(state, device, previous)
     return _listing(book)
 
 
