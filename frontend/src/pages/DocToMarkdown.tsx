@@ -53,7 +53,8 @@ export default function DocToMarkdown() {
     if (id) setFiles([])
   }
 
-  const result = snapshot?.state === 'done' ? snapshot.result : null
+  const result =
+    snapshot?.state === 'done' || snapshot?.state === 'cancelled' ? snapshot.result : null
 
   return (
     <div>

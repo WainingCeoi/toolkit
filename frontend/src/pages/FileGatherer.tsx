@@ -9,12 +9,12 @@ import type { GatherResult as GatherResultData } from '../types/api'
 
 // Mirrors the backend's presets; keep them in sync.
 const FILE_TYPE_PRESETS: Record<string, string[]> = {
-  Video: ['*.mkv', '*.mp4', '*.mov', '*.ts', '*.flv', '*.avi', '*.webm', '*.m4v', '*.wmv', '*.mpg', '*.mpeg'],
+  Video: ['*.mkv', '*.mp4', '*.mov', '*.ts', '*.m2ts', '*.flv', '*.avi', '*.webm', '*.m4v', '*.wmv', '*.mpg', '*.mpeg'],
   Audio: ['*.mp3', '*.flac', '*.aac', '*.wav', '*.m4a', '*.ogg', '*.opus', '*.wma'],
   Image: ['*.jpg', '*.jpeg', '*.png', '*.gif', '*.heic', '*.webp', '*.bmp', '*.tiff'],
   Subtitle: ['*.srt', '*.ass', '*.ssa', '*.sub', '*.vtt'],
-  Document: ['*.pdf', '*.docx', '*.doc', '*.txt', '*.epub', '*.pptx', '*.xlsx'],
-  Archive: ['*.zip', '*.rar', '*.7z', '*.tar', '*.gz'],
+  Document: ['*.pdf', '*.docx', '*.doc', '*.txt', '*.epub', '*.pptx', '*.xlsx', '*.nfo'],
+  Archive: ['*.zip', '*.rar', '*.7z', '*.tar', '*.gz', '*.bz2'],
 }
 const CATEGORY_NAMES = Object.keys(FILE_TYPE_PRESETS)
 const LIST_LIMIT = 200

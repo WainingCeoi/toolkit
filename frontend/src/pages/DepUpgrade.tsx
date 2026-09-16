@@ -149,7 +149,7 @@ export default function DepUpgrade() {
             variant="primary"
             onClick={runScan}
             loading={running}
-            disabled={!folder.trim() || running}
+            disabled={!folder.trim() || running || applying}
             style={{ marginTop: 10 }}
           >
             🔍 Scan &amp; upgrade
