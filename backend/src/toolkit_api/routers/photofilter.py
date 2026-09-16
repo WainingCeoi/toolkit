@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
+import unicodedata
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
@@ -60,7 +61,8 @@ def _submit(req: PhotoFilterIn, jobs: JobsDep, *, dry_run: bool) -> JobStartedOu
         raise HTTPException(status_code=400, detail=f"❌ {e}") from e
     rules_text = photofilter.DEFAULT_RULES if req.rules is None else req.rules
     rules = photofilter.compile_rules(rules_text)
-    key = str(dest)
+    # APFS ignores case and Unicode normalisation: one destination, one key.
+    key = unicodedata.normalize("NFC", str(dest)).casefold()
 
     def worker(job: Job) -> dict:
         def on_progress(phase: str, done: int, total: int) -> bool:

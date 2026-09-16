@@ -8,6 +8,7 @@ import sqlite3
 import subprocess
 import threading
 import time
+import unicodedata
 from contextlib import closing
 from pathlib import Path
 
@@ -296,6 +297,25 @@ def test_refuses_overlapping_or_unsafe_dest(tmp_path):
     assert sorted(p.name for p in tmp_path.iterdir()) == ["Outer.photoslibrary"]
 
 
+def test_refuses_a_dest_that_only_looks_different_from_the_source(tmp_path):
+    outer = tmp_path / "Café.photoslibrary"
+    src = build_src(outer)
+    if not os.path.samefile(src, outer / "SRC.photoslibrary"):
+        pytest.skip("case-sensitive volume")
+    rules = pf.compile_rules(RULES)
+
+    # Same directory, spelt in another case or in NFD: still the live library.
+    with pytest.raises(pf.PhotoFilterError, match="overlap"):
+        pf.run(src, outer / "SRC.photoslibrary", rules)
+    with pytest.raises(pf.PhotoFilterError, match="overlap"):
+        pf.run(src, tmp_path / "CAFÉ.photoslibrary", rules)
+    nfd = Path(unicodedata.normalize("NFD", str(outer))) / src.name
+    assert str(nfd) != str(src)
+    with pytest.raises(pf.PhotoFilterError, match="overlap"):
+        pf.run(src, nfd, rules)
+    assert (src / ".DS_Store").exists()
+
+
 def test_copy_failure_is_recorded_and_the_run_carries_on(tmp_path, monkeypatch):
     src, dest = build_src(tmp_path), tmp_path / "Dest.photoslibrary"
     real_copy = pf.copy_file
@@ -548,11 +568,15 @@ def test_photofilter_refuses_a_second_writer_on_the_same_destination(
     first = client.post("/api/photofilter/run", json=body).json()["job_id"]
     assert started.wait(3.0)
     second = client.post("/api/photofilter/run", json=body).json()["job_id"]
+    # A case variant of the path names the same destination on APFS.
+    variant = {"source": str(src), "dest": str(tmp_path / "DEST.photoslibrary")}
+    variant_job = client.post("/api/photofilter/run", json=variant).json()["job_id"]
     # A dry run reads only, so it is not turned away.
     dry = client.post("/api/photofilter/dry-run", json=body).json()["job_id"]
-    snap = wait_for_job(client, second)
-    assert snap["state"] == "failed"
-    assert "already writing" in snap["error"]
+    for job_id in (second, variant_job):
+        snap = wait_for_job(client, job_id)
+        assert snap["state"] == "failed"
+        assert "already writing" in snap["error"]
     release.set()
 
     assert wait_for_job(client, first)["state"] == "done"

@@ -223,6 +223,14 @@ class Result:
     edited: int = 0
 
 
+def _same_dir(a: Path, b: Path) -> bool:
+    # APFS ignores case and Unicode normalisation, so only the inode identifies a dir.
+    try:
+        return os.path.samestat(os.stat(a), os.stat(b))
+    except OSError:
+        return False
+
+
 def check_paths(src: Path | str, dest: Path | str) -> tuple[Path, Path]:
     """The guards every run starts with. Returns the resolved pair."""
     src, dest = Path(src).resolve(), Path(dest).resolve()
@@ -232,7 +240,11 @@ def check_paths(src: Path | str, dest: Path | str) -> tuple[Path, Path]:
         )
     if dest.suffix != ".photoslibrary":
         raise PhotoFilterError(f"DEST must be a *.photoslibrary path, got {dest}")
-    if src == dest or src in dest.parents or dest in src.parents:
+    if (
+        _same_dir(src, dest)
+        or any(_same_dir(src, up) for up in dest.parents)
+        or any(_same_dir(dest, up) for up in src.parents)
+    ):
         raise PhotoFilterError("SRC and DEST overlap")
     return src, dest
 
