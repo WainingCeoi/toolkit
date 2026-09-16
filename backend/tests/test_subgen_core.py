@@ -85,6 +85,23 @@ def test_trojan_renders_to_all_three_targets():
     assert filename
 
 
+def test_h2_node_renders_h2_opts_not_http_opts_in_clash():
+    link = "vless://uuid-1@example.com:443?type=h2&security=tls&host=a.b&path=/x#h2"
+    nodes = core.parse_node_links(link)["nodes"]
+    proxy = yaml.safe_load(core.render_clash_subscription(nodes))["proxies"][0]
+    assert proxy["network"] == "h2"
+    assert proxy["h2-opts"] == {"path": "/x", "host": ["a.b"]}
+    assert "http-opts" not in proxy
+
+
+def test_http_node_still_renders_http_opts_in_clash():
+    link = "vless://uuid-1@example.com:443?type=http&security=tls&host=a.b&path=/x#h"
+    nodes = core.parse_node_links(link)["nodes"]
+    proxy = yaml.safe_load(core.render_clash_subscription(nodes))["proxies"][0]
+    assert proxy["http-opts"] == {"path": ["/x"], "headers": {"Host": ["a.b"]}}
+    assert "h2-opts" not in proxy
+
+
 def test_endpoint_with_non_numeric_port_warns_instead_of_becoming_the_host():
     parsed = core.parse_preferred_endpoints("1.2.3.4:8o80, 1.2.3.4:, 9.9.9.9")
     assert [e["host"] for e in parsed["endpoints"]] == ["9.9.9.9"]

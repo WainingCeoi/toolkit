@@ -554,11 +554,17 @@ def _clash_proxy(node: dict) -> dict:
         proxy["ws-opts"] = ws_opts
     elif net == "grpc":
         proxy["grpc-opts"] = {"grpc-service-name": node.get("service_name") or ""}
-    elif net in ("http", "h2"):
+    elif net == "http":
         http_opts: dict = {"path": [node.get("path") or "/"]}
         if node.get("host_header"):
             http_opts["headers"] = {"Host": [node["host_header"]]}
         proxy["http-opts"] = http_opts
+    elif net == "h2":
+        # mihomo reads h2-opts for network: h2 and ignores http-opts.
+        h2_opts: dict = {"path": node.get("path") or "/"}
+        if node.get("host_header"):
+            h2_opts["host"] = [node["host_header"]]
+        proxy["h2-opts"] = h2_opts
     return proxy
 
 
