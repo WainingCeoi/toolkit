@@ -17,10 +17,15 @@ interface MaskPreviewProps {
   onReady?: (ready: boolean) => void
   /** Fires true when the landed proposal marks nothing at all. */
   onEmpty?: (empty: boolean) => void
+  /** Fires true when a proposal could not be loaded; the card still shows the previous one. */
+  onError?: (failed: boolean) => void
 }
 
 const MaskPreview = forwardRef<MaskPreviewHandle, MaskPreviewProps>(
-  function MaskPreview({ imageUrl, maskUrl, width, height, onReady, onEmpty }, ref) {
+  function MaskPreview(
+    { imageUrl, maskUrl, width, height, onReady, onEmpty, onError },
+    ref,
+  ) {
     const viewRef = useRef<HTMLCanvasElement>(null)
     const image = useRef<HTMLImageElement | null>(null)
     const overlay = useRef<HTMLCanvasElement | null>(null)
@@ -31,6 +36,8 @@ const MaskPreview = forwardRef<MaskPreviewHandle, MaskPreviewProps>(
     readyCb.current = onReady
     const emptyCb = useRef(onEmpty)
     emptyCb.current = onEmpty
+    const errorCb = useRef(onError)
+    errorCb.current = onError
 
     const overlayCtx = () => {
       if (!overlay.current) {
@@ -57,6 +64,7 @@ const MaskPreview = forwardRef<MaskPreviewHandle, MaskPreviewProps>(
     useEffect(() => {
       const token = ++loadToken.current
       readyCb.current?.(false)
+      errorCb.current?.(false)
       const img = new Image()
       img.onload = () => {
         if (token !== loadToken.current) return
@@ -78,6 +86,7 @@ const MaskPreview = forwardRef<MaskPreviewHandle, MaskPreviewProps>(
       img.onerror = () => {
         if (token !== loadToken.current) return
         readyCb.current?.(loaded.current)
+        errorCb.current?.(true)
       }
       img.src = maskUrl
       return () => {
