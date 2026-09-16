@@ -29,6 +29,7 @@ from watermark.detect import (
 from watermark.inpaint import (
     INPAINTERS,
     get_inpainter,
+    inpaint_cv2,
     lama_available,
     resolve_device,
 )
@@ -36,8 +37,8 @@ from watermark.pipeline import (
     DEFAULT_DILATE_PX,
     IMAGE_TYPES,
     CancelledError,
+    probe_removal,
     remove_watermark,
-    would_destroy_content,
 )
 
 from ..deps import StateDep, WatermarksDep
@@ -327,23 +328,26 @@ def run(req: WatermarkRunIn, state: StateDep, watermarks: WatermarksDep):
                             job.update_item(idx, pct=100, state="done")
                             publish()
                             continue
-                        if would_destroy_content(rgb, mask, req.dilate_px):
+                        probe, destroys = probe_removal(rgb, mask, req.dilate_px)
+                        if destroys:
                             protected.append(entry["name"])
                             job.update_item(idx, pct=100, state="done")
                             publish()
                             continue
-                        spooled = spool / f"{idx}_{out_name}"
-                        spooled.write_bytes(
-                            imgio.encode_png(
-                                remove_watermark(
-                                    rgb,
-                                    mask,
-                                    inpaint,
-                                    req.dilate_px,
-                                    should_stop=lambda: job.cancelled,
-                                )
+                        # The probe is already the cv2 answer for this image.
+                        out = (
+                            probe
+                            if inpaint is inpaint_cv2
+                            else remove_watermark(
+                                rgb,
+                                mask,
+                                inpaint,
+                                req.dilate_px,
+                                should_stop=lambda: job.cancelled,
                             )
                         )
+                        spooled = spool / f"{idx}_{out_name}"
+                        spooled.write_bytes(imgio.encode_png(out))
                     except CancelledError:
                         break
                     except Exception as e:  # noqa: BLE001 — per-file, batch goes on

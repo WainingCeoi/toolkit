@@ -207,6 +207,35 @@ def test_run_inpaints_only_the_masked_pixels(client):
     assert np.array_equal(cleaned[:10, :10], rgb[:10, :10])
 
 
+def test_the_cv2_run_writes_the_same_pixels_as_a_plain_removal(client):
+    from watermark.inpaint import inpaint_cv2
+    from watermark.pipeline import DEFAULT_DILATE_PX, remove_watermark
+
+    rgb = np.full((60, 80, 3), 128, np.uint8)
+    rgb[20:36, 30:50] = 160
+    buffer = io.BytesIO()
+    Image.fromarray(rgb).save(buffer, format="PNG")
+    batch = upload(client, ("square.png", buffer.getvalue())).json()
+    image = batch["images"][0]
+    resp = client.post(
+        "/api/watermark/run",
+        json={
+            "batch_id": batch["batch_id"],
+            "inpainter": "cv2",
+            "masks": {image["id"]: mask_b64(80, 60, box=(30, 20, 50, 36))},
+        },
+    )
+    snap = wait_for_job(client, resp.json()["job_id"])
+    mask = np.zeros((60, 80), np.uint8)
+    mask[20:36, 30:50] = 255
+    expected = remove_watermark(rgb, mask, inpaint_cv2, DEFAULT_DILATE_PX)
+
+    download = client.get(f"/api/artifacts/{snap['result']['artifact_id']}")
+    with zipfile.ZipFile(io.BytesIO(download.content)) as archive:
+        cleaned = np.asarray(Image.open(io.BytesIO(archive.read("square.png"))))
+    assert np.array_equal(cleaned, expected)
+
+
 def test_run_processes_only_images_that_got_a_mask(client):
     batch = upload(
         client, ("a.png", png_bytes((20, 10))), ("b.png", png_bytes((20, 10)))

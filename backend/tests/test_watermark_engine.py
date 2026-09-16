@@ -357,6 +357,25 @@ def test_cli_cleans_a_folder_with_cv2(tmp_path, capsys):
     assert "[2/2]" in capsys.readouterr().out
 
 
+def test_the_cv2_inpaint_is_not_run_twice_per_image(tmp_path, monkeypatch):
+    from watermark import pipeline
+
+    real = pipeline.remove_watermark
+    calls = []
+
+    def counting(*args, **kwargs):
+        calls.append(1)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(pipeline, "remove_watermark", counting)
+    src = write_marked_folder(tmp_path / "in", count=1)
+    cleaned, _skipped, _protected, _failed = pipeline.clean_folder(
+        src, tmp_path / "out", inpainter="cv2", detector="texture"
+    )
+    assert cleaned == ["photo_0.png"]
+    assert len(calls) == 1, f"the destruction probe was inpainted again ({len(calls)})"
+
+
 def test_two_inputs_with_the_same_stem_both_survive(tmp_path, capsys):
     src = tmp_path / "in"
     src.mkdir()

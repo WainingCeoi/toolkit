@@ -18,7 +18,7 @@ from .detect import (
     repeating_evidence,
 )
 from .imgio import encode_png, load_rgb
-from .inpaint import get_inpainter
+from .inpaint import get_inpainter, inpaint_cv2
 
 # Only the formats the whole pipeline, browser canvas included, is exercised on.
 IMAGE_TYPES = ("png", "jpg", "jpeg", "webp")
@@ -87,15 +87,27 @@ def remove_watermark(
     return _inpaint_tiled(rgb, mask, inpaint, should_stop)
 
 
-def destruction(rgb: np.ndarray, mask: np.ndarray, dilate_px: int) -> float:
-    """How violently removing ``mask`` rewrites the image, in grey levels."""
-    # Always probed with cv2 so the reading is comparable across inpainters.
-    probe = remove_watermark(rgb, mask, get_inpainter("cv2"), dilate_px)
+def _destruction_of(rgb: np.ndarray, probe: np.ndarray) -> float:
     moved = np.abs(rgb.astype(np.int16) - probe.astype(np.int16)).max(axis=2)
     changed = moved > 2
     if not changed.any():
         return 0.0
     return float(np.percentile(moved[changed], 90))
+
+
+def probe_removal(
+    rgb: np.ndarray, mask: np.ndarray, dilate_px: int
+) -> tuple[np.ndarray, bool]:
+    """The cv2 removal of ``mask``, and whether it rewrites more than it is worth."""
+    probe = remove_watermark(rgb, mask, get_inpainter("cv2"), dilate_px)
+    return probe, _destruction_of(rgb, probe) > MAX_DESTRUCTION
+
+
+def destruction(rgb: np.ndarray, mask: np.ndarray, dilate_px: int) -> float:
+    """How violently removing ``mask`` rewrites the image, in grey levels."""
+    # Always probed with cv2 so the reading is comparable across inpainters.
+    probe = remove_watermark(rgb, mask, get_inpainter("cv2"), dilate_px)
+    return _destruction_of(rgb, probe)
 
 
 def would_destroy_content(rgb: np.ndarray, mask: np.ndarray, dilate_px: int) -> bool:
@@ -181,12 +193,18 @@ def clean_folder(
                 if on_progress is not None and on_progress(idx + 1, len(files)):
                     break
                 continue
-            if would_destroy_content(rgb, mask, dilate_px):
+            probe, destroys = probe_removal(rgb, mask, dilate_px)
+            if destroys:
                 protected.append(path.name)
                 if on_progress is not None and on_progress(idx + 1, len(files)):
                     break
                 continue
-            out = remove_watermark(rgb, mask, inpaint, dilate_px)
+            # The probe is a finished cv2 pass; redoing it would be the same array.
+            out = (
+                probe
+                if inpaint is inpaint_cv2
+                else remove_watermark(rgb, mask, inpaint, dilate_px)
+            )
             (dst / out_name).write_bytes(encode_png(out))
             cleaned.append(out_name)
         except Exception as e:  # noqa: BLE001 — reported per file, batch goes on
