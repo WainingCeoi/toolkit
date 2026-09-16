@@ -161,6 +161,19 @@ def test_find_manifests_leaves_poetry_and_pdm_projects_alone(tmp_path):
     ]
 
 
+def test_find_manifests_leaves_pnpm_yarn_and_bun_projects_alone(tmp_path):
+    for i, lock in enumerate(("pnpm-lock.yaml", "yarn.lock", "bun.lock", "bun.lockb")):
+        project = _npm_project(tmp_path / f"p{i}")
+        (project / lock).write_text("", encoding="utf-8")
+    assert depsync.find_manifests(str(tmp_path))[0] == []
+
+    # A package-lock.json beside it means the user does drive this one with npm.
+    (tmp_path / "p0" / "package-lock.json").write_text("{}", encoding="utf-8")
+    assert [m.rel for m in depsync.find_manifests(str(tmp_path))[0]] == [
+        "p0/package.json"
+    ]
+
+
 def test_find_manifests_rejects_empty_and_relative(tmp_path):
     _, err = depsync.find_manifests("")
     assert err and "No folder given" in err

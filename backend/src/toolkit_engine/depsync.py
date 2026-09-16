@@ -102,7 +102,12 @@ def _has_npm_deps(path: Path) -> bool:
         data = json.loads(path.read_text(encoding="utf-8"))
     except OSError, json.JSONDecodeError:
         return False
-    return any(isinstance(data.get(t), dict) and data.get(t) for t in _NPM_TABLES)
+    if not any(isinstance(data.get(t), dict) and data.get(t) for t in _NPM_TABLES):
+        return False
+    # pnpm/yarn/bun resolve their own lockfile; npm would write a second one beside it.
+    if any((path.parent / name).is_file() for name in _NPM_ALT_LOCKS):
+        return (path.parent / "package-lock.json").is_file()
+    return True
 
 
 def find_manifests(folder: str) -> tuple[list[Manifest], str | None]:
@@ -388,6 +393,7 @@ def apply_uv_bumps(pyproject_path: Path, bumps: list[Bump]) -> None:
 # --- npm (package.json + package-lock.json) ---
 
 _NPM_TABLES = ("dependencies", "devDependencies", "optionalDependencies")
+_NPM_ALT_LOCKS = ("pnpm-lock.yaml", "yarn.lock", "bun.lock", "bun.lockb")
 # Bumpable ranges: optional ^, ~ or >= before x.y.z; anything fancier is left alone.
 _NPM_RANGE = re.compile(r"^([~^]|>=)?\s*(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.+-]+)?)$")
 
