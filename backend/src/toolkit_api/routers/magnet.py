@@ -150,7 +150,14 @@ def start_auto(req: AutoScrapeIn, state: StateDep) -> JobStartedOut:
         if job.cancelled:
             return result
         if urls:
-            set_key(magnet.ENV_PATH, "CUTOFF_VIDEO", urls[0])
+            # A failed fetch is as unfetched as a cancelled one: hold the cutoff
+            # behind the oldest of them (urls[0] is the newest) so a rerun sees it.
+            failed_urls = {r["url"] for r in result["failed"]}
+            oldest_failed = max(
+                (i for i, url in enumerate(urls) if url in failed_urls), default=-1
+            )
+            if oldest_failed + 1 < len(urls):
+                set_key(magnet.ENV_PATH, "CUTOFF_VIDEO", urls[oldest_failed + 1])
         return result
 
     job = state.jobs.submit(TOOL_SLUG, [], worker)
