@@ -63,7 +63,7 @@ def convert(
     if mineru_cmd is None:
         raise HTTPException(
             status_code=400,
-            detail="Missing required tool: MinerU (`uv add mineru`).",
+            detail="Missing required tool: MinerU (`uv sync --extra docmd`).",
         )
 
     # Uploads are request-scoped: read them all before returning.
