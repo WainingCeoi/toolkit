@@ -144,6 +144,23 @@ def test_find_manifests_walks_subfolders_and_skips_heavy_dirs(tmp_path):
     }
 
 
+def test_find_manifests_leaves_poetry_and_pdm_projects_alone(tmp_path):
+    poetry = tmp_path / "poetry"
+    poetry.mkdir()
+    (poetry / "pyproject.toml").write_text(
+        '[project]\nname = "p"\nversion = "0.1.0"\ndependencies = ["fastapi>=0.1.0"]\n'
+        "[tool.poetry]\npackages = []\n",
+        encoding="utf-8",
+    )
+    assert depsync.find_manifests(str(tmp_path))[0] == []
+
+    # A uv.lock beside it means the user does drive this one with uv.
+    (poetry / "uv.lock").write_text(SAMPLE_LOCK, encoding="utf-8")
+    assert [m.rel for m in depsync.find_manifests(str(tmp_path))[0]] == [
+        "poetry/pyproject.toml"
+    ]
+
+
 def test_find_manifests_rejects_empty_and_relative(tmp_path):
     _, err = depsync.find_manifests("")
     assert err and "No folder given" in err

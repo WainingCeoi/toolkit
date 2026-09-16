@@ -89,11 +89,12 @@ def _is_uv_project(path: Path) -> bool:
     except OSError, tomllib.TOMLDecodeError:
         return False
     tool = data.get("tool", {})
-    return (
-        "project" in data
-        or "dependency-groups" in data
-        or (isinstance(tool, dict) and "uv" in tool)
-    )
+    if not isinstance(tool, dict):
+        tool = {}
+    # Poetry/PDM resolve their own lockfile; uv would write a second one beside it.
+    if ("poetry" in tool or "pdm" in tool) and "uv" not in tool:
+        return (path.parent / "uv.lock").is_file()
+    return "project" in data or "dependency-groups" in data or "uv" in tool
 
 
 def _has_npm_deps(path: Path) -> bool:
