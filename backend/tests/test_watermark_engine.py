@@ -236,6 +236,25 @@ def test_tiles_with_nothing_masked_are_skipped_entirely():
     assert len(calls) == 1, f"expected one tile of work, ran {len(calls)}"
 
 
+def test_a_tiled_inpaint_stops_between_tiles_when_asked():
+    from watermark.pipeline import CancelledError
+
+    calls = []
+
+    def counting_inpaint(rgb, mask):
+        calls.append(1)
+        return inpaint_cv2(rgb, mask)
+
+    big = np.full((800, 3000, 3), 130, np.uint8)
+    mask = np.zeros((800, 3000), np.uint8)
+    mask[100:120, ::700] = 255  # work in every tile column
+    with pytest.raises(CancelledError):
+        remove_watermark(
+            big, mask, counting_inpaint, should_stop=lambda: len(calls) >= 2
+        )
+    assert len(calls) == 2, f"kept inpainting after the stop: {len(calls)} tiles"
+
+
 def test_only_masked_pixels_are_ever_rewritten():
     rgb = np.dstack([np.tile(np.arange(200, dtype=np.uint8), (150, 1))] * 3)
     mask = np.zeros((150, 200), np.uint8)

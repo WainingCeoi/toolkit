@@ -35,6 +35,7 @@ from watermark.inpaint import (
 from watermark.pipeline import (
     DEFAULT_DILATE_PX,
     IMAGE_TYPES,
+    CancelledError,
     remove_watermark,
     would_destroy_content,
 )
@@ -331,9 +332,17 @@ def run(req: WatermarkRunIn, state: StateDep, watermarks: WatermarksDep):
                         spooled = spool / f"{idx}_{out_name}"
                         spooled.write_bytes(
                             imgio.encode_png(
-                                remove_watermark(rgb, mask, inpaint, req.dilate_px)
+                                remove_watermark(
+                                    rgb,
+                                    mask,
+                                    inpaint,
+                                    req.dilate_px,
+                                    should_stop=lambda: job.cancelled,
+                                )
                             )
                         )
+                    except CancelledError:
+                        break
                     except Exception as e:  # noqa: BLE001 — per-file, batch goes on
                         job.update_item(idx, pct=100, state="failed", error=str(e))
                         failed.append((entry["name"], str(e)))

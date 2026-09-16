@@ -365,6 +365,54 @@ def test_an_empty_mask_on_a_visible_repeat_is_protected(client, monkeypatch):
     assert snap["result"]["skipped"] == []
 
 
+def test_cancelling_stops_partway_through_a_big_image(client, app_state, monkeypatch):
+    from toolkit_api.routers import watermark as router
+    from watermark.inpaint import inpaint_cv2
+
+    wide = np.full((80, 1500, 3), 130, np.uint8)
+    buffer = io.BytesIO()
+    Image.fromarray(wide).save(buffer, format="PNG")
+    batch = upload(client, ("wide.png", buffer.getvalue())).json()
+    image = batch["images"][0]
+
+    running = []
+    real_submit = app_state.jobs.submit
+
+    def spy_submit(tool, names, worker):
+        def wrapper(job):
+            running.append(job)
+            return worker(job)
+
+        return real_submit(tool, names, wrapper)
+
+    app_state.jobs.submit = spy_submit
+
+    tiles = []
+
+    def cancelling_inpaint(rgb, mask):
+        tiles.append(rgb.shape)
+        app_state.jobs.cancel(running[0].id)
+        return inpaint_cv2(rgb, mask)
+
+    monkeypatch.setattr(router, "get_inpainter", lambda name: cancelling_inpaint)
+
+    mask = np.zeros((80, 1500), np.uint8)
+    mask[10:30, 10:30] = 255
+    mask[10:30, 800:820] = 255  # a second tile, so the cancel lands mid-image
+    resp = client.post(
+        "/api/watermark/run",
+        json={
+            "batch_id": batch["batch_id"],
+            "inpainter": "cv2",
+            "masks": {image["id"]: base64.b64encode(imgio.encode_png(mask)).decode()},
+        },
+    )
+    snap = wait_for_job(client, resp.json()["job_id"])
+    assert snap["state"] == "cancelled"
+    assert len(tiles) == 1, f"inpainted {len(tiles)} tiles after the cancel"
+    assert snap["result"]["done"] == []
+
+
 def test_run_rejects_an_unknown_inpainter(client):
     batch = upload(client, ("a.png", png_bytes())).json()
     resp = client.post(

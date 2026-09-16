@@ -35,10 +35,15 @@ CONTEXT_PX = 96
 MAX_DESTRUCTION = 88.0
 
 
+class CancelledError(Exception):
+    """Raised out of a tiled inpaint when ``should_stop`` asked it to stop."""
+
+
 def _inpaint_tiled(
     rgb: np.ndarray,
     mask: np.ndarray,
     inpaint: Callable[[np.ndarray, np.ndarray], np.ndarray],
+    should_stop: Callable[[], bool] | None = None,
 ) -> np.ndarray:
     """Inpaint tile by tile, touching only tiles that contain masked pixels."""
     height, width = mask.shape
@@ -48,6 +53,9 @@ def _inpaint_tiled(
             bottom, right = min(top + TILE_PX, height), min(left + TILE_PX, width)
             if not mask[top:bottom, left:right].any():
                 continue
+            # A big LaMa image is minutes of tiles; cancel cannot wait for the image.
+            if should_stop is not None and should_stop():
+                raise CancelledError
             # Context so tile-edge pixels are filled from real surroundings.
             ctop, cleft = max(0, top - CONTEXT_PX), max(0, left - CONTEXT_PX)
             cbottom = min(height, bottom + CONTEXT_PX)
@@ -68,6 +76,7 @@ def remove_watermark(
     mask: np.ndarray,
     inpaint: Callable[[np.ndarray, np.ndarray], np.ndarray],
     dilate_px: int = DEFAULT_DILATE_PX,
+    should_stop: Callable[[], bool] | None = None,
 ) -> np.ndarray:
     """Inpaint ``mask`` out of ``rgb``; only masked pixels are ever written."""
     if dilate_px > 0:
@@ -75,7 +84,7 @@ def remove_watermark(
         mask = cv2.dilate(mask, kernel)
     if not mask.any():
         return rgb.copy()
-    return _inpaint_tiled(rgb, mask, inpaint)
+    return _inpaint_tiled(rgb, mask, inpaint, should_stop)
 
 
 def destruction(rgb: np.ndarray, mask: np.ndarray, dilate_px: int) -> float:
