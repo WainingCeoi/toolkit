@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import ipaddress
 import json
 import re
 from copy import deepcopy
@@ -92,6 +93,18 @@ def _get_effective_tls_host(node: dict) -> str:
     return str(
         node.get("sni") or node.get("host_header") or node.get("original_server") or ""
     ).strip()
+
+
+def _has_tls_domain(node: dict) -> bool:
+    """True when the node carries a real domain to present as SNI/Host."""
+    host = _get_effective_tls_host(node).strip("[]")
+    if not host:
+        return False
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return True
+    return False
 
 
 # ----------------------------------------------------------------- target / urls
@@ -351,7 +364,7 @@ def expand_nodes(
     expanded: list[dict] = []
     seq = 0
     for base_node in base_nodes:
-        if keep_original_host and not _get_effective_tls_host(base_node):
+        if keep_original_host and not _has_tls_domain(base_node):
             warnings.append(
                 f"Node '{base_node.get('name')}' has no Host/SNI/original domain; "
                 "the TLS handshake may fail after swapping in the optimized IP."

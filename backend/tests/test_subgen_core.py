@@ -85,6 +85,22 @@ def test_trojan_renders_to_all_three_targets():
     assert filename
 
 
+def test_ip_only_origin_warns_that_there_is_no_domain_for_sni():
+    nodes = core.parse_node_links("vless://u@1.2.3.4:443?security=tls#ip")["nodes"]
+    eps = core.parse_preferred_endpoints("5.6.7.8")["endpoints"]
+    expanded = core.expand_nodes(nodes, eps, {"keep_original_host": True})
+    assert len(expanded["warnings"]) == 1
+    assert "no Host/SNI/original domain" in expanded["warnings"][0]
+
+
+def test_domain_origin_does_not_warn():
+    nodes = core.parse_node_links("vless://u@host.example.com:443?security=tls#d")[
+        "nodes"
+    ]
+    eps = core.parse_preferred_endpoints("5.6.7.8")["endpoints"]
+    assert core.expand_nodes(nodes, eps, {"keep_original_host": True})["warnings"] == []
+
+
 def test_h2_node_renders_h2_opts_not_http_opts_in_clash():
     link = "vless://uuid-1@example.com:443?type=h2&security=tls&host=a.b&path=/x#h2"
     nodes = core.parse_node_links(link)["nodes"]
