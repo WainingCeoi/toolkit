@@ -133,8 +133,11 @@ export default function Remux() {
       subtitle_index: parseInt(subIdx, 10) || 0,
       sub_lang: subLang,
       use_external_sub: useExternalSub,
+      // Unmatched videos are dropped: the backend rejects a null input as a URL.
       external_sub_map: Object.fromEntries(
-        matches.map((m): [string, string | null] => [m.video, m.subtitle]),
+        matches.flatMap((m): [string, string][] =>
+          m.subtitle ? [[m.video, m.subtitle]] : [],
+        ),
       ),
       out_folder: outFolder,
       max_workers: workers,
@@ -448,7 +451,7 @@ export default function Remux() {
           <Button
             variant="primary"
             onClick={startRemux}
-            disabled={running || (useExternalSub && !matchesReady)}
+            disabled={running || (useExternalSub && (!matchesReady || subError !== null))}
             loading={useExternalSub && !matchesReady}
             style={{ width: '100%' }}
           >
