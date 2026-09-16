@@ -148,6 +148,25 @@ def test_images_to_pdf_applies_exif_orientation():
     assert boxes[0][2:] == (20.0, 40.0)
 
 
+def test_images_to_pdf_transposes_without_an_extra_pixel_copy(monkeypatch):
+    from toolkit_engine import imgpdf as imgpdf_engine
+
+    copies = 0
+    original_copy = Image.Image.copy
+
+    def counting_copy(self):
+        nonlocal copies
+        copies += 1
+        return original_copy(self)
+
+    monkeypatch.setattr(Image.Image, "copy", counting_copy)
+    buf = BytesIO()
+    Image.new("RGB", (40, 20), "white").save(buf, format="JPEG")
+    imgpdf_engine.images_to_pdf_bytes([("photo.jpg", buf.getvalue())])
+    # Only .convert("RGB") may copy; an unrotated image must not be copied twice.
+    assert copies == 1
+
+
 def test_images_to_pdf_rejects_decompression_bomb(monkeypatch):
     from toolkit_engine import imgpdf as imgpdf_engine
 

@@ -24,8 +24,9 @@ def images_to_pdf_bytes(named_files: list[tuple[str, bytes]]) -> bytes:
         w, h = image.size
         if w * h > MAX_PIXELS:
             raise ValueError(f"Image is too large to process ({w}×{h} pixels).")
-        # The PDF writer ignores EXIF, so bake the phone camera's rotation in.
-        images.append(ImageOps.exif_transpose(image).convert("RGB"))
+        # PDF ignores EXIF; in_place, or Pillow copies even with nothing to rotate.
+        ImageOps.exif_transpose(image, in_place=True)
+        images.append(image.convert("RGB"))
 
     buffer = BytesIO()
     images[0].save(buffer, format="PDF", save_all=True, append_images=images[1:])
