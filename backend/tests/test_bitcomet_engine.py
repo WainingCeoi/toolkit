@@ -454,6 +454,16 @@ def test_ensure_save_folder_registers_an_unknown_folder(fake, client, tmp_path):
     client.add_torrent(make_torrent(SAMPLE_FILES), folder)
 
 
+def test_a_relative_local_save_folder_is_refused(fake, client, tmp_path, monkeypatch):
+    # "Save to" is a free-text box; a bare name would land in the backend's cwd.
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(BitCometError, match="full path"):
+        client.ensure_save_folder("Torrents")
+
+    assert not (tmp_path / "Torrents").exists()
+    assert not any(path.endswith("directories/add") for _m, path, _p in fake.calls)
+
+
 def test_ensure_save_folder_does_not_re_register_a_known_one(fake, client, save_folder):
     # A trailing slash must not make one folder look like two.
     assert client.ensure_save_folder(f"{save_folder}/") == str(save_folder)

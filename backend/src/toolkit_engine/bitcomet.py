@@ -577,6 +577,12 @@ class BitCometClient:
         """Make `path` usable as a save_folder; BitComet rejects unregistered ones."""
         if self.is_local:
             folder = Path(path).expanduser()
+            if not folder.is_absolute():
+                # Relative, it would be created under the backend's own cwd.
+                raise BitCometError(
+                    f"{str(path).strip()!r} is not a full path. Type one like "
+                    f"/Users/you/Downloads, or use Browse."
+                )
             try:
                 folder.mkdir(parents=True, exist_ok=True)
             except OSError as exc:
