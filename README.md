@@ -1,6 +1,13 @@
 # 🧰 Toolkit
 
-Twelve small media & file utilities in one local app — a FastAPI backend driving
+![Python](https://img.shields.io/badge/Python-3.14-3776AB?style=for-the-badge&logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=for-the-badge&logo=fastapi&logoColor=white)
+![React](https://img.shields.io/badge/React-19-61DAFB?style=for-the-badge&logo=react&logoColor=black)
+![Platform](https://img.shields.io/badge/Platform-macOS-000000?style=for-the-badge&logo=apple&logoColor=white)
+![License](https://img.shields.io/github/license/WainingCeoi/toolkit?style=for-the-badge&logo=gnu&logoColor=white)
+![Stars](https://img.shields.io/github/stars/WainingCeoi/toolkit?style=for-the-badge&logo=github)
+
+Thirteen small media & file utilities in one local app — a FastAPI backend driving
 the engines, a React single-page UI, and one `make` entrance.
 
 > **macOS only.** Folder pickers use AppleScript (`osascript`), and several tools
@@ -27,6 +34,7 @@ the engines, a React single-page UI, and one `make` entrance.
 | 📄  | **Doc to PDF**          | Accept tracked changes, strip comments, render to PDF via LibreOffice.           |
 | 📝  | **Doc to Markdown**     | PDFs / Office docs / images → Markdown with MinerU (text, tables, formulas).     |
 | 🧹  | **Cache Purge**         | Recursively find and delete cache / junk files.                                  |
+| 📸  | **Photos Library Filter** | Mirror a Photos library without its caches, safe while Photos is running.     |
 | 📦  | **Dependency Upgrader** | Scan a project's `pyproject.toml` / `package.json`, upgrade and commit each one. |
 
 **🌐 Network**
@@ -42,12 +50,6 @@ make install     # backend deps (uv) + frontend deps (npm)
 make dev         # → http://localhost:5173
 ```
 
-`make install` picks the optional backend extras for the machine it runs on:
-Apple silicon gets both (MinerU for Doc to Markdown, torch for the watermark
-inpainter), Intel Macs get neither, because no macOS x86_64 wheel exists for
-either — see [Requirements](#requirements) for what changes without them. Force
-a subset with `make install EXTRAS="docmd watermark"`, or none with `EXTRAS=`.
-
 | Command      | What runs                                | Reachable from            |
 | ------------ | ---------------------------------------- | ------------------------- |
 | `make dev`   | Vite `:5173` + API `:8000`, hot-reload   | this Mac                  |
@@ -55,9 +57,8 @@ a subset with `make install EXTRAS="docmd watermark"`, or none with `EXTRAS=`.
 | `make host`  | the same, bound to `0.0.0.0`             | every device on the Wi-Fi |
 
 One Ctrl-C stops everything. In dev, Vite proxies `/api` to the backend, so the UI
-calls same-origin and streaming needs no CORS. `PORT=9000` moves the base port in
-any mode — each advances to the first free port at or above it and announces where
-it landed; `HOST=127.0.0.1 make host` keeps it local.
+calls same-origin and streaming needs no CORS. `make host PORT=9000` moves the base
+port (auto-advances if busy); `HOST=127.0.0.1 make host` keeps it local.
 
 > ⚠️ **`make host` has no authentication**, and these tools move and permanently
 > delete files on this Mac. It's plain HTTP — run it only on a network you trust.
@@ -107,11 +108,6 @@ sequenceDiagram
 
 Jobs are tracked app-wide, not per page: every open tool keeps a tab in the bottom
 dock with its running jobs, so switching tools — or reloading — never loses a run.
-The nav and home grid are rendered from one server-side manifest (`/api/tools`),
-which is also what `TOOLKIT_DISABLED_TOOLS` filters — a tool switched off there is
-dropped from the manifest *and* never mounted, so its endpoints 404 instead of
-staying quietly callable. The UI follows the system light/dark theme, with a
-toggle that overrides and remembers.
 
 ## Configuration
 
@@ -139,42 +135,24 @@ Environment variables, or `backend/.env` (copy `backend/.env.example`). All opti
 | everything            | [Node.js](https://nodejs.org/) ≥ 20                    | frontend build                                                    |
 | Remux Processor       | [FFmpeg](https://ffmpeg.org/)                          | `brew install ffmpeg`                                             |
 | Torrent Downloader    | [BitComet](https://www.bitcomet.com/)                  | *Options → Remote Access*: enable **both** switches, set user/pass |
-| Watermark Remover     | [torch](https://pytorch.org/)                          | `watermark` extra, Apple silicon; big-lama (~200 MB) auto-downloads |
+| Watermark Remover     | [torch](https://pytorch.org/)                          | via the `watermark` extra; big-lama (~200 MB) auto-downloads. Falls back to cv2 |
 | Web Images to PDF     | [Google Chrome](https://www.google.com/chrome/)        | matching driver downloaded automatically                          |
 | Doc to PDF            | [LibreOffice](https://www.libreoffice.org/)            | `brew install --cask libreoffice`                                 |
-| Doc to Markdown       | [MinerU](https://github.com/opendatalab/MinerU)        | `docmd` extra, Apple silicon; models download on first run        |
+| Doc to Markdown       | [MinerU](https://github.com/opendatalab/MinerU)        | installed with the backend; models download on first run          |
 
 For BitComet on *this* Mac the app reads credentials from BitComet's own config —
 nothing to configure twice.
 
-**On an Intel Mac** neither extra installs, so Doc to Markdown is unavailable —
-hide it with `TOOLKIT_DISABLED_TOOLS=doc-to-markdown` — and Watermark Remover
-falls back to its cv2 inpainter. Nothing else changes: BitComet's login cipher,
-the one remaining dependency with no x86_64 wheel, is supplied in pure Python
-(`backend/src/toolkit_engine/aescbc.py`, held to the NIST vectors and to
-byte-equality with `cryptography`) rather than pulling in a Rust toolchain for
-one call per login.
-
 ## Development
 
 ```bash
-make test        # backend pytest + ruff (check + format), then frontend typecheck + eslint + vitest + build
-make lint        # the same gates without the tests
-make backend     # the API alone, hot-reload
-make frontend    # Vite alone, against an API already on PORT
+make test        # backend pytest + ruff, then frontend typecheck + eslint + vitest + build
 make build       # frontend/dist only
-make clean       # remove build artifacts and caches
+make clean       # remove build artifacts
 ```
 
-The gate short-circuits, so its order decides what you learn when it fails: the
-backend runs its tests before its linters on purpose, and the frontend gates run
-cheapest-first. `typecheck` is the real frontend gate — Vite strips TypeScript
-types without checking them, so a type-broken app builds perfectly clean.
-
-From `backend/`, `uv run pytest` is the single backend test command and
-`uv run ruff check src tests` the lint. The LaMa inpainting tests are marked
-`slow` and deselected by default (the first run downloads the ~200 MB
-checkpoint); run them with `uv run pytest -m slow`.
+From `backend/`: `uv run pytest` is the single backend test command, and
+`uv run ruff check src tests` the lint.
 
 ## Tool notes
 
@@ -317,25 +295,50 @@ Duplicates are auto-numbered (`name_1.ext`); you get a moved/failed summary.
 </details>
 
 <details>
-<summary><b>📦 Dependency Upgrader</b> — reviewed, then one commit</summary>
+<summary><b>📸 Photos Library Filter</b> — a cache-free mirror Photos can still open</summary>
 
-Point it at a folder and it walks the tree for every `pyproject.toml` (uv) and
-`package.json` (npm) — up to 40, skipping `node_modules`, `.venv`, build output —
-then runs the real resolvers (`uv sync -U`, `npm install` + `npm outdated`) to
-learn what is actually installable. You review the proposed bumps per manifest,
-`old → new`, majors flagged.
+Point it at the live library and a `*.photoslibrary` destination outside it,
+**Dry run** to see the plan, then untick the dry run and **Mirror library**.
+Re-running only copies what changed. What a run does, in order:
 
-- **Scanning and applying are separate**, and apply recomputes from the synced
-  state on the server — what lands is what the resolver found, not what a page
-  left open since yesterday still displays.
-- Rewrites are surgical text edits, never a re-serialize, so comments and
-  formatting survive. Only lagging `>=` floors are raised (`==`, `~=`, ranges and
-  markered deps are left alone); npm ranges keep their `^` / `~`.
-- Each rewrite re-resolves its lockfile, so manifest and lock always land
-  together, agreeing with each other — every changed file across every manifest in
-  **one commit** (`chore(deps): update dependencies`, editable, or untick to write
-  without committing). If the commit fails, the rewrites are rolled back rather
-  than left behind uncommitted.
+1. **plan** — walk the source and classify every file with the rules (below).
+   Every directory is mirrored; an excluded one stays as an empty skeleton, so
+   the bundle keeps its shape.
+2. **snapshot** — any file with a `<name>-wal` sibling is a live WAL-mode SQLite
+   database (`database/Photos.sqlite`, the analysis databases). It is written
+   with `VACUUM INTO` from a read-only connection, so the copy is complete even
+   while Photos is writing; `-wal` / `-shm` files are never copied.
+3. **copy** — `copyfile(3)` with `COPYFILE_CLONE`: an APFS clone (instant, no
+   extra space on the same volume) that keeps mtime and the
+   `com.apple.assetsd.*` extended attributes Photos stores on originals. An
+   unchanged file is skipped; a favourite flag Photos changed without touching
+   mtime is still picked up.
+4. **delete** — anything in the destination that is not in the plan is removed.
+   The destination must end in `.photoslibrary` and must not overlap the source.
+5. **verify** — the mirrored `Photos.sqlite` is opened read-only and every
+   asset's original, and every edited asset's `resources/renders/<X>/<UUID>.plist`
+   edit recipe, is checked for. Problems are listed in the report.
+
+Rules are rsync-style, one per line; everything not matched is kept:
+
+```
+# unanchored: matches at any depth
+.DS_Store
+# trailing slash: a directory and everything inside it
+database/search/
+# * and ? stay inside one path component
+database/*.lock
+# ** crosses components
+private/**/caches/
+# leading slash: anchored to the library root
+/top-level-only.txt
+```
+
+Never exclude `resources/renders/`: it is not a cache but the edit recipes and
+rendered edits the database marks as present. `resources/derivatives/`
+(thumbnails and previews) is a real cache; if thumbnails show blank after
+restoring a mirror, hold Option+Command while opening Photos and choose Repair
+Library. Nothing is ever written into the source library.
 
 </details>
 
@@ -350,8 +353,6 @@ Everything stays in `backend/data/sub.db`; nothing leaves the machine.
   auto-expand, duplicates are dropped.
 - One click yields Raw / Clash / Surge output, a link (`/sub/{id}?target=…`) and a
   QR code a phone on the same Wi-Fi can import — run `make host` so it can reach it.
-  With no `target`, the link reads the client's User-Agent and serves the format
-  that client wants.
 - Identical inputs reuse the same short link (deduplicated by content hash); history
   is listed to reload or delete.
 

@@ -13,6 +13,7 @@ export const TOOL_EMOJI: Record<string, string> = {
   '/tools/doc-to-pdf': '📄',
   '/tools/doc-to-markdown': '📝',
   '/tools/cache-purge': '🧹',
+  '/tools/photos-library-filter': '📸',
   '/tools/subscription': '🛰️',
   '/tools/dep-upgrade': '📦',
 }

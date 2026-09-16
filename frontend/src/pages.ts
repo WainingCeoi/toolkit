@@ -15,6 +15,7 @@ export const PAGES = {
   'doc-to-pdf': lazy(() => import('./pages/DocToPdf')),
   'doc-to-markdown': lazy(() => import('./pages/DocToMarkdown')),
   'cache-purge': lazy(() => import('./pages/CachePurge')),
+  'photos-library-filter': lazy(() => import('./pages/PhotosLibraryFilter')),
   subscription: lazy(() => import('./pages/Subscription')),
   'dep-upgrade': lazy(() => import('./pages/DepUpgrade')),
 }
