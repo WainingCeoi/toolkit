@@ -156,13 +156,14 @@ def start(req: StartIn, jobs: JobsDep) -> JobStartedOut:
         ) from e
 
     # ffmpeg's same-file guard compares strings only, so an output that resolves to
-    # the source (/tmp vs /private/tmp) would truncate it; compare resolved paths.
+    # the source (/tmp vs /private/tmp) would truncate it; compare by inode instead,
+    # since resolve() folds neither APFS's case nor its Unicode normalisation.
     out_resolved = out_path.resolve()
     seen_outputs: set[str] = set()
     for video in req.selected:
         name = Path(video).name
         dest = out_resolved / name
-        if dest == Path(video).expanduser().resolve():
+        if dest.exists() and dest.samefile(Path(video).expanduser()):
             raise HTTPException(
                 status_code=400,
                 detail=(

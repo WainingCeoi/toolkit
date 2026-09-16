@@ -178,6 +178,29 @@ def test_gather_rejects_target_inside_source(tool_client, tmp_path):
     )
 
 
+def test_gather_rejects_a_case_variant_target(tool_client, tmp_path):
+    src = tmp_path / "Movies"
+    src.mkdir()
+    (src / "ep1.mkv").write_bytes(b"one")
+    alt = tmp_path / "movies"
+    if not alt.is_dir():
+        pytest.skip("case-sensitive filesystem")
+
+    resp = tool_client.post(
+        "/api/gather/start",
+        json={
+            "source": str(src),
+            "target": str(alt),
+            "categories": ["Video"],
+            "custom": "",
+        },
+    )
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == (
+        "❌ Target must be a different folder, outside the source."
+    )
+
+
 def test_gather_rejects_relative_paths(tool_client, tmp_path):
     resp = tool_client.post(
         "/api/gather/start",

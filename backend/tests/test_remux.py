@@ -180,6 +180,24 @@ def test_start_refuses_all_empty_stream_map(tool_client, monkeypatch):
     )
 
 
+def test_start_rejects_a_case_variant_output_folder(tool_client, tmp_path, monkeypatch):
+    monkeypatch.setattr("shutil.which", lambda cmd: "/opt/fake/ffmpeg")
+    src_dir = tmp_path / "Movies"
+    src_dir.mkdir()
+    video = src_dir / "A.mkv"
+    video.write_bytes(b"")
+    alt = tmp_path / "movies"
+    if not alt.is_dir():
+        pytest.skip("case-sensitive filesystem")
+
+    resp = tool_client.post(
+        "/api/remux/start",
+        json=start_payload(selected=[str(video)], out_folder=str(alt)),
+    )
+    assert resp.status_code == 400
+    assert "remuxing would overwrite the input (A.mkv)" in resp.json()["detail"]
+
+
 def test_start_accepts_a_video_without_an_external_subtitle(
     tool_client, tmp_path, monkeypatch
 ):

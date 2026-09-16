@@ -40,11 +40,14 @@ def start_gather(req: GatherStartIn, jobs: JobsDep) -> JobStartedOut:
         raise HTTPException(status_code=400, detail="❌ Source folder not found.")
     if not patterns:
         raise HTTPException(status_code=400, detail="❌ Select at least one file type.")
-    if tgt == src or src in tgt.parents:
-        raise HTTPException(
-            status_code=400,
-            detail="❌ Target must be a different folder, outside the source.",
-        )
+    # By inode, not by string: resolve() folds neither APFS's case nor its
+    # Unicode normalisation, so '~/desktop' would slip past a '~/Desktop' source.
+    for candidate in (tgt, *tgt.parents):
+        if candidate.exists() and candidate.samefile(src):
+            raise HTTPException(
+                status_code=400,
+                detail="❌ Target must be a different folder, outside the source.",
+            )
 
     def worker(job: Job) -> dict | None:
         job.set_message("Scanning source folder…")
