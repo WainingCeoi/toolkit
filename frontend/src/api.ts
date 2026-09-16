@@ -209,8 +209,7 @@ export interface Reloader {
   stop: () => void
 }
 
-// A manifest load that keeps retrying with capped backoff, so a backend that is not up yet
-// recovers on its own. `reload` also cancels a pending retry.
+// Keeps retrying a failed load with capped backoff; `reload` also cancels a pending retry.
 export function retryingLoad<T>(
   fetcher: () => Promise<T>,
   onLoad: (value: T) => void,

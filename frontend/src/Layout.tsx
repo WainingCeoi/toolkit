@@ -144,6 +144,33 @@ function Dock({ openTabs, activeSlug, titles, busySlugs, onCloseTab }: DockProps
   )
 }
 
+interface ToolHostProps {
+  slug: ToolSlug
+  active: boolean
+  setToolBusy: (slug: string, busy: boolean) => void
+}
+
+// memo: a Layout render (rail search, focus refetch, busy toggle) must not re-render every page.
+const ToolHost = React.memo(function ToolHost({ slug, active, setToolBusy }: ToolHostProps) {
+  const Page = PAGES[slug]
+  return (
+    // Per-host boundary: one broken tool must not unmount every kept-alive host.
+    <div className="tool-host" hidden={!active}>
+      <ToolActiveContext.Provider value={active}>
+        <ToolSlugContext.Provider value={slug}>
+          <ToolBusyContext.Provider value={setToolBusy}>
+            <ErrorBoundary>
+              <Suspense fallback={<div className="note info">Loading…</div>}>
+                <Page />
+              </Suspense>
+            </ErrorBoundary>
+          </ToolBusyContext.Provider>
+        </ToolSlugContext.Provider>
+      </ToolActiveContext.Provider>
+    </div>
+  )
+})
+
 export default function Layout() {
   const location = useLocation()
   const [categories, setCategories] = useState<Category[]>([])
@@ -320,25 +347,14 @@ export default function Layout() {
             Nothing at <code>{location.pathname}</code> — <Link to="/">back to the bench</Link>.
           </div>
         )}
-        {openTabs.map((slug) => {
-          const Page = PAGES[slug]
-          return (
-            // Per-host boundary: one broken tool must not unmount every kept-alive host.
-            <div key={slug} className="tool-host" hidden={slug !== activeSlug}>
-              <ToolActiveContext.Provider value={slug === activeSlug}>
-                <ToolSlugContext.Provider value={slug}>
-                  <ToolBusyContext.Provider value={setToolBusy}>
-                    <ErrorBoundary>
-                      <Suspense fallback={<div className="note info">Loading…</div>}>
-                        <Page />
-                      </Suspense>
-                    </ErrorBoundary>
-                  </ToolBusyContext.Provider>
-                </ToolSlugContext.Provider>
-              </ToolActiveContext.Provider>
-            </div>
-          )
-        })}
+        {openTabs.map((slug) => (
+          <ToolHost
+            key={slug}
+            slug={slug}
+            active={slug === activeSlug}
+            setToolBusy={setToolBusy}
+          />
+        ))}
       </main>
       <Dock
         openTabs={openTabs}
