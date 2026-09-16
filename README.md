@@ -125,7 +125,7 @@ Environment variables, or `backend/.env` (copy `backend/.env.example`). All opti
 | Needed by             | Requirement                                            | Notes                                                             |
 | --------------------- | ------------------------------------------------------ | ----------------------------------------------------------------- |
 | everything            | [uv](https://docs.astral.sh/uv/)                       | Python 3.14, managed via `.python-version`                        |
-| everything            | [Node.js](https://nodejs.org/) 22.12+ (or 20.19+)      | frontend build                                                    |
+| everything            | [Node.js](https://nodejs.org/) 22.22+, 24.15+ or 26+   | frontend build                                                    |
 | Remux Processor       | [FFmpeg](https://ffmpeg.org/)                          | `brew install ffmpeg`                                             |
 | Torrent Downloader    | [BitComet](https://www.bitcomet.com/)                  | *Options → Remote Access*: enable **both** switches, set user/pass |
 | Watermark Remover     | [torch](https://pytorch.org/)                          | via the `watermark` extra; big-lama (~200 MB) auto-downloads. Falls back to cv2 |
