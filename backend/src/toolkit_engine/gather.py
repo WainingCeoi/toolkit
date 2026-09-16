@@ -8,37 +8,13 @@ from pathlib import Path
 
 from scandir_rs import Scandir
 
+from .filetypes import CATEGORY_EXTENSIONS
 from .fsutil import natural_sort_key
 
-# File-type presets -> scandir_rs file_include glob patterns
+# Derived from the shared table so the presets cannot drift from it.
 FILE_TYPE_PRESETS = {
-    "Video": [
-        "*.mkv",
-        "*.mp4",
-        "*.mov",
-        "*.ts",
-        "*.flv",
-        "*.avi",
-        "*.webm",
-        "*.m4v",
-        "*.wmv",
-        "*.mpg",
-        "*.mpeg",
-    ],
-    "Audio": ["*.mp3", "*.flac", "*.aac", "*.wav", "*.m4a", "*.ogg", "*.opus", "*.wma"],
-    "Image": [
-        "*.jpg",
-        "*.jpeg",
-        "*.png",
-        "*.gif",
-        "*.heic",
-        "*.webp",
-        "*.bmp",
-        "*.tiff",
-    ],
-    "Subtitle": ["*.srt", "*.ass", "*.ssa", "*.sub", "*.vtt"],
-    "Document": ["*.pdf", "*.docx", "*.doc", "*.txt", "*.epub", "*.pptx", "*.xlsx"],
-    "Archive": ["*.zip", "*.rar", "*.7z", "*.tar", "*.gz"],
+    name.capitalize(): sorted(f"*{ext}" for ext in extensions)
+    for name, extensions in CATEGORY_EXTENSIONS.items()
 }
 
 

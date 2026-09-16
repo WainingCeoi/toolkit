@@ -435,6 +435,27 @@ def test_purge_scan_rejects_a_malformed_bracket_pattern(tool_client, tmp_path, t
     assert resp.json()["detail"].startswith("❌ Invalid pattern:")
 
 
+def test_gather_presets_cover_the_shared_file_type_table(tool_client, tmp_path):
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "disc.m2ts").write_bytes(b"x")  # a video to Remux, but not to Gather
+    tgt = tmp_path / "tgt"
+
+    resp = tool_client.post(
+        "/api/gather/start",
+        json={
+            "source": str(src),
+            "target": str(tgt),
+            "categories": ["Video"],
+            "custom": "",
+        },
+    )
+    assert resp.status_code == 200
+    snap = wait_for_job(tool_client, resp.json()["job_id"])
+    assert snap["state"] == "done"
+    assert snap["result"]["moved"] == ["disc.m2ts"]
+
+
 def test_gather_rejects_an_unknown_category(tool_client, tmp_path):
     src = tmp_path / "src"
     src.mkdir()
