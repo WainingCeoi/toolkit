@@ -166,24 +166,30 @@ def _apply_manifests(manifests: list, req: ApplyIn) -> ApplyOut:
 
     if req.commit:
         subject = (req.message or "").strip() or depsync.COMMIT_SUBJECT
-        groups: dict[str, list[Path]] = {}
+        groups: dict[str, dict[Path, None]] = {}
         for result in results:
             for path in result["changed"]:
                 root = depsync.git_root(str(path.parent))
                 if root:
-                    groups.setdefault(root, []).append(path)
+                    # A workspace lock is listed by every member; git wants it once.
+                    groups.setdefault(root, {})[path] = None
 
         commit_error = None
         for root, paths in groups.items():
-            sha, rels, git_err = depsync.commit_paths(root, subject, paths)
+            sha, rels, git_err = depsync.commit_paths(root, subject, list(paths))
             if git_err:
                 commit_error = git_err
                 break
             commits.append({"sha": sha, "files": rels})
 
         if commit_error:
+            originals: dict[str, str | None] = {}
             for result in results:
-                depsync.restore(result["originals"])
+                for path_str, text in result["originals"].items():
+                    # Members snapshot a shared lock in turn; the first is the original.
+                    originals.setdefault(path_str, text)
+            depsync.restore(originals)
+            for result in results:
                 result["written"] = 0
                 result["bumps"] = []
                 result["error"] = f"{commit_error} (rolled back)"

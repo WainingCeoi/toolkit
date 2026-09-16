@@ -823,6 +823,70 @@ def test_apply_falls_back_to_default_message_when_blank(client, tmp_path, monkey
     assert subject == depsync.COMMIT_SUBJECT
 
 
+def _uv_workspace(root):
+    """A git repo whose members share the root uv.lock and have none of their own."""
+    for name in ("a", "b"):
+        member = root / "pkgs" / name
+        member.mkdir(parents=True)
+        (member / "pyproject.toml").write_text(SAMPLE_PYPROJECT, encoding="utf-8")
+    (root / "uv.lock").write_text(SAMPLE_LOCK, encoding="utf-8")
+    _init_git(root)
+    _git(root, "add", "-A")
+    _git(root, "commit", "-qm", "init")
+    return root
+
+
+def _fake_workspace_relock(monkeypatch):
+    """Relock the shared lock the way uv does: one marker line per member run."""
+
+    def relock(folder):
+        lock = depsync._lock_path(folder, "uv.lock")
+        lock.write_text(
+            lock.read_text(encoding="utf-8") + f"\n# relocked by {folder}\n",
+            encoding="utf-8",
+        )
+        return True, "ok"
+
+    monkeypatch.setattr(depsync, "uv_lock_refresh", relock)
+
+
+@requires_git
+def test_apply_rolls_a_shared_workspace_lock_back_to_its_first_snapshot(
+    client, tmp_path, monkeypatch
+):
+    repo = _uv_workspace(tmp_path / "ws")
+    original_lock = (repo / "uv.lock").read_text(encoding="utf-8")
+    _fake_workspace_relock(monkeypatch)
+    hook = repo / ".git" / "hooks" / "pre-commit"
+    hook.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    hook.chmod(0o755)
+
+    r = client.post("/api/deps/apply", json={"folder": str(repo), "commit": True})
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["written_total"] == 0
+    assert all("rolled back" in t["error"] for t in body["results"])
+    assert (repo / "uv.lock").read_text(encoding="utf-8") == original_lock
+    assert _git(repo, "status", "--porcelain").stdout == ""
+
+
+@requires_git
+def test_apply_commits_a_shared_workspace_lock_once(client, tmp_path, monkeypatch):
+    repo = _uv_workspace(tmp_path / "ws")
+    _fake_workspace_relock(monkeypatch)
+
+    r = client.post("/api/deps/apply", json={"folder": str(repo), "commit": True})
+
+    assert r.status_code == 200
+    files = r.json()["commits"][0]["files"]
+    assert sorted(files) == [
+        "pkgs/a/pyproject.toml",
+        "pkgs/b/pyproject.toml",
+        "uv.lock",
+    ]
+
+
 def test_apply_refuses_a_second_run_on_the_same_or_nested_folder():
     from toolkit_api.routers.depsync import _BusyError, _exclusive_root
 
