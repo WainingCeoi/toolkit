@@ -73,6 +73,16 @@ def _build_urls(sub_id: str, request: Request) -> dict:
     }
 
 
+def _counts_from_payload(payload: dict) -> CountsOut:
+    nodes = payload.get("nodes", [])
+    stored = payload.get("counts")
+    return CountsOut(
+        input_nodes=stored.get("inputNodes") if stored else None,
+        endpoints=stored.get("preferredEndpoints") if stored else None,
+        output_nodes=stored.get("outputNodes", len(nodes)) if stored else len(nodes),
+    )
+
+
 def _qr_png(text: str) -> bytes:
     buf = io.BytesIO()
     segno.make(text, error="m").save(buf, kind="png", scale=4)
@@ -130,18 +140,26 @@ def generate(req: GenerateIn, request: Request, store: StoreDep) -> Subscription
         # A concurrent identical request may have stored first; use the persisted id.
         if stored_id != sub_id:
             sub_id, dedup = stored_id, True
+    counts_out = CountsOut(
+        input_nodes=counts["inputNodes"],
+        endpoints=counts["preferredEndpoints"],
+        output_nodes=counts["outputNodes"],
+    )
+    preview_nodes = expanded["nodes"]
+    if dedup:
+        # The hash ignores line order, so only the stored payload matches /sub/{id}.
+        record = store.get_subscription(sub_id)
+        if record:
+            preview_nodes = record["payload"].get("nodes", [])
+            counts_out = _counts_from_payload(record["payload"])
     return SubscriptionOut(
         sub_id=sub_id,
         dedup=dedup,
-        counts=CountsOut(
-            input_nodes=counts["inputNodes"],
-            endpoints=counts["preferredEndpoints"],
-            output_nodes=counts["outputNodes"],
-        ),
+        counts=counts_out,
         warnings=parsed_nodes["warnings"]
         + parsed_eps["warnings"]
         + expanded["warnings"],
-        preview=core.summarize_nodes(expanded["nodes"]),
+        preview=core.summarize_nodes(preview_nodes),
         urls=_build_urls(sub_id, request),
     )
 
@@ -162,21 +180,11 @@ def load_subscription(
             status_code=404, detail="That subscription no longer exists."
         )
     nodes = record["payload"].get("nodes", [])
-    stored_counts = record["payload"].get("counts")
-    counts = CountsOut(
-        input_nodes=stored_counts.get("inputNodes") if stored_counts else None,
-        endpoints=stored_counts.get("preferredEndpoints") if stored_counts else None,
-        output_nodes=(
-            stored_counts.get("outputNodes", len(nodes))
-            if stored_counts
-            else len(nodes)
-        ),
-    )
     return SubscriptionOut(
         sub_id=sub_id,
         dedup=False,
         loaded=True,
-        counts=counts,
+        counts=_counts_from_payload(record["payload"]),
         warnings=[],
         preview=core.summarize_nodes(nodes),
         urls=_build_urls(sub_id, request),
