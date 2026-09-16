@@ -198,6 +198,34 @@ def test_clean_docx_accepts_insertions_drops_deletions_and_trackchanges(tmp_path
     assert docpdf._w("trackChanges") not in {el.tag for el in settings.iter()}
 
 
+STRUCTURAL_DELETIONS_XML = f"""<w:document xmlns:w="{docpdf.W}"><w:body>
+  <w:p>
+    <w:pPr><w:rPr><w:del w:id="1"/></w:rPr></w:pPr>
+    <w:r><w:t>first</w:t></w:r>
+  </w:p>
+  <w:p><w:r><w:t>second</w:t></w:r></w:p>
+  <w:tbl>
+    <w:tr>
+      <w:trPr><w:del w:id="2"/></w:trPr>
+      <w:tc><w:p><w:r><w:t>gone</w:t></w:r></w:p></w:tc>
+    </w:tr>
+    <w:tr><w:tc><w:p><w:r><w:t>kept</w:t></w:r></w:p></w:tc></w:tr>
+  </w:tbl>
+</w:body></w:document>""".encode()
+
+
+def test_flatten_revisions_merges_deleted_marks_and_drops_deleted_rows():
+    root = etree.fromstring(STRUCTURAL_DELETIONS_XML)
+    docpdf._flatten_revisions(root)
+
+    paragraphs = [
+        "".join(t.text or "" for t in p.iter(docpdf._w("t")))
+        for p in root.iter(docpdf._w("p"))
+    ]
+    assert paragraphs == ["firstsecond", "kept"]
+    assert len(list(root.iter(docpdf._w("tr")))) == 1
+
+
 def test_batch_to_pdf_kills_soffice_on_cancel(tmp_path):
     fake_soffice = tmp_path / "soffice"
     fake_soffice.write_text("#!/bin/sh\nsleep 30\n")

@@ -52,6 +52,35 @@ def find_soffice():
     return app if Path(app).exists() else None
 
 
+def _mark_deleted(para):
+    """True when the paragraph's own mark is a tracked deletion."""
+    rpr = para.find(_w("pPr") + "/" + _w("rPr"))
+    return rpr is not None and rpr.find(_w("del")) is not None
+
+
+def _merge_into_next(para):
+    """Accepting a deleted paragraph mark joins the paragraph with the next one."""
+    parent = para.getparent()
+    following = para.getnext()
+    if parent is None or following is None or following.tag != _w("p"):
+        return
+    # The surviving mark is the next paragraph's, so its pPr stays first.
+    at = 1 if len(following) and following[0].tag == _w("pPr") else 0
+    for offset, child in enumerate([el for el in para if el.tag != _w("pPr")]):
+        following.insert(at + offset, child)
+    parent.remove(para)
+
+
+def _apply_structural_deletions(root):
+    """Drop rows and merge paragraphs whose deletion markers Word would honour."""
+    for trpr in [el for el in root.iter(_w("trPr")) if el.find(_w("del")) is not None]:
+        row = trpr.getparent()
+        if row is not None and row.getparent() is not None:
+            row.getparent().remove(row)
+    for para in [el for el in root.iter(_w("p")) if _mark_deleted(el)]:
+        _merge_into_next(para)
+
+
 def _flatten_revisions(root):
     """Accept all tracked changes in a parsed Word XML part, in place."""
     # Unwrap insertions repeatedly so nested ins/moveTo are fully resolved.
@@ -67,6 +96,8 @@ def _flatten_revisions(root):
             for child in reversed(list(el)):
                 parent.insert(idx, child)
             parent.remove(el)
+    # Before the generic pass, which would strip the markers off their containers.
+    _apply_structural_deletions(root)
     for el in [el for el in root.iter() if el.tag in _DROP]:
         parent = el.getparent()
         if parent is not None:
