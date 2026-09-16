@@ -83,8 +83,12 @@ async function request<T>(path: string, { method = 'GET', body }: RequestOptions
 function filenameFromDisposition(res: Response, fallback: string): string {
   const dispo = res.headers.get('content-disposition') || ''
   const star = /filename\*=utf-8''([^;]+)/i.exec(dispo)
-  const plain = /filename="?([^";]+)"?/i.exec(dispo)
-  return star ? decodeURIComponent(star[1]) : plain ? plain[1] : fallback
+  if (star) return decodeURIComponent(star[1])
+  // The quoted form may contain backslash-escaped quotes, so it cannot stop at the first `"`.
+  const quoted = /filename="((?:[^"\\]|\\.)*)"/i.exec(dispo)
+  if (quoted) return quoted[1].replace(/\\(.)/g, '$1')
+  const plain = /filename=([^;]+)/i.exec(dispo)
+  return plain ? plain[1].trim() : fallback
 }
 
 async function blobError(res: Response): Promise<Error> {
