@@ -29,7 +29,8 @@ def load_rgba(data: bytes) -> tuple[np.ndarray, np.ndarray | None]:
     upright = _upright(data)
     alpha = None
     if upright.mode in ("RGBA", "LA", "PA") or "transparency" in upright.info:
-        plane = np.asarray(upright.convert("RGBA"))[:, :, 3]
+        # getchannel, not an RGBA slice: a stride-4 view pins the 4x buffer alive.
+        plane = np.asarray(upright.convert("RGBA").getchannel("A"))
         # An all-opaque plane is not worth carrying: the output stays RGB.
         if plane.min() < 255:
             alpha = plane

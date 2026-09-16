@@ -340,6 +340,22 @@ def test_transparency_is_kept_beside_the_rgb_it_decodes_to():
     assert imgio.load_rgba(opaque.getvalue())[1] is None
 
 
+def test_the_alpha_plane_does_not_pin_the_rgba_buffer_it_came_from():
+    import io
+
+    image = Image.new("RGBA", (40, 30), (200, 30, 40, 255))
+    image.putpixel((1, 1), (0, 0, 0, 0))
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    _rgb, alpha = imgio.load_rgba(buffer.getvalue())
+    assert alpha is not None and alpha.nbytes == 40 * 30
+    held = alpha.base
+    assert not isinstance(held, np.ndarray) or held.nbytes == alpha.nbytes, (
+        f"the alpha plane holds {held.nbytes} bytes alive to carry {alpha.nbytes}"
+    )
+    assert alpha.flags["C_CONTIGUOUS"], "the alpha plane is a strided RGBA view"
+
+
 def test_a_transparent_image_comes_out_of_the_cli_still_transparent(tmp_path):
     src = tmp_path / "in"
     src.mkdir()
