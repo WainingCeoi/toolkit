@@ -97,13 +97,12 @@ export default function Remux() {
 
   useEffect(() => {
     if (subKey === null) return undefined
+    // Read back from the key, so an unchanged key never costs a lookup.
+    const [dir, paths] = JSON.parse(subKey) as [string, string[]]
     let stale = false
     const timer = setTimeout(async () => {
       try {
-        const { matches: m } = await api.remuxSubtitles(
-          (subFolder || folder).trim(),
-          selectedPaths,
-        )
+        const { matches: m } = await api.remuxSubtitles(dir, paths)
         if (stale) return
         setFetched(m)
         setFetchError(null)
@@ -120,7 +119,7 @@ export default function Remux() {
       stale = true
       clearTimeout(timer)
     }
-  }, [subKey, subFolder, folder, selectedPaths])
+  }, [subKey])
 
   function startRemux() {
     const payload: RemuxStartPayload = {
