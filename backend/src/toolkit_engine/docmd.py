@@ -109,12 +109,12 @@ def find_markdown(out_dir):
     return md_files[0] if md_files else None
 
 
-def zip_tree(out_dir, archive):
-    """Add every file under out_dir to the zip, preserving its relative path."""
+def zip_tree(out_dir, archive, prefix=""):
+    """Add every file under out_dir to the zip, under ``prefix``."""
     out_dir = Path(out_dir)
     for path in sorted(out_dir.rglob("*")):
         if path.is_file():
-            archive.write(path, path.relative_to(out_dir))
+            archive.write(path, Path(prefix) / path.relative_to(out_dir))
 
 
 def convert_batch(named_files, options, on_progress, mineru_cmd, is_cancelled=None):
@@ -163,7 +163,8 @@ def convert_batch(named_files, options, on_progress, mineru_cmd, is_cancelled=No
                 break
 
             if find_markdown(out_dir):
-                zip_tree(out_dir, archive)
+                # Own folder per upload: MinerU names its tree after the stem.
+                zip_tree(out_dir, archive, safe)
                 done.append(name)
             else:
                 reason = (result.stderr or result.stdout or "").strip()

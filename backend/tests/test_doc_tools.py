@@ -118,6 +118,36 @@ def test_docmd_convert_batch_stops_at_the_cancelled_file(monkeypatch):
     assert (zip_bytes, done, failed) == (None, [], [])
 
 
+def test_docmd_convert_batch_final_message_counts_only_successes(monkeypatch):
+    messages = []
+
+    def fake_run(cmd, *_args, **_kwargs):
+        in_path = Path(cmd[cmd.index("-p") + 1])
+        if in_path.parent.name == "in_0":
+            md_dir = Path(cmd[cmd.index("-o") + 1]) / "a" / "auto"
+            md_dir.mkdir(parents=True)
+            (md_dir / "a.md").write_text("# hi")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="boom")
+
+    monkeypatch.setattr(docmd, "run_mineru", fake_run)
+
+    options = {
+        "backend": "pipeline",
+        "method": "auto",
+        "lang": "ch",
+        "effort": "medium",
+        "formula": True,
+        "table": True,
+    }
+    docmd.convert_batch(
+        [("a.pdf", b"one"), ("b.pdf", b"two")],
+        options,
+        lambda pct, text: messages.append(text),
+        ["mineru"],
+    )
+    assert messages[-1] == "Converted 1/2 file(s)."
+
+
 # --- Doc to PDF engine units ---
 DOCUMENT_XML = b"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
@@ -166,36 +196,6 @@ def test_clean_docx_accepts_insertions_drops_deletions_and_trackchanges(tmp_path
     assert "plain text" in texts
     assert b"deleted text" not in etree.tostring(doc)
     assert docpdf._w("trackChanges") not in {el.tag for el in settings.iter()}
-
-
-def test_docmd_convert_batch_final_message_counts_only_successes(monkeypatch):
-    messages = []
-
-    def fake_run(cmd, *_args, **_kwargs):
-        in_path = Path(cmd[cmd.index("-p") + 1])
-        if in_path.parent.name == "in_0":
-            md_dir = Path(cmd[cmd.index("-o") + 1]) / "a" / "auto"
-            md_dir.mkdir(parents=True)
-            (md_dir / "a.md").write_text("# hi")
-        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="boom")
-
-    monkeypatch.setattr(docmd, "run_mineru", fake_run)
-
-    options = {
-        "backend": "pipeline",
-        "method": "auto",
-        "lang": "ch",
-        "effort": "medium",
-        "formula": True,
-        "table": True,
-    }
-    docmd.convert_batch(
-        [("a.pdf", b"one"), ("b.pdf", b"two")],
-        options,
-        lambda pct, text: messages.append(text),
-        ["mineru"],
-    )
-    assert messages[-1] == "Converted 1/2 file(s)."
 
 
 def test_batch_to_pdf_kills_soffice_on_cancel(tmp_path):
@@ -335,7 +335,7 @@ def test_docmd_job_zips_markdown_artifact(tool_client, monkeypatch):
     download = tool_client.get(f"/api/artifacts/{snap['result']['artifact_id']}")
     assert download.status_code == 200
     with zipfile.ZipFile(io.BytesIO(download.content)) as z:
-        assert "notes/auto/notes.md" in z.namelist()
+        assert "notes.pdf/notes/auto/notes.md" in z.namelist()
 
 
 def test_docmd_post_rejects_unsupported_type(tool_client):
@@ -382,6 +382,40 @@ def test_docmd_convert_batch_sanitizes_traversal_filename(monkeypatch):
     in_path = captured["in_path"]
     assert in_path.name == "pwned.pdf"
     assert ".." not in in_path.parts
+
+
+def test_docmd_same_stem_different_extension_keep_separate_trees(
+    tool_client, monkeypatch
+):
+    monkeypatch.setattr(docmd, "find_mineru", lambda: ["mineru"])
+
+    def fake_run(cmd, *_args, **_kwargs):
+        # MinerU names its output tree after the input stem, so both are "report".
+        md_dir = Path(cmd[cmd.index("-o") + 1]) / "report" / "auto"
+        md_dir.mkdir(parents=True)
+        (md_dir / "report.md").write_text(Path(cmd[cmd.index("-p") + 1]).suffix)
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(docmd, "run_mineru", fake_run)
+
+    resp = tool_client.post(
+        "/api/doc-to-markdown",
+        files=[
+            ("files", ("report.pdf", b"%PDF-1.4 one", "application/pdf")),
+            ("files", ("report.docx", b"two", "application/octet-stream")),
+        ],
+        data={"backend": "pipeline"},
+    )
+    assert resp.status_code == 200
+
+    snap = wait_for_job(tool_client, resp.json()["job_id"])
+    assert snap["state"] == "done"
+    download = tool_client.get(f"/api/artifacts/{snap['result']['artifact_id']}")
+    with zipfile.ZipFile(io.BytesIO(download.content)) as z:
+        assert sorted(z.namelist()) == [
+            "report.docx/report/auto/report.md",
+            "report.pdf/report/auto/report.md",
+        ]
 
 
 def test_docmd_duplicate_names_get_index_correct_states(tool_client, monkeypatch):
