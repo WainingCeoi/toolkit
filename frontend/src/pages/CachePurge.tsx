@@ -86,6 +86,9 @@ export default function CachePurge() {
     }
   }
 
+  // Keyed on the delete this page started: dismissing its chip surfaces an older job here.
+  const deleteJob = useRef<string | null>(null)
+
   async function runDelete() {
     if (!scan) return
     setError(null)
@@ -95,16 +98,16 @@ export default function CachePurge() {
       setScan(null)
       setConfirm(false)
     }
+    deleteJob.current = started
   }
 
   // Any terminal state, cancelled included, has changed the disk, so the preview must go.
-  const clearedFor = useRef<string | null>(null)
   useEffect(() => {
     if (!snapshot) return
     const terminal =
       snapshot.state === 'done' || snapshot.state === 'cancelled' || snapshot.state === 'failed'
-    if (terminal && clearedFor.current !== snapshot.id) {
-      clearedFor.current = snapshot.id
+    if (terminal && deleteJob.current === snapshot.id) {
+      deleteJob.current = null
       setScan(null)
       setConfirm(false)
     }
