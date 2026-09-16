@@ -92,12 +92,23 @@ def propose_mask_detailed(
     marks: Sequence[Mark | StackedMark] = (),
 ) -> tuple[np.ndarray, str]:
     """The mask plus which detector produced it, or NONE and an empty mask."""
+    mask, used, _evidence = _propose_with_evidence(rgb, sensitivity, detector, marks)
+    return mask, used
+
+
+def _propose_with_evidence(
+    rgb: np.ndarray,
+    sensitivity: int = DEFAULT_SENSITIVITY,
+    detector: str = DEFAULT_DETECTOR,
+    marks: Sequence[Mark | StackedMark] = (),
+) -> tuple[np.ndarray, str, bool | None]:
+    """The mask, the detector, and the repeat evidence if this route needed it."""
     if detector not in DETECTORS:
         raise ValueError(
             f"Unknown detector {detector!r} (choose from: {', '.join(DETECTORS)})."
         )
     if detector == TEXTURE:
-        return propose_texture_mask(rgb, sensitivity), TEXTURE
+        return propose_texture_mask(rgb, sensitivity), TEXTURE, None
     pattern_marks = [m for m in marks if isinstance(m, Mark)]
     stacked = next((m for m in marks if isinstance(m, StackedMark)), None)
     if pattern_marks:
@@ -105,17 +116,20 @@ def propose_mask_detailed(
     else:
         pattern = propose_pattern_mask(rgb, sensitivity)
     if pattern is not None:
-        return pattern, PATTERN
+        return pattern, PATTERN, None
     # Stacked runs after pattern, which masks actual copies rather than a consensus.
     if stacked is not None:
         mask = stamp_stacked(stacked, rgb.shape[:2], sensitivity)
         if mask.any():
-            return mask, STACKED
-    if detector == AUTO and repeating_evidence(rgb):
-        texture = propose_texture_mask(rgb, sensitivity)
-        if texture.any() and _worth_removing(rgb, texture):
-            return texture, TEXTURE
-    return np.zeros(rgb.shape[:2], np.uint8), NONE
+            return mask, STACKED, None
+    evidence = None
+    if detector == AUTO:
+        evidence = repeating_evidence(rgb)
+        if evidence:
+            texture = propose_texture_mask(rgb, sensitivity)
+            if texture.any() and _worth_removing(rgb, texture):
+                return texture, TEXTURE, evidence
+    return np.zeros(rgb.shape[:2], np.uint8), NONE, evidence
 
 
 def _worth_removing(rgb: np.ndarray, mask: np.ndarray) -> bool:

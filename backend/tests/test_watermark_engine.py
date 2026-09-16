@@ -357,6 +357,26 @@ def test_cli_cleans_a_folder_with_cv2(tmp_path, capsys):
     assert "[2/2]" in capsys.readouterr().out
 
 
+def test_an_image_with_no_mask_is_proved_clean_once(tmp_path, monkeypatch):
+    from watermark import detect, pipeline
+
+    real = detect.repeating_evidence
+    calls = []
+
+    def counting(rgb):
+        calls.append(1)
+        return real(rgb)
+
+    monkeypatch.setattr(detect, "repeating_evidence", counting)
+    monkeypatch.setattr(pipeline, "repeating_evidence", counting)
+    src = write_marked_folder(tmp_path / "in", count=1)
+    _cleaned, skipped, _protected, _failed = pipeline.clean_folder(
+        src, tmp_path / "out", inpainter="cv2", detector="auto"
+    )
+    assert skipped == ["photo_0.png"]
+    assert len(calls) == 1, f"the same evidence pass ran {len(calls)} times"
+
+
 def test_the_cv2_inpaint_is_not_run_twice_per_image(tmp_path, monkeypatch):
     from watermark import pipeline
 

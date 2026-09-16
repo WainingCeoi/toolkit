@@ -13,8 +13,8 @@ from .detect import (
     DEFAULT_DETECTOR,
     DEFAULT_SENSITIVITY,
     PATTERN,
+    _propose_with_evidence,
     collect_marks,
-    propose_mask,
     repeating_evidence,
 )
 from .imgio import encode_png, load_rgb
@@ -183,10 +183,14 @@ def clean_folder(
     ):
         try:
             rgb = load_rgb(path.read_bytes())
-            mask = propose_mask(rgb, sensitivity, detector, marks)
+            mask, _used, evidence = _propose_with_evidence(
+                rgb, sensitivity, detector, marks
+            )
             if not mask.any():
                 # A mark is demonstrably there but could not be isolated: protected.
-                if detector in (PATTERN, AUTO) and repeating_evidence(rgb):
+                if evidence is None and detector in (PATTERN, AUTO):
+                    evidence = repeating_evidence(rgb)
+                if evidence:
                     protected.append(path.name)
                 else:
                     skipped.append(path.name)
