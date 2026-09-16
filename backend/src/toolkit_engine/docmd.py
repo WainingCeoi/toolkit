@@ -9,7 +9,7 @@ import time
 import zipfile
 from pathlib import Path
 
-# cwd for the `uv run mineru` fallback: uv resolves the venv relative to cwd.
+# A stable cwd for the mineru subprocess, whatever the server was launched from.
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 # Files MinerU can parse (mirrors its CLI's accepted inputs).
@@ -25,12 +25,7 @@ def find_mineru():
     if venv_bin.exists():
         return [str(venv_bin)]
     on_path = shutil.which("mineru")
-    if on_path:
-        return [on_path]
-    uv = shutil.which("uv")
-    if uv:
-        return [uv, "run", "mineru"]
-    return None
+    return [on_path] if on_path else None
 
 
 def build_mineru_cmd(

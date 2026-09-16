@@ -70,6 +70,15 @@ def test_build_mineru_cmd_hybrid_uses_effort_not_pipeline_flags():
     assert "-l " not in joined
 
 
+def test_find_mineru_is_none_when_only_uv_is_installed(monkeypatch, tmp_path):
+    # `uv run mineru` cannot install the optional docmd extra, so it is not a fallback.
+    monkeypatch.setattr(docmd.sys, "executable", str(tmp_path / "python"))
+    monkeypatch.setattr(
+        docmd.shutil, "which", lambda name: "/usr/bin/uv" if name == "uv" else None
+    )
+    assert docmd.find_mineru() is None
+
+
 def test_run_mineru_kills_the_child_on_cancel():
     started = time.monotonic()
     result = docmd.run_mineru(
