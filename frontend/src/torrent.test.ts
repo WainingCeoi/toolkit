@@ -390,6 +390,17 @@ describe('TorrentDownloader: discarding a magnet that is still fetching', () => 
     vi.clearAllMocks()
   })
 
+  it('names the reason a magnet was refused', async () => {
+    apiMock.torrentResolveMagnet.mockRejectedValue(new ApiError('Not a magnet link.', 400))
+    render(createElement(TorrentDownloader))
+    await flush()
+
+    fireEvent.change(screen.getByLabelText('Magnet links'), { target: { value: 'nonsense' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Resolve' }))
+    await flush()
+    expect(screen.getByText(/nonsense — Not a magnet link\./)).toBeTruthy()
+  })
+
   it('stops counting it as fetching and never files it as a failure', async () => {
     render(createElement(TorrentDownloader))
     await flush()

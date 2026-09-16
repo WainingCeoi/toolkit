@@ -45,6 +45,7 @@ const RESOLVE_WINDOW = 10
 interface Failure {
   id: string
   magnet: string | null
+  reason: string | null
 }
 
 interface DeviceForm {
@@ -181,8 +182,8 @@ export default function TorrentDownloader() {
     }
   }
 
-  function pushFailure(id: string, magnet: string | null = null) {
-    setFailures((prev) => [...prev, { id, magnet }])
+  function pushFailure(id: string, magnet: string | null = null, reason: string | null = null) {
+    setFailures((prev) => [...prev, { id, magnet, reason }])
   }
 
   function magnetFor(infohash: string, name?: string | null): string {
@@ -287,12 +288,20 @@ export default function TorrentDownloader() {
       } catch (e) {
         if (discarded.current.delete(infohash)) return
         clearResolving(infohash)
-        pushFailure(infohash.slice(0, 12), magnetFor(infohash))
+        pushFailure(
+          infohash.slice(0, 12),
+          magnetFor(infohash),
+          errMsg(e, 'That magnet could not be resolved.'),
+        )
         return
       }
       if (next.state === 'error') {
         clearResolving(infohash)
-        pushFailure(next.name ?? infohash.slice(0, 12), magnetFor(infohash, next.name))
+        pushFailure(
+          next.name ?? infohash.slice(0, 12),
+          magnetFor(infohash, next.name),
+          'No metadata arrived in time — no peer answered for it.',
+        )
         return
       }
       if (next.ready) {
@@ -314,7 +323,7 @@ export default function TorrentDownloader() {
         await pollUntilReady(out.infohash)
       }
     } catch (e) {
-      pushFailure(magnetLabel(uri), uri)
+      pushFailure(magnetLabel(uri), uri, errMsg(e, 'That magnet could not be staged.'))
     }
   }
 
@@ -323,7 +332,7 @@ export default function TorrentDownloader() {
       const out = await api.torrentResolveFile(file, saveDir.trim())
       setResolved((prev) => addTorrent(prev, out))
     } catch (e) {
-      pushFailure(file.name)
+      pushFailure(file.name, null, errMsg(e, 'That .torrent could not be read.'))
     }
   }
 
@@ -385,7 +394,11 @@ export default function TorrentDownloader() {
       return 'ok'
     } catch (e) {
       if (!final && retryableSend(e)) return 'retry'
-      pushFailure(t.name ?? t.infohash.slice(0, 12), magnetFor(t.infohash, t.name))
+      pushFailure(
+        t.name ?? t.infohash.slice(0, 12),
+        magnetFor(t.infohash, t.name),
+        errMsg(e, 'BitComet would not take it.'),
+      )
       // The row stays in the review list so a manual Send needs no re-pasting.
       return 'failed'
     } finally {
@@ -448,7 +461,11 @@ export default function TorrentDownloader() {
     try {
       await api.torrentDiscard(t.infohash)
     } catch (e) {
-      pushFailure(t.name ?? t.infohash.slice(0, 12), magnetFor(t.infohash, t.name))
+      pushFailure(
+        t.name ?? t.infohash.slice(0, 12),
+        magnetFor(t.infohash, t.name),
+        errMsg(e, 'BitComet would not drop it.'),
+      )
     }
   }
 
@@ -940,13 +957,12 @@ export default function TorrentDownloader() {
           {copyableFailures.length > 0 && (
             <CodeBox text={copyableFailures.map((f) => f.magnet).join('\n')} />
           )}
-          {failures
-            .filter((f) => f.magnet === null)
-            .map((f, i) => (
-              <div key={`${f.id}-${i}`} className="note error" style={{ margin: '6px 0 0' }}>
-                {truncateMiddle(f.id, 60)}
-              </div>
-            ))}
+          {failures.map((f, i) => (
+            <div key={`${f.id}-${i}`} className="note error" style={{ margin: '6px 0 0' }}>
+              {truncateMiddle(f.id, 60)}
+              {f.reason && ` — ${f.reason}`}
+            </div>
+          ))}
         </div>
       )}
 
