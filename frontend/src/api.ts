@@ -201,6 +201,50 @@ export function followJob<R>(
   })
 }
 
+const RELOAD_BASE_MS = 2000
+const RELOAD_MAX_MS = 30000
+
+export interface Reloader {
+  reload: () => void
+  stop: () => void
+}
+
+// A manifest load that keeps retrying with capped backoff, so a backend that is not up yet
+// recovers on its own. `reload` also cancels a pending retry.
+export function retryingLoad<T>(
+  fetcher: () => Promise<T>,
+  onLoad: (value: T) => void,
+  onError: (err: Error) => void,
+): Reloader {
+  let stopped = false
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let delay = RELOAD_BASE_MS
+  const attempt = (): void => {
+    clearTimeout(timer)
+    void fetcher().then(
+      (value) => {
+        if (stopped) return
+        delay = RELOAD_BASE_MS
+        onLoad(value)
+      },
+      (err: Error) => {
+        if (stopped) return
+        onError(err)
+        timer = setTimeout(attempt, delay)
+        delay = Math.min(delay * 2, RELOAD_MAX_MS)
+      },
+    )
+  }
+  attempt()
+  return {
+    reload: attempt,
+    stop: () => {
+      stopped = true
+      clearTimeout(timer)
+    },
+  }
+}
+
 export const api = {
   // meta
   tools: () => request<Category[]>('/tools'),

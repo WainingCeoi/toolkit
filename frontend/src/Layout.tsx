@@ -10,7 +10,7 @@ import React, {
   useState,
 } from 'react'
 import { NavLink, Link, useLocation, useNavigate } from 'react-router'
-import { api } from './api'
+import { api, retryingLoad } from './api'
 import { useJobs } from './jobs'
 import { LedBar } from './components/JobPanel'
 import Button from './components/Button'
@@ -194,23 +194,18 @@ export default function Layout() {
   }, [location.pathname])
 
   useEffect(() => {
-    let cancelled = false
-    const load = () =>
-      api
-        .tools()
-        .then((cats) => {
-          if (cancelled) return
-          setCategories(cats)
-          setToolsError(null)
-        })
-        .catch((err: Error) => {
-          if (!cancelled) setToolsError(err.message)
-        })
-    load()
-    window.addEventListener('focus', load)
+    const loader = retryingLoad(
+      () => api.tools(),
+      (cats: Category[]) => {
+        setCategories(cats)
+        setToolsError(null)
+      },
+      (err) => setToolsError(err.message),
+    )
+    window.addEventListener('focus', loader.reload)
     return () => {
-      cancelled = true
-      window.removeEventListener('focus', load)
+      loader.stop()
+      window.removeEventListener('focus', loader.reload)
     }
   }, [])
 

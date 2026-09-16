@@ -1,6 +1,6 @@
 import { useEffect, useState, type CSSProperties } from 'react'
 import { Link } from 'react-router'
-import { api } from './api'
+import { api, retryingLoad } from './api'
 import { CATEGORY_ACCENT } from './tools'
 import type { Category, Health } from './types/api'
 
@@ -13,16 +13,26 @@ const LAMPS: [key: keyof Omit<Health, 'ok'>, label: string][] = [
 export default function Home() {
   const [categories, setCategories] = useState<Category[]>([])
   const [health, setHealth] = useState<Health | null>(null)
+  const [toolsError, setToolsError] = useState<string | null>(null)
 
   useEffect(() => {
-    api
-      .tools()
-      .then(setCategories)
-      .catch(() => setCategories([]))
-    api
-      .health()
-      .then(setHealth)
-      .catch(() => setHealth(null))
+    const tools = retryingLoad(
+      () => api.tools(),
+      (cats: Category[]) => {
+        setCategories(cats)
+        setToolsError(null)
+      },
+      (err) => setToolsError(err.message),
+    )
+    const lamps = retryingLoad(
+      () => api.health(),
+      setHealth,
+      () => setHealth(null),
+    )
+    return () => {
+      tools.stop()
+      lamps.stop()
+    }
   }, [])
 
   return (
@@ -43,6 +53,10 @@ export default function Home() {
           </div>
         )}
       </div>
+
+      {toolsError && categories.length === 0 && (
+        <div className="note error">backend unreachable — retrying…</div>
+      )}
 
       {categories.map((cat) => (
         <section key={cat.name} className="drawer-cat">
