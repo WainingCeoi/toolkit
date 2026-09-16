@@ -142,7 +142,7 @@ def _lock_path(folder: str, name: str) -> Path:
     return here / name
 
 
-# --- Subprocess streaming (uv sync / npm install) ---
+# --- Subprocess streaming (uv lock / npm install) ---
 
 
 def _terminate(proc: subprocess.Popen) -> None:
@@ -234,11 +234,12 @@ def uv_available() -> bool:
     return shutil.which("uv") is not None
 
 
-def run_uv_sync(folder, on_message=None, is_cancelled=None) -> tuple[bool, str]:
+def run_uv_upgrade(folder, on_message=None, is_cancelled=None) -> tuple[bool, str]:
+    """Upgrade uv.lock only: the scan reads the lock and never needs the venv."""
     uv = shutil.which("uv")
     if uv is None:
         return False, "❌ uv is not installed or not on PATH."
-    return _stream([uv, "sync", "-U"], folder, on_message, is_cancelled)
+    return _stream([uv, "lock", "-U"], folder, on_message, is_cancelled)
 
 
 def uv_lock_refresh(folder: str) -> tuple[bool, str]:
@@ -397,11 +398,13 @@ def npm_available() -> bool:
     return shutil.which("npm") is not None
 
 
-def run_npm_install(folder, on_message=None, is_cancelled=None) -> tuple[bool, str]:
+def run_npm_upgrade(folder, on_message=None, is_cancelled=None) -> tuple[bool, str]:
+    """Resolve package-lock.json only: npm outdated reads the registry, not the tree."""
     npm = shutil.which("npm")
     if npm is None:
         return False, "❌ npm is not installed or not on PATH."
-    return _stream([npm, "install"], folder, on_message, is_cancelled)
+    cmd = [npm, "install", "--package-lock-only"]
+    return _stream(cmd, folder, on_message, is_cancelled)
 
 
 def npm_outdated(folder: str) -> tuple[dict, str | None]:
@@ -650,15 +653,15 @@ _NPM_RETRY_ROUNDS = 3
 
 
 def scan_manifest(manifest: Manifest, on_message=None, is_cancelled=None) -> dict:
-    """Sync one manifest and compute its bumps as a wire-ready dict."""
+    """Re-resolve one manifest's lockfile and compute its bumps as a wire-ready dict."""
     folder = str(manifest.path.parent)
     out = {"rel": manifest.rel, "kind": manifest.kind, "bumps": [], "error": None}
     if manifest.kind == "uv":
-        ok, log = run_uv_sync(folder, on_message, is_cancelled)
+        ok, log = run_uv_upgrade(folder, on_message, is_cancelled)
         if is_cancelled is not None and is_cancelled():
             return out
         if not ok:
-            out["error"] = f"uv sync -U failed:\n{_tail(log)}"
+            out["error"] = f"uv lock -U failed:\n{_tail(log)}"
             return out
         resolved, err = resolved_versions(folder)
         if err:
@@ -666,11 +669,11 @@ def scan_manifest(manifest: Manifest, on_message=None, is_cancelled=None) -> dic
             return out
         bumps = compute_uv_bumps(manifest.path, resolved)
     else:
-        ok, log = run_npm_install(folder, on_message, is_cancelled)
+        ok, log = run_npm_upgrade(folder, on_message, is_cancelled)
         if is_cancelled is not None and is_cancelled():
             return out
         if not ok:
-            out["error"] = f"npm install failed:\n{_tail(log)}"
+            out["error"] = f"npm install --package-lock-only failed:\n{_tail(log)}"
             return out
         latest, err = npm_latest(folder)
         if err:

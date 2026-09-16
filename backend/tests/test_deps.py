@@ -191,6 +191,20 @@ def test_stream_survives_non_utf8_output(tmp_path):
     assert ok and "hi" in log
 
 
+def test_scan_upgrades_the_lockfiles_without_installing(tmp_path, monkeypatch):
+    seen = []
+    monkeypatch.setattr(depsync.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        depsync, "_stream", lambda cmd, *a, **k: (seen.append(cmd), (True, "ok"))[1]
+    )
+    depsync.run_uv_upgrade(str(tmp_path))
+    depsync.run_npm_upgrade(str(tmp_path))
+    assert seen == [
+        ["/usr/bin/uv", "lock", "-U"],
+        ["/usr/bin/npm", "install", "--package-lock-only"],
+    ]
+
+
 # --- uv: which floors get bumped ---
 
 
@@ -653,9 +667,9 @@ def _monorepo(root):
 
 
 def _fake_syncs(monkeypatch):
-    monkeypatch.setattr(depsync, "run_uv_sync", lambda *a, **k: (True, "Resolved"))
+    monkeypatch.setattr(depsync, "run_uv_upgrade", lambda *a, **k: (True, "Resolved"))
     monkeypatch.setattr(
-        depsync, "run_npm_install", lambda *a, **k: (True, "up to date")
+        depsync, "run_npm_upgrade", lambda *a, **k: (True, "up to date")
     )
     monkeypatch.setattr(depsync, "npm_latest", lambda folder: (LATEST, None))
 
