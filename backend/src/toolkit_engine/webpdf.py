@@ -37,9 +37,13 @@ def sanitize_filename(name):
     return cleaned[:MAX_NAME] or "web"
 
 
-def scrape_images_from_source(page_source, page_url):
-    """Parse a captured page for its title + lazy-loaded images; download them."""
-    soup = BeautifulSoup(page_source, "lxml")
+def parse_page(page_source):
+    """Parse the captured HTML once; both capture steps read the same tree."""
+    return BeautifulSoup(page_source, "lxml")
+
+
+def scrape_images_from_source(soup, page_url):
+    """Read a parsed page for its title + lazy-loaded images; download them."""
     title_tag = soup.find("title")
     title = title_tag.text.strip() if title_tag and title_tag.text.strip() else "web"
     pdf_name = f"{sanitize_filename(title)}.pdf"
@@ -83,10 +87,9 @@ def build_pdf(images, output_folder, pdf_name):
     return str(pdf_path)
 
 
-def add_bookmark(page_source, pdf_path):
+def add_bookmark(soup, pdf_path):
     """Best-effort TOC from the page's anchors; None on success, else a reason."""
     try:
-        soup = BeautifulSoup(page_source, "lxml")
         toc = []
         prev_level = 0
         for content in soup.find_all("a"):

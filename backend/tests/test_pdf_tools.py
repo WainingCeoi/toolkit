@@ -16,6 +16,7 @@ from toolkit_api.main import create_app
 from toolkit_api.routers import webpdf
 from toolkit_engine.webpdf import (
     BrowserSession,
+    parse_page,
     sanitize_filename,
     scrape_images_from_source,
 )
@@ -198,7 +199,9 @@ def test_scrape_images_from_source_data_uris():
         f'<img class="bi" src="{_data_uri(_png_bytes("red"))}">'
         "</body></html>"
     )
-    pdf_name, images, skipped = scrape_images_from_source(html, "http://example.com")
+    pdf_name, images, skipped = scrape_images_from_source(
+        parse_page(html), "http://example.com"
+    )
     assert pdf_name == "My Comic_ Vol 1.pdf"
     assert len(images) == 1
     assert skipped == 0
@@ -214,7 +217,9 @@ def test_scrape_images_selector_and_skip_counting():
         f'<img class="other" src="{_data_uri(_png_bytes())}">'  # not selected
         "</body></html>"
     )
-    pdf_name, images, skipped = scrape_images_from_source(html, "http://example.com")
+    pdf_name, images, skipped = scrape_images_from_source(
+        parse_page(html), "http://example.com"
+    )
     assert pdf_name == "web.pdf"
     assert len(images) == 1
     assert skipped == 1
@@ -293,7 +298,7 @@ def test_webpdf_capture_resolves_images_against_the_current_page(
 ):
     seen = {}
 
-    def spy(page_source, page_url):
+    def spy(soup, page_url):
         seen["url"] = page_url
         return "x.pdf", [], 0
 
@@ -332,6 +337,26 @@ def test_webpdf_capture_builds_pdf_and_closes_browser(tool_client, app_state):
     assert download.content.startswith(b"%PDF")
     # FileResponse RFC-5987-encodes the space in the filename.
     assert "Book_%20One.pdf" in download.headers["content-disposition"]
+
+
+def test_webpdf_capture_parses_the_page_once(tool_client, app_state, monkeypatch):
+    parsed = []
+    real_parse = webpdf.parse_page
+
+    def counting(page_source):
+        parsed.append(page_source)
+        return real_parse(page_source)
+
+    monkeypatch.setattr(webpdf, "parse_page", counting)
+    html = (
+        "<html><head><title>Book</title></head><body>"
+        f'<img class="bi" src="{_data_uri(_png_bytes("red"))}">'
+        "</body></html>"
+    )
+    app_state.browser = FakeBrowserSession(html)
+
+    assert tool_client.post("/api/webpdf/capture").status_code == 200
+    assert len(parsed) == 1
 
 
 def test_webpdf_close_is_idempotent(tool_client, app_state):
@@ -389,7 +414,7 @@ def test_webpdf_capture_preserves_newer_session(tool_client, app_state, monkeypa
     newer = FakeBrowserSession(html)
     app_state.browser = captured
 
-    def reassign(page_source, pdf_path):
+    def reassign(soup, pdf_path):
         # A newer /open lands mid-capture.
         app_state.browser = newer
         return None

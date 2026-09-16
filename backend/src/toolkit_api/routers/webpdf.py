@@ -12,6 +12,7 @@ from toolkit_engine.webpdf import (
     BrowserSession,
     add_bookmark,
     build_pdf,
+    parse_page,
     scrape_images_from_source,
 )
 
@@ -81,9 +82,9 @@ def capture(state: StateDep, artifacts: ArtifactsDep) -> CaptureOut:
             raise HTTPException(status_code=409, detail="No browser session is open.")
         session = state.browser
     try:
-        page_source = session.page_source()
+        soup = parse_page(session.page_source())
         pdf_name, images, skipped = scrape_images_from_source(
-            page_source, session.current_url or ""
+            soup, session.current_url or ""
         )
         if not images:
             # Leave the browser open for a retry.
@@ -96,7 +97,7 @@ def capture(state: StateDep, artifacts: ArtifactsDep) -> CaptureOut:
             )
         with tempfile.TemporaryDirectory() as tmp_dir:
             pdf_path = build_pdf(images, tmp_dir, pdf_name)
-            warn = add_bookmark(page_source, pdf_path)
+            warn = add_bookmark(soup, pdf_path)
             # Stays inside the temp-dir block: put_file moves the PDF out of it.
             artifact_id = artifacts.put_file(
                 pdf_name, Path(pdf_path), "application/pdf"
