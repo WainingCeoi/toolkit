@@ -15,8 +15,7 @@ from toolkit_api.main import create_app
 from toolkit_api.state import AppState
 from toolkit_api.watermarks import WatermarkBatches
 
-# starlette's TestClient imports `httpx`; this project ships httpx2, whose API
-# it shares, so alias it before any test module imports TestClient.
+# starlette's TestClient imports `httpx`; httpx2 shares its API, so alias it first.
 sys.modules.setdefault("httpx", httpx2)
 
 

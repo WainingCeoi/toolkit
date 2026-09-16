@@ -16,7 +16,6 @@ DEFAULT_CACHE_TYPES = ["*.dwl", "*.dwl2", "*.bak", "*.log", "*.db", "*.tmp", "*.
 # Deletes are submitted a chunk at a time; a cancel can only land between chunks.
 _DELETE_CHUNK = 16
 
-# Every character that starts a glob construct rather than matching itself.
 _GLOB_CHARS = frozenset("*?[]{}")
 # Whole bracket expression: it matches one arbitrary char, so `*[!/]*` is a catch-all.
 _BRACKET = re.compile(r"\[!?\]?[^]]*\]")
@@ -28,7 +27,7 @@ def normalize_pattern(token):
     if not token:
         return None
     if not _GLOB_CHARS.intersection(token):
-        return f"*.{token.lstrip('.')}"  # a bare extension
+        return f"*.{token.lstrip('.')}"
     # Reject by what survives, not by a deny-list of spellings ('?*', '*[!/]*', ...).
     residue = _BRACKET.sub("", token).strip("*?.{},")
     return token if residue else None

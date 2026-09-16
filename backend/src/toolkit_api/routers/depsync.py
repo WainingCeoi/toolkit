@@ -182,7 +182,6 @@ def _apply_manifests(manifests: list, req: ApplyIn) -> ApplyOut:
             commits.append({"sha": sha, "files": rels})
 
         if commit_error:
-            # All-or-nothing: nothing lands unless the commit lands.
             for result in results:
                 depsync.restore(result["originals"])
                 result["written"] = 0

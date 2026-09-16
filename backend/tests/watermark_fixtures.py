@@ -162,7 +162,7 @@ def _studio_scene(w: int, h: int, seed: int) -> np.ndarray:
         )
         img = img * (1 - blob[..., None]) + fill[..., None] * blob[..., None]
     img = cv2.GaussianBlur(img, (0, 0), 2)
-    img += rng.normal(0, 2.0, (h, w, 1))  # sensor grain
+    img += rng.normal(0, 2.0, (h, w, 1))
     return np.clip(img, 0, 255).astype(np.uint8)
 
 

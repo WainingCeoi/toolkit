@@ -60,7 +60,6 @@ def torrent_client(app_state, fake, save_folder):
 
 
 def upload(client, save_dir=None):
-    """Resolve a .torrent and return its infohash."""
     return client.post(
         "/api/torrent/resolve",
         files={"file": ("Example.torrent", sample_torrent(), TORRENT_MIME)},

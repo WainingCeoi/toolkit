@@ -16,8 +16,7 @@ from ..schemas import JobStartedOut
 
 router = APIRouter(prefix="/remux", tags=["remux"])
 
-# ffmpeg protocols like "concat:" and "pipe:" have no "//"; two-plus characters
-# before the colon rules out a Windows drive letter.
+# Protocols like "concat:" have no "//"; 2+ chars rules out a Windows drive letter.
 _SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]+:")
 
 
@@ -155,9 +154,7 @@ def start(req: StartIn, jobs: JobsDep) -> JobStartedOut:
             status_code=400, detail=f"❌ Cannot create the output folder: {e}"
         ) from e
 
-    # ffmpeg's same-file guard compares strings only, so an output that resolves to
-    # the source (/tmp vs /private/tmp) would truncate it; compare by inode instead,
-    # since resolve() folds neither APFS's case nor its Unicode normalisation.
+    # Match by inode: ffmpeg's same-file guard is string-only, resolve() folds no case.
     out_resolved = out_path.resolve()
     seen_outputs: set[str] = set()
     for video in req.selected:

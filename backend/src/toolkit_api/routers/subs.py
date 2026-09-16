@@ -19,7 +19,7 @@ router = APIRouter(prefix="/subs", tags=["subscription"])
 public_router = APIRouter(tags=["subscription"])
 
 
-# ------------------------------------------------------------------- schemas
+# --- schemas ---
 class GenerateIn(BaseModel):
     node_links: str
     preferred_ips: str
@@ -51,7 +51,7 @@ class HistoryItemOut(BaseModel):
     created_at: str
 
 
-# --------------------------------------------------------------------- urls
+# --- urls ---
 def _sub_base_url(request: Request) -> str:
     host = config.PUBLIC_HOST or netutil.get_local_hostname()
     if not host:
@@ -89,7 +89,7 @@ def _qr_png(text: str) -> bytes:
     return buf.getvalue()
 
 
-# ------------------------------------------------------------- /api/subs/...
+# --- /api/subs/... ---
 @router.post("/generate", response_model=SubscriptionOut)
 def generate(req: GenerateIn, request: Request, store: StoreDep) -> SubscriptionOut:
     try:
@@ -173,7 +173,6 @@ def history(store: StoreDep) -> list[dict]:
 def load_subscription(
     sub_id: str, request: Request, store: StoreDep
 ) -> SubscriptionOut:
-    """Pull a stored subscription back into the result panel."""
     record = store.get_subscription(sub_id)
     if not record:
         raise HTTPException(
@@ -233,7 +232,7 @@ def subscription_qr(sub_id: str, request: Request) -> Response:
     return Response(content=_qr_png(raw_url), media_type="image/png")
 
 
-# ------------------------------------------------------------ public /sub/...
+# --- public /sub/... ---
 _CORS = {"Access-Control-Allow-Origin": "*"}
 
 
@@ -253,7 +252,6 @@ def serve_subscription(sub_id: str, request: Request, store: StoreDep) -> Respon
         request.headers.get("User-Agent", ""),
         request.query_params.get("target", ""),
     )
-    # Full incoming URL (Surge #!MANAGED-CONFIG embeds it for re-fetching).
     request_url = str(request.url)
     try:
         body, content_type, filename = core.render_subscription(

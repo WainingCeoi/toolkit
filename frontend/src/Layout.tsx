@@ -1,5 +1,3 @@
-// App frame: rail, keep-alive hosts for every open tool, and the tab dock.
-
 import React, {
   Suspense,
   useCallback,
@@ -211,8 +209,7 @@ export default function Layout() {
     writeSession(TABS_KEY, JSON.stringify(openTabs))
   }, [openTabs])
 
-  // Scroll memory is saved on scroll, not at switch time: by then the outgoing page is
-  // hidden and scrollTop has been clamped to the incoming page's height.
+  // Saved on scroll, not at switch time: by then scrollTop is clamped to the new page.
   const mainRef = useRef<HTMLElement>(null)
   const scrollsRef = useRef(new Map<string, number>())
   useLayoutEffect(() => {

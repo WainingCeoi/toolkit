@@ -19,7 +19,6 @@ const hintStyle: CSSProperties = { fontSize: 11.5, color: 'var(--faint)', margin
 const EMPTY_MATCHES: SubtitleMatch[] = []
 
 export default function Remux() {
-  // 01 — source folder + video selection
   const [folder, setFolder] = useState('')
   const [videos, setVideos] = useState<RemuxVideo[]>([]) // natural-sorted server-side
   const [selected, setSelected] = useState<string[]>([])
@@ -27,7 +26,6 @@ export default function Remux() {
   const [scanning, setScanning] = useState(false)
   const [scanError, setScanError] = useState<string | null>(null)
 
-  // 02 — track configuration
   const [includeVideo, setIncludeVideo] = useState(true)
   const [videoIdx, setVideoIdx] = useState('0')
   const [multiAudio, setMultiAudio] = useState(false)
@@ -37,7 +35,6 @@ export default function Remux() {
   const [subIdx, setSubIdx] = useState('0')
   const [subLang, setSubLang] = useState('chi')
 
-  // 03 — external subtitles
   const [useExternalSub, setUseExternalSub] = useState(false)
   const [subFolder, setSubFolder] = useState('')
   const [fetched, setFetched] = useState<SubtitleMatch[]>([])
@@ -45,7 +42,6 @@ export default function Remux() {
   // The subKey `fetched` was fetched for; readiness is derived from it, never a synced flag.
   const [loadedFor, setLoadedFor] = useState<string | null>(null)
 
-  // 04 — output & run
   const [outFolder, setOutFolder] = useState('~/Desktop/🎬')
   const [workers, setWorkers] = useState(4)
 
@@ -161,7 +157,6 @@ export default function Remux() {
 
       <div className="station">
         <div>
-          {/* ---- 01 SELECT VIDEOS ---- */}
           <div className="panel">
             <div className="step">
               <span className="n">01</span>
@@ -232,7 +227,6 @@ export default function Remux() {
             )}
           </div>
 
-          {/* ---- 02 TRACK CONFIGURATION ---- */}
           <div className="panel">
             <div className="step">
               <span className="n">02</span>
@@ -346,7 +340,6 @@ export default function Remux() {
             </div>
           </div>
 
-          {/* ---- 03 EXTERNAL SUBTITLES (OPTIONAL) ---- */}
           <div className="panel">
             <div className="step">
               <span className="n">03</span>
@@ -417,7 +410,6 @@ export default function Remux() {
             </details>
           </div>
 
-          {/* ---- 04 OUTPUT ---- */}
           <div className="panel">
             <div className="step">
               <span className="n">04</span>
@@ -445,7 +437,6 @@ export default function Remux() {
           </div>
         </div>
 
-        {/* ---- RUN & RESULTS ---- */}
         <div className="panel">
           <Button
             variant="primary"

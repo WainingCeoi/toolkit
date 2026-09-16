@@ -30,7 +30,7 @@ def wait_for_job(client, job_id, timeout=5.0):
     raise AssertionError(f"job {job_id} did not finish within {timeout}s")
 
 
-# ---------------------------------------------------------------- dedupe ---
+# --- dedupe ---
 
 
 def test_dedupe_removes_duplicates_and_preserves_first_seen_order(tool_client):
@@ -48,7 +48,7 @@ def test_dedupe_empty_is_400_with_page_warning(tool_client):
     assert resp.json()["detail"] == "Please enter at least one magnet link"
 
 
-# ------------------------------------------------------------------ auto ---
+# --- auto ---
 
 
 def test_auto_missing_website_url_fails_with_page_error(
@@ -273,7 +273,7 @@ def test_auto_cutoff_not_found_warns_and_leaves_env_alone(
     assert env_file.read_text() == 'CUTOFF_VIDEO="https://site.test/gone"\n'
 
 
-# ---------------------------------------------------------------- manual ---
+# --- manual ---
 
 
 def test_manual_scrape_splits_successful_and_failed(tool_client, monkeypatch):
@@ -351,7 +351,7 @@ def test_manual_empty_is_400_with_page_warning(tool_client):
     assert resp.json()["detail"] == "Please enter at least one URL"
 
 
-# ------------------------------------------------- find_unwatched_urls -----
+# --- find_unwatched_urls ---
 
 
 def test_find_unwatched_urls_slices_at_cutoff(monkeypatch):

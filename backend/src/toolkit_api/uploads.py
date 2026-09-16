@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from fastapi import HTTPException, UploadFile
 
-# Combined per-request ceiling.
 MAX_UPLOAD_BYTES = 512 * 1024 * 1024
 _CHUNK = 1024 * 1024
 

@@ -1,6 +1,6 @@
 // Hand-maintained mirror of the backend models; update both sides together.
 
-// --------------------------------------------------------------- job envelope
+// --- job envelope ---
 
 export type JobState = 'running' | 'done' | 'failed' | 'cancelled'
 export type JobItemState = 'pending' | 'running' | 'done' | 'failed'
@@ -36,7 +36,7 @@ export interface JobCancel {
   cancelling: boolean
 }
 
-// ---------------------------------------------------------- job result shapes
+// --- job result shapes ---
 
 // Failure shapes differ per tool on purpose; they are typed as sent, not unified here.
 
@@ -132,7 +132,7 @@ export interface DepScanResult {
   total_bumps: number
 }
 
-// ------------------------------------------------------ synchronous endpoints
+// --- synchronous endpoints ---
 
 export interface Tool {
   slug: string
@@ -206,7 +206,6 @@ export interface RemuxStartPayload {
   max_workers?: number
 }
 
-/** Mirrors GatherStartIn. */
 export interface GatherStartPayload {
   source: string
   target: string
@@ -331,15 +330,13 @@ export interface DepApplyResult {
   written_total: number
 }
 
-/** A downloaded file plus the name parsed out of Content-Disposition. */
 export interface DownloadedBlob {
   blob: Blob
   filename: string
 }
 
-// --- Watermark Remover ------------------------------------------------------
+// --- Watermark Remover ---
 
-/** Mirrors WatermarkImageOut. */
 export interface WatermarkImage {
   id: string
   name: string
@@ -348,7 +345,6 @@ export interface WatermarkImage {
   height: number
 }
 
-/** Mirrors WatermarkBatchOut. */
 export interface WatermarkBatch {
   batch_id: string
   images: WatermarkImage[]
@@ -357,14 +353,13 @@ export interface WatermarkBatch {
 /** `auto` recovers a repeating mark, falling back to `texture`; the others run one detector. */
 export type WatermarkDetector = 'auto' | 'texture' | 'pattern'
 
-/** Mirrors WatermarkHealthOut. */
 export interface WatermarkHealth {
   /** torch importable — the LaMa inpainter can run (cv2 always can). */
   lama: boolean
   device: string
 }
 
-/** Mirrors WatermarkRunIn. `masks` maps image id -> base64 PNG (white = remove). */
+/** `masks` maps image id -> base64 PNG (white = remove). */
 export interface WatermarkRunPayload {
   batch_id: string
   inpainter: 'lama' | 'cv2'
@@ -386,7 +381,7 @@ export interface WatermarkResult {
   filename?: string
 }
 
-// --- Torrent Downloader ---------------------------------------------------
+// --- Torrent Downloader ---
 
 export interface TorrentFileRow {
   index: number // 1-based, sent back verbatim

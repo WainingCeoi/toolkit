@@ -20,7 +20,6 @@ from .pattern import (
     _work_size,
 )
 
-# --- constants ---
 # Local-energy window, and the two background widths (see whitened).
 _WHITEN_ENERGY = 31
 _MATCH_BG = 31  # wider and the search locks onto the photo's own structure
@@ -138,7 +137,7 @@ def _tiled_anchors(field: np.ndarray, high: int, wide: int) -> list[tuple[int, i
     return found
 
 
-# --- the gate -------------------------------------------------------------
+# --- the gate ---
 # Correlation above which a predicted cell counts as holding a copy.
 _CELL_LIVE = 0.06
 # Share of predicted cells that must hold a copy, and the shape they must make.

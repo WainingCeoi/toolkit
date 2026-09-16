@@ -33,7 +33,7 @@ def _decode_vmess(raw_sub):
     return json.loads(base64.b64decode(line[len("vmess://") :]).decode())
 
 
-# --- parsing -----------------------------------------------------------------
+# --- parsing ---
 
 
 def test_parse_mixed_valid_and_invalid_collects_warnings():
@@ -51,7 +51,7 @@ def test_parse_base64_subscription_blob_expands():
     assert len(parsed["nodes"]) == 2
 
 
-# --- round-trips (parse -> render -> parse) ----------------------------------
+# --- round-trips (parse -> render -> parse) ---
 
 
 def test_vmess_roundtrip_carries_allow_insecure():
@@ -143,7 +143,7 @@ def test_expand_nodes_crosses_every_node_with_every_endpoint():
     assert len({n["name"] for n in expanded["nodes"]}) == 4
 
 
-# --- store -------------------------------------------------------------------
+# --- store ---
 
 
 @pytest.fixture

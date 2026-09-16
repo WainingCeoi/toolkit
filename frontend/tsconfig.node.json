@@ -1,5 +1,4 @@
 {
-  // Build-time config files: Node globals, no DOM lib.
   "compilerOptions": {
     "target": "ES2022",
     "lib": ["ES2023"],

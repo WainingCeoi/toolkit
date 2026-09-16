@@ -26,8 +26,7 @@ IMAGE_TYPES = ("png", "jpg", "jpeg", "webp")
 # A mask hugging the watermark too tightly leaves a one-pixel ghost outline.
 DEFAULT_DILATE_PX = 3
 
-# LaMa's peak memory grows with the frame handed to it; tiles keep it flat.
-# 640/96 is tuned: larger tiles cost far more memory, smaller ones more time.
+# Tiles keep LaMa's peak memory flat; 640/96 tuned: bigger costs memory, smaller time.
 TILE_PX = 640
 CONTEXT_PX = 96
 

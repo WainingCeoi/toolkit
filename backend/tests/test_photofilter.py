@@ -97,7 +97,7 @@ def wait_for_job(client, job_id, timeout=5.0):
     raise AssertionError(f"job {job_id} did not finish within {timeout}s")
 
 
-# --- rules ------------------------------------------------------------------
+# --- rules ---
 
 
 def test_rules_match_rsync_subset():
@@ -137,7 +137,7 @@ def test_default_rules_drop_caches_and_keep_originals_and_renders():
     assert pf.first_match(rules, "database/Photos.sqlite") is None
 
 
-# --- plan / snapshot --------------------------------------------------------
+# --- plan / snapshot ---
 
 
 def test_plan_classifies_files(tmp_path):
@@ -195,7 +195,7 @@ def test_snapshot_includes_unflushed_wal(tmp_path):
     assert not list(dest.parent.glob("*.tmp"))
 
 
-# --- run --------------------------------------------------------------------
+# --- run ---
 
 
 def test_run_copies_snapshots_skips_and_deletes(tmp_path):
@@ -479,7 +479,7 @@ def test_summary_sizes_the_excluded_files_per_rule(tmp_path):
     assert (s["copied"], s["skipped"], s["snapshotted"], s["deleted"]) == (0, 0, 0, [])
 
 
-# --- API --------------------------------------------------------------------
+# --- API ---
 
 
 def test_photofilter_dry_run_then_run_end_to_end(client, tmp_path):

@@ -17,7 +17,6 @@ export function maskToOverlay(pixels: Uint8ClampedArray): boolean {
   return marked
 }
 
-/** Overlay -> wire mask, in place. */
 export function overlayToMask(pixels: Uint8ClampedArray): Uint8ClampedArray {
   for (let i = 0; i < pixels.length; i += 4) {
     const value = pixels[i + 3] > 127 ? 255 : 0

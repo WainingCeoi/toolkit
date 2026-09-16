@@ -114,8 +114,7 @@ async function fetchBlob(path: string, fallbackName: string): Promise<Downloaded
   return { blob: await res.blob(), filename: filenameFromDisposition(res, fallbackName) }
 }
 
-// Browser quirks: the anchor must be in the document for click() to work, and revoking
-// the object URL synchronously can cancel the download.
+// The anchor must be in the document for click(), and revoking the URL now cancels the download.
 export function saveBlob(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
@@ -165,7 +164,6 @@ async function pollJob<R>(
   }
 }
 
-// Follows a job's SSE stream, falling back to polling on disconnect.
 export function followJob<R>(
   jobId: string,
   onSnapshot: (snapshot: Job<R>) => void,
@@ -209,7 +207,6 @@ export interface Reloader {
   stop: () => void
 }
 
-// Keeps retrying a failed load with capped backoff; `reload` also cancels a pending retry.
 export function retryingLoad<T>(
   fetcher: () => Promise<T>,
   onLoad: (value: T) => void,
@@ -245,7 +242,6 @@ export function retryingLoad<T>(
 }
 
 export const api = {
-  // meta
   tools: () => request<Category[]>('/tools'),
   health: () => request<Health>('/health'),
   // `packages` shows bundles (a *.photoslibrary) as selectable folders.
@@ -255,11 +251,9 @@ export const api = {
       body: { start_dir: startDir || null, packages },
     }),
 
-  // jobs
   job: (id: string) => request<Job<unknown>>(`/jobs/${id}`),
   cancelJob: (id: string) => request<JobCancel>(`/jobs/${id}/cancel`, { method: 'POST' }),
 
-  // magnet scraper
   magnetConfig: () => request<MagnetConfig>('/magnet/config'),
   magnetAuto: (startPage: number) =>
     request<JobStarted>('/magnet/auto', { method: 'POST', body: { start_page: startPage } }),
@@ -268,7 +262,6 @@ export const api = {
   magnetDedupe: (links: string[]) =>
     request<DedupeResult>('/magnet/dedupe', { method: 'POST', body: { links } }),
 
-  // remux
   remuxScan: (folder: string) =>
     request<RemuxScanResult>('/remux/scan', { method: 'POST', body: { folder } }),
   remuxSubtitles: (subFolder: string, selected: string[]) =>
@@ -279,11 +272,9 @@ export const api = {
   remuxStart: (payload: RemuxStartPayload) =>
     request<JobStarted>('/remux/start', { method: 'POST', body: payload }),
 
-  // file gatherer
   gatherStart: (payload: GatherStartPayload) =>
     request<JobStarted>('/gather/start', { method: 'POST', body: payload }),
 
-  // cache purge
   purgeScan: (folder: string, patternsRaw: string) =>
     request<PurgeScanResult>('/purge/scan', {
       method: 'POST',
@@ -292,36 +283,30 @@ export const api = {
   purgeDelete: (scanId: string) =>
     request<JobStarted>('/purge/delete', { method: 'POST', body: { scan_id: scanId } }),
 
-  // photos library filter
   photofilterDryRun: (payload: PhotoFilterPayload) =>
     request<JobStarted>('/photofilter/dry-run', { method: 'POST', body: payload }),
   photofilterRun: (payload: PhotoFilterPayload) =>
     request<JobStarted>('/photofilter/run', { method: 'POST', body: payload }),
 
-  // image to pdf (direct download)
   imgToPdf: (formData: FormData) => requestBlob('/img-to-pdf', formData),
 
-  // web images to pdf
   webpdfOpen: (url: string) =>
     request<WebPdfStatus>('/webpdf/open', { method: 'POST', body: { url } }),
   webpdfStatus: () => request<WebPdfStatus>('/webpdf/status'),
   webpdfCapture: () => request<WebPdfCapture>('/webpdf/capture', { method: 'POST', body: {} }),
   webpdfClose: () => request<WebPdfStatus>('/webpdf/close', { method: 'POST' }),
 
-  // doc conversions (multipart -> job)
   docToPdf: (formData: FormData) =>
     request<JobStarted>('/doc-to-pdf', { method: 'POST', body: formData }),
   docToMarkdown: (formData: FormData) =>
     request<JobStarted>('/doc-to-markdown', { method: 'POST', body: formData }),
   docmdHealth: () => request<MarkdownHealth>('/doc-to-markdown/health'),
 
-  // dependency upgrader
   depsScan: (folder: string) =>
     request<JobStarted>('/deps/scan', { method: 'POST', body: { folder } }),
   depsApply: (folder: string, commit: boolean, message: string | null) =>
     request<DepApplyResult>('/deps/apply', { method: 'POST', body: { folder, commit, message } }),
 
-  // optimized-ip subscription
   subsGenerate: (payload: SubsGeneratePayload) =>
     request<Subscription>('/subs/generate', { method: 'POST', body: payload }),
   subsHistory: () => request<SubsHistoryItem[]>('/subs/history'),
@@ -333,8 +318,7 @@ export const api = {
   subsDownload: (id: string, target: string) =>
     fetchBlob(`/subs/${id}/render?target=${target}`, `subscription-${target}`),
 
-  // torrent downloader. /resolve is multipart on both paths (JSON would 422), and save_dir
-  // travels with it: BitComet fixes a task's folder at creation.
+  // /resolve must be multipart (JSON 422s); BitComet fixes a task's folder at creation.
   torrentStatus: () => request<TorrentStatus>('/torrent/status'),
   torrentResolveMagnet: (magnet: string, saveDir = '') => {
     const body = new FormData()
@@ -357,7 +341,6 @@ export const api = {
     request<{ infohash: string; state: string }>(`/torrent/${infohash}`, {
       method: 'DELETE',
     }),
-  // devices
   torrentDevices: () => request<TorrentDeviceList>('/torrent/devices'),
   torrentDeviceAdd: (payload: TorrentDeviceInput) =>
     request<TorrentDeviceList>('/torrent/devices', { method: 'POST', body: payload }),
@@ -376,7 +359,6 @@ export const api = {
       body: payload,
     }),
 
-  // watermark remover
   watermarkHealth: () => request<WatermarkHealth>('/watermark/health'),
   watermarkUpload: (formData: FormData) =>
     request<WatermarkBatch>('/watermark/batch', { method: 'POST', body: formData }),

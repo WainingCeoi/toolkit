@@ -20,7 +20,6 @@ import requests
 
 from toolkit_engine.aescbc import decrypt_cbc, encrypt_cbc
 
-# BitComet's own settings file; read live so the credentials never drift.
 CONFIG_PATH = (
     Path.home() / "Library" / "Application Support" / "BitComet" / "BitComet.xml"
 )
@@ -37,7 +36,6 @@ PRIORITIES = ("very_high", "high", "normal", "disabled")
 DESELECTED = "disabled"
 SELECTED = "normal"
 
-# The verified verbs for /api_v2/tasks/action.
 ACTIONS = ("start", "stop", "hash_check", "tracker_update")
 
 # "skipped" means the task was already in that state: a no-op, not a failure.
@@ -55,7 +53,7 @@ REMOTE_PROBE_TIMEOUT = 4.0
 # A BitComet busy starting a batch of tasks can take tens of seconds per call.
 REMOTE_TIMEOUT = 30.0
 
-# --- login envelope byte layout ------------------------------------------
+# --- login envelope byte layout ---
 HEADER_LEN = 34
 MAC_LEN = 32
 ITERATIONS = 10_000
@@ -75,7 +73,6 @@ def _bracketed(host: str) -> str:
 
 
 def is_local_host(host: str) -> bool:
-    """True when `host` names THIS machine's loopback interface."""
     name = host.strip().strip("[]").lower()
     if name in _LOCAL_NAMES:
         return True
@@ -127,7 +124,6 @@ class Credentials:
 
 
 def read_credentials(path: Path = CONFIG_PATH) -> Credentials:
-    """Read the WebUI username, password and port from BitComet's own config."""
     try:
         root = ET.parse(path).getroot()
     except OSError as exc:
@@ -159,8 +155,7 @@ def read_credentials(path: Path = CONFIG_PATH) -> Credentials:
 
 
 # --- LOGIN ENVELOPE ---
-# Port of the WebUI bundle's CryptoJS AES_Encrypt; the "password" is the client_id.
-# Obfuscation only: the client_id travels in the clear beside the ciphertext.
+# Port of the WebUI bundle's CryptoJS AES_Encrypt; the client_id travels in the clear.
 def _derive(password: str, salt: bytes) -> bytes:
     return hashlib.pbkdf2_hmac("sha1", password.encode(), salt, ITERATIONS, dklen=32)
 
@@ -224,12 +219,10 @@ def login_payload(username: str, password: str) -> dict:
 # --- NORMALISATION ---
 # BitComet numbers files from 0; TorrentFile.index is 1-based. Translate only here.
 def to_engine_index(index: int) -> int:
-    """1-based TorrentFile.index -> 0-based BitComet file index."""
     return index - 1
 
 
 def to_toolkit_index(index: int) -> int:
-    """0-based BitComet file index -> 1-based TorrentFile.index."""
     return index + 1
 
 
@@ -245,7 +238,6 @@ def _task_ids(task_ids: list[str | int] | str | int) -> list[str]:
 
 
 def _with_string_ids(body: dict) -> dict:
-    """Coerce the ids an add returns, so callers never store an int."""
     fixed = dict(body)
     if "task_id" in fixed:
         fixed["task_id"] = _task_id(fixed["task_id"])
@@ -283,13 +275,11 @@ class BitCometClient:
         self.username = username
         self.password = password
         self.timeout = timeout
-        # Fixed at construction so save-folder and timeout rules always agree.
         self.is_local = is_local_host(urlsplit(self.base_url).hostname or "")
         self._device_token: str | None = None
         # One handshake at a time: ten threads on a fresh client would all log in.
         self._login_lock = threading.Lock()
         self._server_name: str | None = None
-        # .torrent size cap, read from BitComet on first use.
         self._torrent_max_size: int | None = None
         # Persisted: every login binds a device in BitComet's settings, one per new id.
         self._device_id = read_or_create_device_id(device_id_file)
@@ -326,7 +316,7 @@ class BitCometClient:
     def close(self) -> None:
         self._session.close()
 
-    # --- transport --------------------------------------------------------
+    # --- transport ---
     def _http(
         self,
         method: str,
@@ -437,7 +427,7 @@ class BitCometClient:
             response = self._http(method, path, payload, self._token(timeout), timeout)
         return self._decode(response, path)
 
-    # --- liveness ---------------------------------------------------------
+    # --- liveness ---
     def probe(self) -> str | None:
         """BitComet's server name if reachable and remote access is on; never raises."""
         return self.probe_folders()[0]
@@ -452,7 +442,7 @@ class BitCometClient:
             return None, []
         return self._server_name or "BitComet", _save_folders(body)
 
-    # --- reads ------------------------------------------------------------
+    # --- reads ---
     def new_task_config(self, timeout: float | None = None) -> dict:
         """The registered save folders and the .torrent size cap."""
         body = self._call("GET", "/api/config/new_task/get", timeout=timeout)
@@ -464,7 +454,6 @@ class BitCometClient:
         return body
 
     def torrent_max_size(self) -> int:
-        """BitComet's cap on an uploaded .torrent, asked of BitComet itself."""
         if self._torrent_max_size is None:
             self.new_task_config()
         return self._torrent_max_size or DEFAULT_TORRENT_MAX_SIZE
@@ -474,7 +463,6 @@ class BitCometClient:
         return _save_folders(self.new_task_config())
 
     def task_list(self) -> list[dict]:
-        """Every task BitComet knows about, in one round trip."""
         body = self._call("GET", "/api_v2/task_list/get")
         return [
             {**task, "task_id": _task_id(task.get("task_id", ""))}
@@ -489,7 +477,7 @@ class BitCometClient:
             for entry in body.get("files", [])
         ]
 
-    # --- writes -----------------------------------------------------------
+    # --- writes ---
     def add_torrent(
         self, data: bytes, save_folder: str | Path, *, start_later: bool = True
     ) -> dict:
@@ -563,7 +551,6 @@ class BitCometClient:
     def delete(
         self, task_ids: list[str | int] | str | int, *, delete_files: bool
     ) -> None:
-        """Remove tasks. delete_files=True also erases the downloaded data."""
         self._call(
             "POST",
             "/api_v2/tasks/delete",

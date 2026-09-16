@@ -15,7 +15,6 @@ from toolkit_engine.fsutil import natural_sort_key
 __all__ = ["SUBTITLE_EXTENSIONS", "VIDEO_EXTENSIONS"]
 
 
-# --- CORE REMUX LOGIC ---
 def build_ffmpeg_cmd(
     input_video, input_subtitle, output_video, track_configs, sub_lang
 ):
@@ -80,7 +79,6 @@ def run_remux_task(task, progress_state, lock, ff_registry=None):
                 ff_registry.pop(task_id, None)
 
 
-# --- FOLDER SCANNING & SUBTITLE MATCHING ---
 def list_videos(folder: str) -> tuple[list[str], str | None]:
     """List video files in `folder`, natural-sorted, as absolute path strings."""
     folder_path = Path(folder).expanduser()
@@ -121,7 +119,6 @@ def match_subtitles(
     return {}, "❌ Subtitle folder not found — use an absolute path."
 
 
-# --- BATCH EXECUTION ---
 def run_remux_batch(tasks: list[dict], max_workers: int, job) -> list[dict]:
     """Run the remux tasks in a thread pool, mirroring progress into `job`."""
     progress_state = {t["task_id"]: 0.0 for t in tasks}
@@ -166,7 +163,7 @@ def run_remux_batch(tasks: list[dict], max_workers: int, job) -> list[dict]:
             res["cancelled"] = True
             res["error"] = "Cancelled"
             Path(t["output_video"]).unlink(missing_ok=True)
-        if res is None or res.get("cancelled"):  # never started, or killed mid-file
+        if res is None or res.get("cancelled"):
             job.update_item(i, pct=0, state="pending")
         elif res["success"]:
             job.update_item(i, pct=100, state="done")

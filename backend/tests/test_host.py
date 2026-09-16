@@ -37,8 +37,7 @@ def test_free_port_advances_past_a_bound_port():
 
 
 def test_free_port_advances_past_an_overlapping_listener():
-    # `make host` (0.0.0.0) next to a running `make start` (127.0.0.1): SO_REUSEADDR
-    # lets the wildcard bind succeed, so only a connect finds the other server.
+    # SO_REUSEADDR lets 0.0.0.0 bind beside a 127.0.0.1 listener; a connect finds it.
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as taken:
         taken.bind(("127.0.0.1", 0))
         taken.listen()

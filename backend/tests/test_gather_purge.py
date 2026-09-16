@@ -31,7 +31,7 @@ def wait_for_job(client, job_id, timeout=5.0):
     raise AssertionError(f"job {job_id} did not finish within {timeout}s")
 
 
-# --- engine units -----------------------------------------------------------
+# --- engine units ---
 
 
 def test_normalize_pattern():
@@ -80,7 +80,7 @@ def test_purge_normalize_pattern_keeps_real_globs(token):
     assert purge.normalize_pattern(token) is not None
 
 
-# --- File Gatherer API ------------------------------------------------------
+# --- File Gatherer API ---
 
 
 def test_gather_moves_files_and_autonumbers_duplicates(tool_client, tmp_path):
@@ -242,7 +242,7 @@ def test_gather_rejects_relative_paths(tool_client, tmp_path):
     )
 
 
-# --- Cache Purge API --------------------------------------------------------
+# --- Cache Purge API ---
 
 
 def test_purge_scan_and_delete_end_to_end(tool_client, tmp_path):

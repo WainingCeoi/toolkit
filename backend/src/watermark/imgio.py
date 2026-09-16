@@ -37,7 +37,6 @@ def load_rgba(data: bytes) -> tuple[np.ndarray, np.ndarray | None]:
 
 
 def with_alpha(rgb: np.ndarray, alpha: np.ndarray | None) -> np.ndarray:
-    """``rgb`` wearing ``alpha`` again, or untouched when there was none."""
     if alpha is None:
         return rgb
     return np.dstack([rgb, alpha])

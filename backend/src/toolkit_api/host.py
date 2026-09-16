@@ -19,7 +19,6 @@ _BAR = "─" * 64
 
 
 def _run(cmd: list[str]) -> str | None:
-    """Run a short command and return its trimmed stdout, or None on failure."""
     try:
         proc = subprocess.run(
             cmd, capture_output=True, text=True, timeout=5, check=False
@@ -48,7 +47,6 @@ def mdns_name() -> str | None:
 
 
 def _is_private_lan(ip: str) -> bool:
-    """True for a real IPv4 LAN address (RFC1918), excluding loopback/link-local."""
     try:
         addr = ipaddress.ip_address(ip)
     except ValueError:
@@ -96,7 +94,6 @@ def lan_ip() -> str | None:
 
 def _already_serving(family: int, host: str, port: int) -> bool:
     """True when something already accepts here; SO_REUSEADDR hides it from bind()."""
-    # 0.0.0.0 and 127.0.0.1 overlap without colliding on bind, so knock instead.
     with socket.socket(family, socket.SOCK_STREAM) as sock:
         sock.settimeout(0.25)
         try:

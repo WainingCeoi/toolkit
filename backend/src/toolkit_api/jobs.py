@@ -10,7 +10,6 @@ from collections import OrderedDict
 from collections.abc import Callable
 from datetime import UTC, datetime
 
-# Terminal job states — anything else means "still running".
 FINISHED_STATES = frozenset({"done", "failed", "cancelled"})
 
 
@@ -32,7 +31,6 @@ class Job:
         self._lock = threading.Lock()
         self._cancel = threading.Event()
 
-    # --- worker-side API -------------------------------------------------
     @property
     def cancelled(self) -> bool:
         return self._cancel.is_set()
@@ -63,7 +61,6 @@ class Job:
         with self._lock:
             self.result = result
 
-    # --- registry-side API ------------------------------------------------
     def snapshot(self) -> dict:
         with self._lock:
             return {
@@ -136,7 +133,6 @@ class JobRegistry:
         except Exception as exc:  # noqa: BLE001 — surfaced to the client
             job._fail(str(exc))
         except BaseException as exc:  # noqa: BLE001 — thread is dying
-            # The thread is dying; the job must not stay 'running' forever.
             job._fail(f"The worker stopped unexpectedly: {exc!r}")
             raise
         else:
@@ -148,8 +144,7 @@ class JobRegistry:
                 item = self._queue.get()
                 if item is None:
                     return
-                # Run in a nested frame and drop the tuple, so a finished job's
-                # closure (its upload bytes) is freed before blocking on get().
+                # Nested frame + del so upload bytes free before blocking on get().
                 self._run_one(*item)
                 del item
         finally:
@@ -188,7 +183,7 @@ class JobRegistry:
         return True
 
     def _evict_finished(self) -> None:
-        # Called under self._lock. Drop oldest finished jobs beyond the cap.
+        # Caller holds the lock.
         while len(self._jobs) > self._max_jobs:
             for job_id, job in self._jobs.items():
                 if job.state in FINISHED_STATES:

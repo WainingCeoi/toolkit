@@ -256,7 +256,6 @@ def resolve(
 ) -> dict:
     """Stage a magnet or a .torrent and report its file list when known."""
     # Keep this a sync def: blocking BitComet calls in an async def stall the loop.
-    # BitComet fixes the save folder at task creation, so save_dir is taken here.
     if file is not None:
         data = file.file.read()
         try:

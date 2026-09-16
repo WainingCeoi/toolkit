@@ -30,9 +30,7 @@ def _import_fitz():
 MAX_NAME = 200
 
 
-# --- CORE LOGIC ---
 def sanitize_filename(name):
-    """Strip path-unsafe characters from a page title used as a file name."""
     cleaned = re.sub(r'[\\/:*?"<>|]+', "_", name).strip()
     return cleaned[:MAX_NAME] or "web"
 
@@ -115,7 +113,6 @@ def add_bookmark(soup, pdf_path):
         return str(e)
 
 
-# --- BROWSER SESSION ---
 class BrowserSession:
     """One live Chrome window the user scrolls until every image has loaded."""
 

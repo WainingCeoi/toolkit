@@ -90,8 +90,7 @@ class WatermarkBatches:
         batch = self.get(batch_id)
         if batch is None:
             return []
-        # The batch's own lock, not self._lock: collection takes seconds, and the
-        # page opens one concurrent /mask request per image.
+        # The batch's own lock: collection takes seconds, and /mask runs per image.
         with batch["marks_lock"]:
             if batch.get("marks") is None:
                 batch["marks"] = collect([entry["path"] for entry in batch["images"]])

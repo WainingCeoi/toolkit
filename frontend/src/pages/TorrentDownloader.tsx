@@ -92,7 +92,6 @@ const FileList = memo(function FileList({
 export default function TorrentDownloader() {
   const [status, setStatus] = useState<TorrentStatus | null>(null)
 
-  // --- which BitComet (step 0) ---
   const [devices, setDevices] = useState<TorrentDeviceList | null>(null)
   const [picking, setPicking] = useState(false)
   const [form, setForm] = useState<DeviceForm | null>(null)
@@ -101,18 +100,15 @@ export default function TorrentDownloader() {
   const [deviceBusy, setDeviceBusy] = useState(false)
   const [deviceError, setDeviceError] = useState<string | null>(null)
 
-  // --- inputs (step 1) ---
   const [magnets, setMagnets] = useState('')
   const [pendingFiles, setPendingFiles] = useState<File[]>([])
   const [staging, setStaging] = useState(false)
   const [heldCount, setHeldCount] = useState(0)
 
-  // --- shared filter + destination (step 2) ---
   const [categories, setCategories] = useState<Set<string>>(new Set(['video']))
   const [minMb, setMinMb] = useState(100)
   const [saveDir, setSaveDir] = useState(DEFAULT_SAVE_DIR)
 
-  // --- resolved torrents under review (step 3) ---
   const [resolved, setResolved] = useState<TorrentResolve[]>([])
   const [resolvingHashes, setResolvingHashes] = useState<Set<string>>(new Set())
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
@@ -125,7 +121,6 @@ export default function TorrentDownloader() {
   // The pasted magnet per infohash, handed back on failure; a ref since nothing renders it.
   const sources = useRef<Map<string, string>>(new Map())
 
-  // --- handed over ---
   const [sentCount, setSentCount] = useState(0)
   const [batching, setBatching] = useState(false)
   const [sending, setSending] = useState<Set<string>>(new Set())
@@ -540,7 +535,6 @@ export default function TorrentDownloader() {
         remove it in its own window.
       </p>
 
-      {/* ---------- which BitComet ---------- */}
       <div className="tor-device">
         <span className={`lamp${status?.running ? '' : ' off'}`}>
           <i />

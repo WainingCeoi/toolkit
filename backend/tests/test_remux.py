@@ -81,7 +81,7 @@ def test_build_ffmpeg_cmd_omits_subtitle_metadata_when_absent():
     assert "disposition" not in joined
 
 
-# --- /api/remux/scan -------------------------------------------------------
+# --- /api/remux/scan ---
 
 
 def test_scan_lists_videos_natural_sorted(tool_client, tmp_path):
@@ -102,7 +102,7 @@ def test_scan_relative_folder_is_rejected(tool_client):
     )
 
 
-# --- /api/remux/subtitles --------------------------------------------------
+# --- /api/remux/subtitles ---
 
 
 def test_subtitles_match_by_stem_with_none_case(tool_client, tmp_path):
@@ -138,7 +138,7 @@ def test_subtitles_relative_folder_is_rejected(tool_client):
     )
 
 
-# --- /api/remux/start validations (never reach ffmpeg) ----------------------
+# --- /api/remux/start validations (never reach ffmpeg) ---
 
 
 def test_start_requires_selection(tool_client):
@@ -240,7 +240,7 @@ def test_start_accepts_a_video_without_an_external_subtitle(
     assert seen == {"a.mkv": str(sub), "b.mkv": None}
 
 
-# --- /api/remux/start happy path (fake per-task worker, no ffmpeg) ----------
+# --- /api/remux/start happy path (fake per-task worker, no ffmpeg) ---
 
 
 def test_start_runs_batch_and_reports_results(tool_client, tmp_path, monkeypatch):

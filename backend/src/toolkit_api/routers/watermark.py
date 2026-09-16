@@ -157,7 +157,6 @@ def _collect_marks(paths: list[Path]) -> list:
     """Marks the whole batch shares; independent of the sensitivity slider."""
 
     def each():
-        # A generator: only one decoded image is held at a time.
         for path in paths:
             try:
                 yield imgio.load_rgb(path.read_bytes())
@@ -269,8 +268,7 @@ def run(req: WatermarkRunIn, state: StateDep, watermarks: WatermarksDep):
         protected: list[str] = []
         cleaned: list[tuple[str, Path]] = []
         zip_id: str | None = None
-        # Spooled to disk: outputs held in RAM would stack on LaMa's inpainting peak.
-        # Inside the batch dir, which the store sweeps even after a kill mid-run.
+        # Spooled into the batch dir: RAM would stack on LaMa's peak; a kill sweeps it.
         spool = Path(tempfile.mkdtemp(prefix="spool_", dir=batch["dir"]))
 
         def bundle(dest: Path) -> None:

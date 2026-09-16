@@ -350,7 +350,6 @@ def test_a_crash_midway_still_hands_back_what_finished(client, app_state, monkey
 
     assert snap["state"] == "failed"
     assert "out of memory" in snap["error"]
-    # ...and the first image is still there, inside the already-published zip.
     assert snap["result"]["done"] == ["first.png"]
     download = client.get(f"/api/artifacts/{snap['result']['artifact_id']}")
     assert download.status_code == 200

@@ -25,7 +25,6 @@ def fake():
 
 @pytest.fixture
 def local_is_the_fake(fake, tmp_path, monkeypatch):
-    """Make the local BitComet the fake, and the data dir tmp_path."""
     from toolkit_api import state as state_module
     from toolkit_engine import bitcomet
 

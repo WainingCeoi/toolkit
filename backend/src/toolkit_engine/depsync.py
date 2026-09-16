@@ -18,7 +18,6 @@ from packaging.requirements import InvalidRequirement, Requirement
 from packaging.utils import canonicalize_name
 from packaging.version import InvalidVersion, Version
 
-# Pruned during the walk, along with any dot-directory.
 _SKIP_DIRS = {
     "node_modules",
     "venv",
@@ -31,18 +30,18 @@ _SKIP_DIRS = {
     "coverage",
     "htmlcov",
 }
-_MAX_MANIFESTS = 40  # ceiling on manifests scanned
+_MAX_MANIFESTS = 40
 
 
 @dataclass(frozen=True)
 class Bump:
     """One dependency to raise: ``name old → new`` in ``table``."""
 
-    name: str  # display name, e.g. "mineru" or "eslint"
+    name: str
     table: str  # e.g. "project.dependencies" or "devDependencies"
-    old: str  # the old spec/range, e.g. ">=3.4.0" or "^9.15.0"
-    new: str  # the new spec/range, e.g. ">=6.14.2" or "^10.7.0"
-    major: bool  # True when the major version changed
+    old: str
+    new: str
+    major: bool
     raw: str  # the on-disk string verbatim (server-side only)
     raw_new: str  # its replacement (server-side only)
 
@@ -62,7 +61,7 @@ def bump_dict(bump: Bump) -> dict:
 class Manifest:
     """A dependency manifest found under the scanned root."""
 
-    path: Path  # absolute path to the pyproject.toml / package.json
+    path: Path
     kind: str  # "uv" | "npm"
     rel: str  # display path relative to the root, e.g. "backend/pyproject.toml"
 
@@ -352,7 +351,6 @@ _SCANNED_SECTIONS = {
 
 
 def _section_header(stripped: str) -> str | None:
-    """The table name if the line is a ``[section]`` header, else None."""
     if stripped.startswith("[") and stripped.endswith("]") and "=" not in stripped:
         return stripped.strip("[]").strip()
     return None
@@ -371,7 +369,7 @@ def apply_uv_bumps(pyproject_path: Path, bumps: list[Bump]) -> None:
             section = header
             continue
         if section not in _SCANNED_SECTIONS or stripped.startswith("#"):
-            continue  # never touch comments or unscanned tables
+            continue
         for raw, raw_new in replacements.items():
             for quote in ('"', "'"):
                 token = f"{quote}{raw}{quote}"

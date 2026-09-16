@@ -40,7 +40,7 @@ class PhotoFilterError(ValueError):
     """A run that must not start: SRC is not a library, or DEST is unsafe."""
 
 
-# ---------------------------------------------------------------- rules
+# --- rules ---
 
 
 @dataclass(frozen=True)
@@ -87,7 +87,7 @@ def first_match(rules: list[Rule], relpath: str, is_dir: bool = False) -> str | 
     return None
 
 
-# ---------------------------------------------------------------- plan
+# --- plan ---
 
 
 class FileStat(NamedTuple):
@@ -143,7 +143,7 @@ def plan(src: Path | str, rules: list[Rule]) -> Plan:
     return p
 
 
-# ---------------------------------------------------------------- execute
+# --- execute ---
 
 
 def _uri(path: Path | str, query: str) -> str:
@@ -309,8 +309,7 @@ def run(
                 ds.st_size == st.size
                 and abs(ds.st_mtime_ns - st.mtime_ns) <= _TIME_WINDOW_NS
             ):
-                # Stat SRC: an xattr-only edit (a favourite) bumps ctime, not mtime.
-                # The scanner's "ctime" is the birth time, so it cannot be used here.
+                # Stat SRC: an xattr edit bumps ctime not mtime; scan ctime is birth.
                 ss = os.stat(src / rel)
                 if (
                     ss.st_mtime_ns == ds.st_mtime_ns
@@ -370,7 +369,7 @@ def run(
     return r
 
 
-# ---------------------------------------------------------------- report
+# --- report ---
 
 
 def summary(result: Result, rules: list[Rule]) -> dict:

@@ -15,7 +15,7 @@ SUPPORTED_PROTOCOLS = ("vmess", "vless", "trojan")
 DEFAULT_TEST_URL = "http://cp.cloudflare.com/generate_204"
 
 
-# ---------------------------------------------------------------- base64 / text
+# --- base64 / text ---
 def _b64encode_utf8(text: str) -> str:
     return base64.b64encode(text.encode("utf-8")).decode("ascii")
 
@@ -34,7 +34,7 @@ def split_csv_like(text: str) -> list[str]:
     return [p.strip() for p in re.split(r"[\n,;]+", normalize_text(text)) if p.strip()]
 
 
-# ------------------------------------------------------------------- primitives
+# --- primitives ---
 def _to_int(value, fallback: int = 0) -> int:
     try:
         return int(str(value).strip())
@@ -107,7 +107,7 @@ def _has_tls_domain(node: dict) -> bool:
     return False
 
 
-# ----------------------------------------------------------------- target / urls
+# --- target / urls ---
 def detect_target(user_agent: str = "", explicit_target: str = "") -> str:
     """Resolve the output format from an explicit target or the client User-Agent."""
     target = (explicit_target or "").strip().lower()
@@ -121,7 +121,7 @@ def detect_target(user_agent: str = "", explicit_target: str = "") -> str:
     return "raw"
 
 
-# ---------------------------------------------------------------------- parsing
+# --- parsing ---
 def _maybe_expand_raw_subscription(input_text: str) -> str:
     text = normalize_text(input_text)
     if not text or "://" in text:
@@ -346,7 +346,7 @@ def parse_preferred_endpoints(input_text: str) -> dict:
     return {"endpoints": endpoints, "warnings": warnings}
 
 
-# --------------------------------------------------------------------- expansion
+# --- expansion ---
 def _build_node_name(base_name: str, suffix: str) -> str:
     clean_base = str(base_name or "").strip() or "node"
     clean_suffix = str(suffix or "").strip()
@@ -422,7 +422,7 @@ def summarize_nodes(nodes: list[dict], limit: int = 20) -> list[dict]:
     ]
 
 
-# ------------------------------------------------------------------- node URIs
+# --- node URIs ---
 def _render_vmess_uri(node: dict) -> str:
     payload = {
         "v": "2",
@@ -515,7 +515,7 @@ def render_node_uri(node: dict) -> str:
     raise ValueError(f"Unknown node type: {kind}")
 
 
-# ------------------------------------------------------------------- renderers
+# --- renderers ---
 def render_raw_subscription(nodes: list[dict]) -> str:
     return _b64encode_utf8("\n".join(render_node_uri(node) for node in nodes))
 

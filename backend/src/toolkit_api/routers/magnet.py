@@ -78,7 +78,6 @@ def _scrape(
         urls, on_result=on_result, should_stop=should_stop
     )
     job.set_message(f"Fetched {total}/{total} link(s).")
-    # Different URLs can serve the same magnet; keep one per href.
     unique_by_href = {r["result"]: r for r in successful}
     duplicate_count = len(successful) - len(unique_by_href)
     successful = list(unique_by_href.values())
@@ -150,8 +149,7 @@ def start_auto(req: AutoScrapeIn, state: StateDep) -> JobStartedOut:
         if job.cancelled:
             return result
         if urls:
-            # A failed fetch is as unfetched as a cancelled one: hold the cutoff
-            # behind the oldest of them (urls[0] is the newest) so a rerun sees it.
+            # Hold the cutoff behind the oldest failed fetch; urls[0] is the newest.
             failed_urls = {r["url"] for r in result["failed"]}
             oldest_failed = max(
                 (i for i, url in enumerate(urls) if url in failed_urls), default=-1

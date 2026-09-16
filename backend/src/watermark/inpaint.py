@@ -123,7 +123,6 @@ class LamaInpainter:
 
 
 def get_inpainter(name: str):
-    """The inpaint callable for ``name``."""
     if name == "cv2":
         return inpaint_cv2
     if name == "lama":

@@ -63,8 +63,7 @@ def collect_marks(
     sensitivity: int = DEFAULT_SENSITIVITY,
 ) -> list[Mark | StackedMark]:
     """Marks reusable across the batch; ``load`` is called more than once."""
-    # The pattern pass counts frames so the stacked pass, a further full read,
-    # only runs when it could answer; tests pin that a lone image is read once.
+    # Counts frames so the stacked pass, a second full read, runs only when it can.
     walked: list[int] = []
 
     def counting_load():
@@ -133,7 +132,6 @@ def _propose_with_evidence(
 
 
 def _worth_removing(rgb: np.ndarray, mask: np.ndarray) -> bool:
-    """Whether removing ``mask`` would cost less than the watermark is worth."""
     # Imported at call time: pipeline imports this module.
     from .pipeline import DEFAULT_DILATE_PX, would_destroy_content
 

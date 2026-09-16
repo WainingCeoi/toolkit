@@ -95,7 +95,7 @@ class FakeBitComet:
         """Invalidate every issued device_token, as a BitComet restart does."""
         self.live_tokens.clear()
 
-    # --- state ------------------------------------------------------------
+    # --- state ---
     def add_task(
         self, name: str, files: list[tuple[str, int]], infohash: str = ""
     ) -> str:
@@ -170,7 +170,7 @@ class FakeBitComet:
         if folder not in {f.rstrip("/") for f in self.save_folders}:
             raise _RejectedError("INVALID_SAVE_FOLDER", "save_folder invalid")
 
-    # --- dispatch ---------------------------------------------------------
+    # --- dispatch ---
     def _dispatch(
         self, method: str, path: str, payload: dict, token: str | None
     ) -> dict:
@@ -352,7 +352,7 @@ class FakeBitComet:
             self.deleted.append((task_id, verb == "delete_all"))
         return {"error_code": "OK"}
 
-    # --- wire -------------------------------------------------------------
+    # --- wire ---
     def _handler(self):
         fake = self
 

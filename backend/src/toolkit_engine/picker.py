@@ -8,7 +8,6 @@ DIALOG_TIMEOUT = 600
 
 
 def _applescript_str(value):
-    """Quote a Python string as an AppleScript string literal."""
     escaped = value.replace("\\", "\\\\").replace('"', '\\"')
     return f'"{escaped}"'
 

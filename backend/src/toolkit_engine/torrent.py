@@ -26,7 +26,6 @@ class TorrentInfo:
     total_bytes: int
 
 
-# --- BENCODE ---
 def bencode(value) -> bytes:
     """Encode dict/list/int/bytes to bencode. Dict keys are sorted, per spec."""
     if isinstance(value, int):
@@ -71,7 +70,6 @@ def _decode(data: bytes, i: int) -> tuple[object, int]:
 
 
 def bdecode(data: bytes):
-    """Decode a complete bencoded document."""
     value, _ = _decode(data, 0)
     return value
 
@@ -92,14 +90,12 @@ def _decode_root(data: bytes) -> tuple[dict, dict[bytes, tuple[int, int]]]:
     return out, spans
 
 
-# --- .TORRENT ---
 def parse_torrent(data: bytes) -> TorrentInfo:
-    """Read a .torrent's file list and infohash. Offline, no network."""
     try:
         meta, spans = _decode_root(data)
     except ValueError:
         raise
-    except (IndexError, KeyError) as exc:  # truncated / malformed
+    except (IndexError, KeyError) as exc:
         raise ValueError("not a bencoded dictionary") from exc
 
     if b"info" not in meta:
@@ -137,7 +133,6 @@ def parse_torrent(data: bytes) -> TorrentInfo:
     )
 
 
-# --- MAGNET ---
 def parse_magnet(uri: str) -> tuple[str, str | None]:
     """Return (infohash, display_name) from a magnet URI."""
     if not uri.startswith("magnet:?"):
@@ -160,7 +155,6 @@ def parse_magnet(uri: str) -> tuple[str, str | None]:
     raise ValueError("magnet link has no btih hash")
 
 
-# --- SELECTION ---
 def select_files(
     files: list[TorrentFile], categories: set[str], min_bytes: int
 ) -> list[int]:

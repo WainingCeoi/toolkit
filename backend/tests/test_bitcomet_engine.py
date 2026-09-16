@@ -31,7 +31,6 @@ from toolkit_engine.torrent import bencode
 
 
 def make_torrent(files, name="Example.Release"):
-    """A real multi-file .torrent, as bytes."""
     return bencode(
         {
             b"announce": b"udp://tracker.example:80",
@@ -150,7 +149,6 @@ def test_read_credentials_reports_a_corrupt_config(tmp_path):
 # --- TRANSPORT ---
 @pytest.fixture
 def save_folder(tmp_path):
-    """A registered save folder that exists on disk."""
     folder = tmp_path / "Downloads"
     folder.mkdir()
     return folder

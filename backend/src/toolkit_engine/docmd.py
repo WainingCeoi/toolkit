@@ -110,7 +110,6 @@ def find_markdown(out_dir):
 
 
 def zip_tree(out_dir, archive, prefix=""):
-    """Add every file under out_dir to the zip, under ``prefix``."""
     out_dir = Path(out_dir)
     for path in sorted(out_dir.rglob("*")):
         if path.is_file():

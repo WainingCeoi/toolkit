@@ -29,7 +29,6 @@ METADATA_TIMEOUT = 120.0
 # task_guid is "bt_<infohash>", the only place BitComet's API exposes the infohash.
 GUID_PREFIX = "bt_"
 
-# The three answers a resolve can give.
 AWAITING_METADATA = "awaiting_metadata"
 AWAITING_SELECTION = "awaiting_selection"
 FAILED = "error"
@@ -120,7 +119,6 @@ class TorrentManager:
     def _payload(
         self, infohash: str, name: str | None, files: list[TorrentFile], state: str
     ) -> dict:
-        """The shape every resolve/poll answer takes."""
         return {
             "infohash": infohash,
             "ready": bool(files),
@@ -130,7 +128,6 @@ class TorrentManager:
         }
 
     def _staged_payload(self, infohash: str, task: dict, name: str | None) -> dict:
-        """The answer for a torrent already in BitComet, ready or not."""
         files = self._files_if_ready(task["task_id"])
         display = name or task.get("task_name") or None
         return self._payload(
@@ -180,7 +177,6 @@ class TorrentManager:
         return self._payload(infohash, display, [], AWAITING_METADATA)
 
     def poll_resolve(self, infohash: str) -> dict:
-        """Has this magnet's metadata landed yet?"""
         watch = self._watching.get(infohash)
         task = self._task_for(infohash)
 
@@ -201,8 +197,7 @@ class TorrentManager:
             return self._still_waiting(infohash, watch)
 
         if watch is not None and watch.ours:
-            # Deselect everything the moment metadata lands: the task is running and
-            # would otherwise download the whole torrent while the user chooses.
+            # Deselect at once: the task is running and would fetch the whole torrent.
             self.client.set_priority(
                 task["task_id"], [f.index for f in files], DESELECTED
             )
@@ -212,7 +207,6 @@ class TorrentManager:
         return self._payload(infohash, name, files, AWAITING_SELECTION)
 
     def _still_waiting(self, infohash: str, watch: _Watch) -> dict:
-        """Keep waiting, unless the deadline has passed -- then give up."""
         if time.monotonic() - watch.started <= METADATA_TIMEOUT:
             return self._payload(infohash, watch.name, [], AWAITING_METADATA)
 
@@ -224,8 +218,7 @@ class TorrentManager:
 
     # --- HANDOVER ---
     def send(self, infohash: str, selected: list[int]) -> dict:
-        """Apply the tick list to BitComet and start the task. Both directions are
-        sent: a magnet's files are all disabled while it waits."""
+        """Apply the tick list to BitComet and start the task; both ways are sent."""
         task = self._task_for(infohash)
         if task is None:
             raise KeyError(infohash)
