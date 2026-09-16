@@ -379,6 +379,29 @@ def test_gather_reports_per_file_move_failures(tool_client, tmp_path, monkeypatc
     ]
 
 
+def test_purge_delete_cancel_reports_every_file_it_removed(tmp_path, monkeypatch):
+    paths = []
+    for i in range(40):
+        p = tmp_path / f"f{i:02d}.log"
+        p.write_text("x")
+        paths.append(str(p))
+
+    real_unlink = Path.unlink
+
+    def slow_unlink(self, *args, **kwargs):
+        time.sleep(0.02)
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", slow_unlink)
+
+    deleted, failed = purge.delete_files(paths, lambda done, total: done >= 4)
+
+    assert failed == []
+    gone = [p for p in paths if not Path(p).exists()]
+    assert len(gone) < len(paths)  # cancelling actually stopped the run
+    assert sorted(deleted) == sorted(gone)
+
+
 def test_purge_scan_rejects_catch_all_only_patterns(tool_client, tmp_path):
     resp = tool_client.post(
         "/api/purge/scan",

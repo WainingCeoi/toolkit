@@ -13,6 +13,9 @@ from .fsutil import natural_sort_key
 
 DEFAULT_CACHE_TYPES = ["*.dwl", "*.dwl2", "*.bak", "*.log", "*.db", "*.tmp", "*.err"]
 
+# Deletes are submitted a chunk at a time; a cancel can only land between chunks.
+_DELETE_CHUNK = 16
+
 # Every character that starts a glob construct rather than matching itself.
 _GLOB_CHARS = frozenset("*?[]{}")
 # Whole bracket expression: it matches one arbitrary char, so `*[!/]*` is a catch-all.
@@ -72,12 +75,19 @@ def delete_files(
     """Delete files in a thread pool; deletion is permanent."""
     deleted, failed = [], []
     total = len(paths)
+    done = 0
+    stop = False
     with ThreadPoolExecutor() as executor:
-        for idx, (path, error) in enumerate(executor.map(delete_file, paths), start=1):
-            if error is None:
-                deleted.append(path)
-            else:
-                failed.append((path, error))
-            if on_progress is not None and on_progress(idx, total):
+        for start in range(0, total, _DELETE_CHUNK):
+            chunk = paths[start : start + _DELETE_CHUNK]
+            for path, error in executor.map(delete_file, chunk):
+                done += 1
+                if error is None:
+                    deleted.append(path)
+                else:
+                    failed.append((path, error))
+                if on_progress is not None and on_progress(done, total):
+                    stop = True
+            if stop:
                 break
     return deleted, failed
