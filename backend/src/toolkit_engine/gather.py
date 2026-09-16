@@ -58,15 +58,22 @@ def move_files(
     """Move files into `tgt`, auto-numbering duplicate names (stem_1, stem_2…)."""
     total = len(files)
     moved, failed = [], []
+    # Resume each basename's counter; restarting at 1 costs k stats for the k-th copy.
+    next_counter: dict[str, int] = {}
     for idx, file_path in enumerate(files, start=1):
         file = Path(file_path)
         try:
-            target_path = tgt / file.name
-            counter = 1
+            counter = next_counter.get(file.name, 0)
+            target_path = (
+                tgt / file.name
+                if counter == 0
+                else tgt / f"{file.stem}_{counter}{file.suffix}"
+            )
             while target_path.exists():
-                target_path = tgt / f"{file.stem}_{counter}{file.suffix}"
                 counter += 1
+                target_path = tgt / f"{file.stem}_{counter}{file.suffix}"
             shutil.move(str(file), str(target_path))
+            next_counter[file.name] = counter
             moved.append(file.name)
         except Exception as e:
             failed.append((file.name, str(e)))

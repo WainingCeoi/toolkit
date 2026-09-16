@@ -42,6 +42,31 @@ def test_normalize_pattern():
     assert gather.normalize_pattern("   ") is None
 
 
+def test_move_files_numbers_duplicates_around_an_occupied_name(tmp_path):
+    tgt = tmp_path / "tgt"
+    tgt.mkdir()
+    (tgt / "cover_1.jpg").write_text("already there")
+    files = []
+    for i in range(3):
+        folder = tmp_path / f"src{i}"
+        folder.mkdir()
+        cover = folder / "cover.jpg"
+        cover.write_text(str(i))
+        files.append(str(cover))
+
+    moved, failed = gather.move_files(files, tgt)
+
+    assert failed == []
+    assert moved == ["cover.jpg"] * 3
+    assert sorted(p.name for p in tgt.iterdir()) == [
+        "cover.jpg",
+        "cover_1.jpg",
+        "cover_2.jpg",
+        "cover_3.jpg",
+    ]
+    assert (tgt / "cover_1.jpg").read_text() == "already there"
+
+
 @pytest.mark.parametrize(
     "token",
     ["*", "*.*", "**", "*.", ".*", "?", "?*", "*?", "*.???", "**?"],
