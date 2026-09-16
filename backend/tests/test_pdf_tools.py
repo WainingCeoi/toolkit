@@ -187,6 +187,11 @@ def test_sanitize_filename():
     assert sanitize_filename("   ") == "web"
 
 
+def test_sanitize_filename_caps_long_titles():
+    # An SEO-stuffed <title> otherwise fails the capture with "File name too long".
+    assert len(sanitize_filename("书名" * 300)) == 200
+
+
 def test_scrape_images_from_source_data_uris():
     html = (
         "<html><head><title>My Comic: Vol 1</title></head><body>"

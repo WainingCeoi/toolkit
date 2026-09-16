@@ -26,11 +26,15 @@ def _import_fitz():
     return fitz
 
 
+# A path component is capped at 255 characters; the artifact store prefixes 13.
+MAX_NAME = 200
+
+
 # --- CORE LOGIC ---
 def sanitize_filename(name):
     """Strip path-unsafe characters from a page title used as a file name."""
     cleaned = re.sub(r'[\\/:*?"<>|]+', "_", name).strip()
-    return cleaned or "web"
+    return cleaned[:MAX_NAME] or "web"
 
 
 def scrape_images_from_source(page_source, page_url):
