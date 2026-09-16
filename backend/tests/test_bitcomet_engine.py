@@ -570,6 +570,35 @@ def test_a_probe_racing_a_slow_login_keeps_its_own_budget(client):
     assert answer is None  # it gave up on the lock, not on a dead BitComet
 
 
+def test_a_401_retry_racing_a_slow_login_keeps_its_own_budget(fake, client):
+    """Dropping a stale token takes the handshake lock too, so it needs that bound."""
+    client.task_list()  # cache the token the probe below will present
+    fake.revoke_tokens()  # BitComet restarted; that token now 401s
+    holding, release = threading.Event(), threading.Event()
+
+    def hold_the_handshake():
+        client._login_lock.acquire()
+        holding.set()
+        release.wait(5.0)
+        client._login_lock.release()
+
+    thread = threading.Thread(target=hold_the_handshake)
+    thread.start()
+    try:
+        assert holding.wait(5.0)
+        started = time.monotonic()
+        answer = client.probe()
+        elapsed = time.monotonic() - started
+    finally:
+        release.set()
+        thread.join(10.0)
+
+    assert elapsed < PROBE_TIMEOUT + 1.0, (
+        f"the 401 retry spent {elapsed:.1f}s on another thread's login"
+    )
+    assert answer is None
+
+
 def test_a_probe_cannot_shorten_a_call_running_beside_it(client):
     """One client serves every request thread, so no call may set the timeout."""
     client.task_list()  # log in first, so each call below is a single request

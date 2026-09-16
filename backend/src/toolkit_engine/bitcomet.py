@@ -429,10 +429,16 @@ class BitCometClient:
         token = self._token(timeout)
         response = self._http(method, path, payload, token, timeout)
         if response.status_code == 401:
-            with self._login_lock:
-                # Only the thread whose own token was rejected drops it.
-                if self._device_token == token:
-                    self._device_token = None
+            # Not dropping it is safe: whoever holds the lock is already replacing it.
+            if self._login_lock.acquire(
+                timeout=self.timeout if timeout is None else timeout
+            ):
+                try:
+                    # Only the thread whose own token was rejected drops it.
+                    if self._device_token == token:
+                        self._device_token = None
+                finally:
+                    self._login_lock.release()
             response = self._http(method, path, payload, self._token(timeout), timeout)
         return self._decode(response, path)
 
