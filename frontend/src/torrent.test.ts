@@ -1,4 +1,6 @@
-import { describe, it, expect } from 'vitest'
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest'
+import { act, fireEvent, render, screen } from '@testing-library/react'
+import { createElement } from 'react'
 import {
   DEFAULT_SAVE_DIR,
   SIZED_CATEGORIES,
@@ -16,7 +18,21 @@ import {
   windowedRun,
 } from './torrent'
 import { ApiError } from './api'
+import TorrentDownloader from './pages/TorrentDownloader'
 import type { TorrentFileRow, TorrentResolve } from './types/api'
+
+const apiMock = vi.hoisted(() => ({
+  torrentStatus: vi.fn(),
+  torrentDevices: vi.fn(),
+  torrentResolveMagnet: vi.fn(),
+  torrentPollResolve: vi.fn(),
+  torrentDiscard: vi.fn(),
+}))
+
+vi.mock('./api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./api')>()),
+  api: apiMock,
+}))
 
 const FILES: TorrentFileRow[] = [
   { index: 1, path: 'Movie.mkv', size: 2_000_000_000, category: 'video' },
@@ -339,5 +355,59 @@ describe('windowedRun', () => {
 
   it('resolves immediately for an empty list', async () => {
     await windowedRun([], () => Promise.resolve(), 10)
+  })
+})
+
+describe('TorrentDownloader: discarding a magnet that is still fetching', () => {
+  const INFOHASH = 'aaaabbbbccccddddeeeeffff0000111122223333'
+
+  // The page's own async work runs on timers; yield a real macrotask to drain it.
+  const flush = () => act(async () => void (await vi.advanceTimersByTimeAsync(0)))
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    apiMock.torrentStatus.mockResolvedValue({
+      running: true,
+      server: 'BitComet',
+      detail: null,
+      url: 'http://127.0.0.1:19377',
+    })
+    apiMock.torrentDevices.mockResolvedValue({ active: 'local', devices: [] })
+    apiMock.torrentResolveMagnet.mockResolvedValue({
+      infohash: INFOHASH,
+      ready: false,
+      name: null,
+      files: [],
+      state: 'awaiting_metadata',
+    })
+    // Discard deletes the BitComet task, so a poll crossing it gets a 404.
+    apiMock.torrentPollResolve.mockRejectedValue(new ApiError('Unknown torrent.', 404))
+    apiMock.torrentDiscard.mockResolvedValue({ infohash: INFOHASH, state: 'discarded' })
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.clearAllMocks()
+  })
+
+  it('stops counting it as fetching and never files it as a failure', async () => {
+    render(createElement(TorrentDownloader))
+    await flush()
+
+    fireEvent.change(screen.getByLabelText('Magnet links'), {
+      target: { value: `magnet:?xt=urn:btih:${INFOHASH}` },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Resolve' }))
+    await flush()
+    expect(screen.queryAllByText(/fetching metadata for/)).toHaveLength(1)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Discard' }))
+    await flush()
+    expect(apiMock.torrentDiscard).toHaveBeenCalledWith(INFOHASH)
+    expect(screen.queryAllByText(/fetching metadata for/)).toHaveLength(0)
+
+    // Let the poll that was already sleeping answer.
+    await act(async () => void (await vi.advanceTimersByTimeAsync(5000)))
+    expect(screen.queryAllByText(/Failed/)).toHaveLength(0)
   })
 })

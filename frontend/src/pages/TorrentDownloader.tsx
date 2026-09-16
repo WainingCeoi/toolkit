@@ -273,13 +273,19 @@ export default function TorrentDownloader() {
     return selectionFor(t, cats, floor * MB, active)
   }
 
+  // Discard deletes the task in BitComet, so a poll crossing it 404s; that is not a failure.
+  const discarded = useRef<Set<string>>(new Set())
+
   async function pollUntilReady(infohash: string) {
+    discarded.current.delete(infohash)
     for (;;) {
       await sleep(1500)
+      if (discarded.current.delete(infohash)) return
       let next: TorrentResolve
       try {
         next = await api.torrentPollResolve(infohash)
       } catch (e) {
+        if (discarded.current.delete(infohash)) return
         clearResolving(infohash)
         pushFailure(infohash.slice(0, 12), magnetFor(infohash))
         return
@@ -436,6 +442,8 @@ export default function TorrentDownloader() {
 
   // A staged magnet already runs in BitComet; closing the card alone would leave it downloading.
   async function discardOne(t: TorrentResolve) {
+    discarded.current.add(t.infohash)
+    clearResolving(t.infohash)
     closeCard(t.infohash)
     try {
       await api.torrentDiscard(t.infohash)
