@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from io import BytesIO
 
-from PIL import Image
+from PIL import Image, ImageOps
 from pillow_heif import register_heif_opener
 
 from .fsutil import natural_sort_key
@@ -24,7 +24,8 @@ def images_to_pdf_bytes(named_files: list[tuple[str, bytes]]) -> bytes:
         w, h = image.size
         if w * h > MAX_PIXELS:
             raise ValueError(f"Image is too large to process ({w}×{h} pixels).")
-        images.append(image.convert("RGB"))
+        # The PDF writer ignores EXIF, so bake the phone camera's rotation in.
+        images.append(ImageOps.exif_transpose(image).convert("RGB"))
 
     buffer = BytesIO()
     images[0].save(buffer, format="PDF", save_all=True, append_images=images[1:])

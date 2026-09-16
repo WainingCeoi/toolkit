@@ -130,6 +130,21 @@ def test_images_to_pdf_orders_pages_naturally():
     assert boxes[0][2:] == (20.0, 20.0)
 
 
+def test_images_to_pdf_applies_exif_orientation():
+    from toolkit_engine import imgpdf as imgpdf_engine
+
+    # Orientation 6 is how phones store a portrait shot in a landscape frame.
+    buf = BytesIO()
+    image = Image.new("RGB", (40, 20), "white")
+    exif = image.getexif()
+    exif[0x0112] = 6
+    image.save(buf, format="JPEG", exif=exif)
+
+    pdf = imgpdf_engine.images_to_pdf_bytes([("photo.jpg", buf.getvalue())])
+    boxes = [tuple(map(float, m.decode().split())) for m in _mediaboxes(pdf)]
+    assert boxes[0][2:] == (20.0, 40.0)
+
+
 def test_images_to_pdf_rejects_decompression_bomb(monkeypatch):
     from toolkit_engine import imgpdf as imgpdf_engine
 
