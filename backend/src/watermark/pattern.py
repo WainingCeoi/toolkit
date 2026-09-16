@@ -885,7 +885,8 @@ def _anchored_run(rgb: np.ndarray) -> dict | None:
             continue
         run, pitch, step = _best_run(points)
         if len(run) >= MIN_RUN and (best is None or len(run) > len(best["sites"])):
-            best = {"hp": hp, "sites": run, "pitch": pitch, "step": step}
+            # The gray, not hp: pooled_marks holds one run per image of the batch.
+            best = {"gray": gray, "sites": run, "pitch": pitch, "step": step}
     return best
 
 
@@ -932,11 +933,13 @@ def _cross_pitch(runs: list[dict], template: np.ndarray) -> tuple[int, int] | No
     for run in runs:
         # matchTemplate raises on a frame smaller than the template; skip such runs.
         if (
-            template.shape[0] > run["hp"].shape[0]
-            or template.shape[1] > run["hp"].shape[1]
+            template.shape[0] > run["gray"].shape[0]
+            or template.shape[1] > run["gray"].shape[1]
         ):
             continue
-        score = cv2.matchTemplate(run["hp"], template, cv2.TM_CCOEFF_NORMED)
+        score = cv2.matchTemplate(
+            _highpass(run["gray"]), template, cv2.TM_CCOEFF_NORMED
+        )
         # Transposed so the run lies along the rows either way.
         surface = score if horizontal else score.T
         sites = [(y, x) if horizontal else (x, y) for y, x in run["sites"]]
@@ -1035,10 +1038,11 @@ def _fold_on_grid(
     tiles: list[np.ndarray] = []
     for run in runs:
         mine: list[np.ndarray] = []
-        hp = run["hp"]
+        frame = run["gray"].shape
         # Anchor on the pooled template's best match; runs' own sites differ in offset.
-        if template.shape[0] > hp.shape[0] or template.shape[1] > hp.shape[1]:
+        if template.shape[0] > frame[0] or template.shape[1] > frame[1]:
             continue
+        hp = _highpass(run["gray"])
         agreement = cv2.matchTemplate(hp, template, cv2.TM_CCOEFF_NORMED)
         _lo, _hi, _at, best = cv2.minMaxLoc(agreement)
         base_y, base_x = best[1] % cell_y, best[0] % cell_x
@@ -1121,14 +1125,15 @@ def _pool_group(runs: list[dict]) -> Mark | None:
     """One mark from a group of runs that agree on their pitch, or None."""
     patches = []
     for run in runs:
-        hp = run["hp"]
+        hp = _highpass(run["gray"])
         for y, x in run["sites"]:
             if (
                 y + 2 * _ANCHOR_HALF_H <= hp.shape[0]
                 and x + 2 * _ANCHOR_HALF_W <= hp.shape[1]
             ):
+                # Copied, not a view: each run's high-pass is freed as we leave it.
                 patches.append(
-                    hp[y : y + 2 * _ANCHOR_HALF_H, x : x + 2 * _ANCHOR_HALF_W]
+                    hp[y : y + 2 * _ANCHOR_HALF_H, x : x + 2 * _ANCHOR_HALF_W].copy()
                 )
     if len(patches) < MIN_TILES:
         return None
