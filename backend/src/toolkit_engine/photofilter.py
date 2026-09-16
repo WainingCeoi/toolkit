@@ -262,6 +262,15 @@ def _delete(remove: Callable[[str], None], path: str, rel: str, r: Result) -> No
         r.deleted.append(rel)
 
 
+def _verify(r: Result, db_path: Path, exists: Callable[[str], bool]) -> None:
+    try:
+        r.problems, r.assets, r.edited = verify(db_path, exists)
+    except sqlite3.Error as e:
+        r.errors.append(f"verify failed: {e}")
+    else:
+        r.verified = True
+
+
 # (phase, done, total) -> True to stop; total is 0 when unknown up front.
 Progress = Callable[[str, int, int], bool]
 
@@ -291,8 +300,7 @@ def run(
         planned = set(p.keep) | set(p.snapshot)
         if stop("verify"):
             return r
-        r.problems, r.assets, r.edited = verify(src / db, planned.__contains__)
-        r.verified = True
+        _verify(r, src / db, planned.__contains__)
         return r
 
     dest.mkdir(parents=True, exist_ok=True)
@@ -362,10 +370,7 @@ def run(
 
     if stop("verify"):
         return r
-    r.problems, r.assets, r.edited = verify(
-        dest / db, lambda rel: (dest / rel).exists()
-    )
-    r.verified = True
+    _verify(r, dest / db, lambda rel: (dest / rel).exists())
     return r
 
 

@@ -410,6 +410,38 @@ def test_an_undeletable_entry_is_reported_and_the_run_carries_on(tmp_path):
     assert r.deleted == [] and r.verified
 
 
+def test_a_snapshot_failure_does_not_let_verify_discard_the_report(
+    tmp_path, monkeypatch
+):
+    src, dest = build_src(tmp_path), tmp_path / "Dest.photoslibrary"
+
+    def locked(source, target):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(pf, "snapshot_sqlite", locked)
+
+    r = pf.run(src, dest, pf.compile_rules(RULES))
+
+    assert r.copied == 3 and r.snapshotted == 0
+    assert r.errors == [
+        "snapshot failed for database/Photos.sqlite: database is locked",
+        "verify failed: unable to open database file",
+    ]
+    assert not r.verified and (r.problems, r.assets, r.edited) == ([], 0, 0)
+    assert (dest / "originals/A/AAAA-1.heic").exists()
+
+
+def test_an_unreadable_database_does_not_discard_the_dry_run_report(tmp_path):
+    src, dest = build_src(tmp_path), tmp_path / "Dest.photoslibrary"
+    (src / "database/Photos.sqlite").write_bytes(b"not a database, just bytes here")
+
+    r = pf.run(src, dest, pf.compile_rules(RULES), dry_run=True)
+
+    assert r.errors == ["verify failed: file is not a database"]
+    assert not r.verified and (r.problems, r.assets, r.edited) == ([], 0, 0)
+    assert r.plan.keep and not dest.exists()
+
+
 @pytest.mark.parametrize("dry_run", [True, False])
 def test_a_cancel_before_the_verify_leaves_the_run_unverified(tmp_path, dry_run):
     src, dest = build_src(tmp_path), tmp_path / "Dest.photoslibrary"
