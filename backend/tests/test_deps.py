@@ -668,6 +668,21 @@ def test_apply_commits_the_relocked_uv_lock(client, tmp_path, monkeypatch):
 
 
 @requires_git
+def test_apply_commits_through_a_symlinked_folder(client, tmp_path, monkeypatch):
+    repo = _committed_monorepo(tmp_path / "repo")
+    link = tmp_path / "link"
+    link.symlink_to(repo)
+    _fake_locks(monkeypatch)
+
+    r = client.post("/api/deps/apply", json={"folder": str(link), "commit": True})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["written_total"] == 8
+    assert len(body["commits"]) == 1
+    assert [r["error"] for r in body["results"]] == [None, None]
+
+
+@requires_git
 def test_apply_uses_a_custom_commit_message(client, tmp_path, monkeypatch):
     repo = _committed_monorepo(tmp_path / "repo")
     _fake_locks(monkeypatch)

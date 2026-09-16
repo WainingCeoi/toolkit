@@ -109,6 +109,7 @@ def find_manifests(folder: str) -> tuple[list[Manifest], str | None]:
     base, err = _validate_folder(folder)
     if err:
         return [], err
+    base = base.resolve()  # git reports realpaths; a symlinked root must still match
     found: list[Manifest] = []
     for dirpath, dirnames, filenames in os.walk(base):
         dirnames[:] = [
