@@ -269,6 +269,26 @@ def test_a_book_damaged_before_startup_is_set_aside_and_rebuilt(tmp_path):
     assert len(book.list()) == 2
 
 
+def test_a_locked_book_is_not_replaced_with_an_empty_database(book, monkeypatch):
+    device = book.add("NAS", "192.168.1.50:19377", "admin", "pw")
+    original_connect = DeviceBook._connect
+
+    def without_waiting(self):
+        conn = original_connect(self)
+        conn.execute("PRAGMA busy_timeout = 0")
+        return conn
+
+    monkeypatch.setattr(DeviceBook, "_connect", without_waiting)
+    with closing(sqlite3.connect(book.path)) as blocker:
+        blocker.execute("BEGIN EXCLUSIVE")
+        with pytest.raises(sqlite3.OperationalError, match="locked"):
+            DeviceBook(book.path)
+        blocker.rollback()
+
+    assert not book.path.with_name("torrents.db.corrupt").exists()
+    assert DeviceBook(book.path).active().id == device.id
+
+
 def test_rows_without_an_address_are_skipped_rather_than_taking_the_book_down(book):
     with closing(sqlite3.connect(book.path)) as conn, conn:
         conn.execute("INSERT INTO devices (id, label, url) VALUES ('x', 'ghost', '')")
@@ -302,6 +322,34 @@ def test_a_json_book_is_imported_once_and_removed(tmp_path):
     assert device.label == "Intel Mac"
     assert device.url == "http://192.168.110.27:10447"
     assert device.password == "s3cret"
+
+
+def test_a_failed_import_commit_preserves_the_legacy_file(tmp_path, monkeypatch):
+    legacy = tmp_path / "bitcomet-devices.json"
+    original = json.dumps(legacy_body())
+    legacy.write_text(original)
+    path = tmp_path / "torrents.db"
+    original_connect = DeviceBook._connect
+
+    def without_commit(self):
+        conn = original_connect(self)
+        conn.set_authorizer(
+            lambda action, operation, *_: (
+                sqlite3.SQLITE_DENY
+                if action == sqlite3.SQLITE_TRANSACTION and operation == "COMMIT"
+                else sqlite3.SQLITE_OK
+            )
+        )
+        return conn
+
+    with monkeypatch.context() as patch:
+        patch.setattr(DeviceBook, "_connect", without_commit)
+        with pytest.raises(sqlite3.DatabaseError, match="not authorized"):
+            DeviceBook(path)
+
+    assert legacy.read_text() == original
+    assert DeviceBook(path).active().id == "abc123"
+    assert not legacy.exists()
 
 
 def test_importing_never_overwrites_what_the_database_already_holds(tmp_path):

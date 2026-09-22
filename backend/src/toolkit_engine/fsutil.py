@@ -16,14 +16,17 @@ def natural_sort_key(name):
 def dedupe_filenames(names):
     """Disambiguate duplicate basenames as ``stem (2).ext``, preserving order."""
     seen: dict[str, int] = {}
+    used: set[str] = set()
     out: list[str] = []
     for name in names:
         base = Path(name or "").name
-        count = seen.get(base, 0) + 1
-        seen[base] = count
-        if count == 1:
-            out.append(base)
-        else:
+        count = seen.get(base, 1)
+        candidate = base
+        while candidate in used:
+            count += 1
             p = Path(base)
-            out.append(f"{p.stem} ({count}){p.suffix}")
+            candidate = f"{p.stem} ({count}){p.suffix}"
+        seen[base] = count
+        used.add(candidate)
+        out.append(candidate)
     return out

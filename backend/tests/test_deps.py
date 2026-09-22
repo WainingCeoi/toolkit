@@ -513,6 +513,31 @@ def test_commit_paths_unstages_when_a_hook_rejects_the_commit(tmp_path):
 
 
 @requires_git
+def test_commit_paths_preserves_staged_target_changes(tmp_path):
+    repo = _init_repo(tmp_path / "repo")
+    lock = repo / "uv.lock"
+    lock_original = lock.read_text(encoding="utf-8")
+    lock.write_text(lock_original + "\n# tool relock\n", encoding="utf-8")
+    path = repo / "pyproject.toml"
+    staged = path.read_text(encoding="utf-8") + "\n# staged user edit\n"
+    path.write_text(staged, encoding="utf-8")
+    _git(repo, "add", "pyproject.toml")
+    worktree = staged + "# unstaged user edit\n"
+    path.write_text(worktree, encoding="utf-8")
+    before = _git(repo, "rev-parse", "HEAD").stdout
+
+    sha, rels, err = depsync.commit_paths(
+        str(repo), depsync.COMMIT_SUBJECT, [repo / "uv.lock", path]
+    )
+
+    assert sha is None and rels == [] and err and "staged" in err
+    assert _git(repo, "rev-parse", "HEAD").stdout == before
+    assert _git(repo, "show", ":pyproject.toml").stdout == staged
+    assert _git(repo, "show", ":uv.lock").stdout == lock_original
+    assert path.read_text(encoding="utf-8") == worktree
+
+
+@requires_git
 def test_commit_paths_nothing_to_commit(tmp_path):
     repo = _init_repo(tmp_path / "repo")
     sha, rels, err = depsync.commit_paths(
@@ -882,6 +907,40 @@ def test_apply_rolls_a_shared_workspace_lock_back_to_its_first_snapshot(
     assert all("rolled back" in t["error"] for t in body["results"])
     assert (repo / "uv.lock").read_text(encoding="utf-8") == original_lock
     assert _git(repo, "status", "--porcelain").stdout == ""
+
+
+@requires_git
+def test_apply_keeps_successful_repos_when_a_later_commit_fails(
+    client, tmp_path, monkeypatch
+):
+    repos = [_init_repo(tmp_path / name) for name in ("a", "b", "c")]
+    heads = [_git(repo, "rev-parse", "HEAD").stdout.strip() for repo in repos]
+    hook = repos[1] / ".git" / "hooks" / "pre-commit"
+    hook.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    hook.chmod(0o755)
+    _fake_locks(monkeypatch)
+
+    response = client.post(
+        "/api/deps/apply", json={"folder": str(tmp_path), "commit": True}
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    results = {result["rel"]: result for result in body["results"]}
+    assert body["written_total"] == 3
+    assert len(body["commits"]) == 1
+    assert (
+        body["commits"][0]["sha"]
+        == _git(repos[0], "rev-parse", "--short", "HEAD").stdout.strip()
+    )
+    assert results["a/pyproject.toml"]["written"] == 3
+    assert results["a/pyproject.toml"]["error"] is None
+    assert _git(repos[0], "rev-parse", "HEAD").stdout.strip() != heads[0]
+    for index, name in enumerate(("b", "c"), start=1):
+        assert results[f"{name}/pyproject.toml"]["written"] == 0
+        assert "rolled back" in results[f"{name}/pyproject.toml"]["error"]
+        assert _git(repos[index], "rev-parse", "HEAD").stdout.strip() == heads[index]
+    assert all(_git(repo, "status", "--porcelain").stdout == "" for repo in repos)
 
 
 @requires_git

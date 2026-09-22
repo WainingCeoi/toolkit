@@ -393,6 +393,26 @@ def test_a_symlinked_directory_does_not_abort_the_delete_phase(tmp_path):
     assert (elsewhere / "inner.txt").exists()
 
 
+@pytest.mark.parametrize(
+    ("linked_dir", "filename"),
+    [("originals/A", "AAAA-1.heic"), ("database", "Photos.sqlite")],
+)
+def test_run_refuses_destination_directory_symlinks(tmp_path, linked_dir, filename):
+    src, dest = build_src(tmp_path), tmp_path / "Dest.photoslibrary"
+    elsewhere = tmp_path / "elsewhere"
+    original = touch(elsewhere, filename, b"keep this unrelated file")
+    link = dest / linked_dir
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link.symlink_to(elsewhere, target_is_directory=True)
+
+    with pytest.raises(pf.PhotoFilterError, match="symlink"):
+        pf.run(src, dest, pf.compile_rules(RULES))
+
+    assert original.read_bytes() == b"keep this unrelated file"
+    assert link.is_symlink()
+    assert not (dest / "resources").exists()
+
+
 def test_an_undeletable_entry_is_reported_and_the_run_carries_on(tmp_path):
     src, dest = build_src(tmp_path), tmp_path / "Dest.photoslibrary"
     pf.run(src, dest, pf.compile_rules(RULES))

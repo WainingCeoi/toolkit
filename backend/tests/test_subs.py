@@ -136,6 +136,15 @@ def test_urls_include_token_when_access_token_set(tool_client, monkeypatch):
     assert urls["clash"].endswith(f"/sub/{sub_id}?target=clash&token=hunter2")
 
 
+def test_generated_urls_accept_tokens_with_url_reserved_characters(
+    tool_client, monkeypatch
+):
+    monkeypatch.setenv("SUB_ACCESS_TOKEN", "a+b&c#d?e% f/")
+    body = _generate(tool_client).json()
+    for url in body["urls"].values():
+        assert tool_client.get(url).status_code == 200
+
+
 def test_public_sub_raw_returns_base64_body(tool_client):
     sub_id = _generate(tool_client).json()["sub_id"]
     resp = tool_client.get(f"/sub/{sub_id}", params={"target": "raw"})

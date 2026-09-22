@@ -256,12 +256,11 @@ def run(req: WatermarkRunIn, state: StateDep, watermarks: WatermarksDep):
         [f"{Path(entry['name']).stem}.png" for entry in selected]
     )
 
+    # Pin before creating the spool, through model loading and final publishing.
+    @watermarks.pin(req.batch_id)
     def worker(job):
-        inpaint = get_inpainter(req.inpainter)
-        if req.inpainter == "lama":
-            job.set_message("Loading LaMa — the first run downloads a ~200 MB model…")
-            # Up front: the lazy load would happen under the first image's message.
-            inpaint.load()
+        inpaint = None
+        initializing = False
         done: list[str] = []
         failed: list[tuple[str, str]] = []
         skipped: list[str] = []
@@ -303,63 +302,78 @@ def run(req: WatermarkRunIn, state: StateDep, watermarks: WatermarksDep):
             job.set_result(partial)
             return partial
 
-        # Pin for the whole run, or the batch could be swept between two images.
         try:
-            with watermarks.pin(req.batch_id):
-                for idx, (entry, out_name) in enumerate(
-                    zip(selected, out_names, strict=True)
-                ):
-                    if job.cancelled:
-                        break
-                    job.update_item(idx, state="running")
-                    job.set_message(
-                        f"Inpainting {idx + 1}/{len(selected)} — {entry['name']}…"
-                    )
-                    try:
-                        rgb, alpha = imgio.load_rgba(entry["path"].read_bytes())
-                        mask = imgio.load_mask(masks[entry["id"]], rgb.shape[:2])
-                        if not mask.any():
-                            # Not written back: an unchanged copy is not a result.
-                            if repeating_evidence(rgb):
-                                protected.append(entry["name"])
-                            else:
-                                skipped.append(entry["name"])
-                            job.update_item(idx, pct=100, state="done")
-                            publish()
-                            continue
-                        probe, destroys = probe_removal(rgb, mask, req.dilate_px)
-                        if destroys:
+            for idx, (entry, out_name) in enumerate(
+                zip(selected, out_names, strict=True)
+            ):
+                if job.cancelled:
+                    break
+                job.update_item(idx, state="running")
+                message = f"Inpainting {idx + 1}/{len(selected)} — {entry['name']}…"
+                job.set_message(message)
+                try:
+                    rgb, alpha = imgio.load_rgba(entry["path"].read_bytes())
+                    mask = imgio.load_mask(masks[entry["id"]], rgb.shape[:2])
+                    if not mask.any():
+                        # Not written back: an unchanged copy is not a result.
+                        if repeating_evidence(rgb):
                             protected.append(entry["name"])
-                            job.update_item(idx, pct=100, state="done")
-                            publish()
-                            continue
-                        # The probe is already the cv2 answer for this image.
-                        out = (
-                            probe
-                            if inpaint is inpaint_cv2
-                            else remove_watermark(
-                                rgb,
-                                mask,
-                                inpaint,
-                                req.dilate_px,
-                                should_stop=lambda: job.cancelled,
-                            )
-                        )
-                        spooled = spool / f"{idx}_{out_name}"
-                        spooled.write_bytes(
-                            imgio.encode_png(imgio.with_alpha(out, alpha))
-                        )
-                    except CancelledError:
-                        break
-                    except Exception as e:  # noqa: BLE001 — per-file, batch goes on
-                        job.update_item(idx, pct=100, state="failed", error=str(e))
-                        failed.append((entry["name"], str(e)))
+                        else:
+                            skipped.append(entry["name"])
+                        job.update_item(idx, pct=100, state="done")
                         publish()
                         continue
-                    cleaned.append((out_name, spooled))
-                    done.append(out_name)
-                    job.update_item(idx, pct=100, state="done")
+                    probe, destroys = probe_removal(
+                        rgb, mask, req.dilate_px, should_stop=lambda: job.cancelled
+                    )
+                    if destroys:
+                        protected.append(entry["name"])
+                        job.update_item(idx, pct=100, state="done")
+                        publish()
+                        continue
+                    if job.cancelled:
+                        raise CancelledError
+                    if inpaint is None:
+                        initializing = True
+                        if req.inpainter == "lama":
+                            job.set_message(
+                                "Loading LaMa — the first run downloads "
+                                "a ~200 MB model…"
+                            )
+                        inpaint = get_inpainter(req.inpainter)
+                        if req.inpainter == "lama":
+                            inpaint.load()
+                        initializing = False
+                        job.set_message(message)
+                    # The probe is already the cv2 answer for this image.
+                    out = (
+                        probe
+                        if inpaint is inpaint_cv2
+                        else remove_watermark(
+                            rgb,
+                            mask,
+                            inpaint,
+                            req.dilate_px,
+                            should_stop=lambda: job.cancelled,
+                        )
+                    )
+                    spooled = spool / f"{idx}_{out_name}"
+                    spooled.write_bytes(imgio.encode_png(imgio.with_alpha(out, alpha)))
+                except CancelledError:
+                    break
+                except Exception as e:  # noqa: BLE001 — per-file, batch goes on
+                    if initializing:
+                        # Shared setup cannot be repaired by retrying every image.
+                        publish()
+                        raise
+                    job.update_item(idx, pct=100, state="failed", error=str(e))
+                    failed.append((entry["name"], str(e)))
                     publish()
+                    continue
+                cleaned.append((out_name, spooled))
+                done.append(out_name)
+                job.update_item(idx, pct=100, state="done")
+                publish()
 
             return publish()
         finally:

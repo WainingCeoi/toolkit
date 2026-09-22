@@ -215,16 +215,19 @@ export function retryingLoad<T>(
   let stopped = false
   let timer: ReturnType<typeof setTimeout> | undefined
   let delay = RELOAD_BASE_MS
+  let generation = 0
   const attempt = (): void => {
+    if (stopped) return
     clearTimeout(timer)
+    const current = ++generation
     void fetcher().then(
       (value) => {
-        if (stopped) return
+        if (stopped || current !== generation) return
         delay = RELOAD_BASE_MS
         onLoad(value)
       },
       (err: Error) => {
-        if (stopped) return
+        if (stopped || current !== generation) return
         onError(err)
         timer = setTimeout(attempt, delay)
         delay = Math.min(delay * 2, RELOAD_MAX_MS)

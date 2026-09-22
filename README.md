@@ -151,6 +151,32 @@ make clean       # remove build artifacts
 From `backend/`: `uv run pytest` is the single backend test command, and
 `uv run ruff check src tests` the lint.
 
+## Local data
+
+Toolkit uses Python's built-in SQLite driver, with no separate database server.
+The default data folder is `backend/data/`; `SUB_DB_PATH` changes the subscription
+database path and moves the other persistent stores into its parent folder.
+
+| Store | Contents | Survives an API restart? |
+| --- | --- | --- |
+| `data/sub.db` | `subscriptions`: generated nodes as JSON, unique input hash, options, counts, timestamp | Yes |
+| `data/torrents.db` | `devices`: saved BitComet connections; `device_settings`: selected device | Yes |
+| `data/bitcomet-device-id` | BitComet pairing identity | Yes |
+| `data/watermark/` | Uploaded images and batch working files; eligible for cleanup after six idle hours | No; old batches are cleared on startup |
+| Job registry and temporary artifacts | Job status/results in memory; temporary output files eligible for cleanup after six idle hours | No |
+
+Expiry cleanup runs on subsequent store access; active watermark runs pin their batches.
+
+Keep **one API worker process**: jobs, staged batches, browser sessions, and locks
+are shared in memory. Browser reloads can reattach to jobs while that process is
+alive; restarting the API does not resume them. SQLite fits this local metadata
+workload; image processing and conversion work happen outside the database.
+
+Both databases can contain credentials and use owner-only filesystem permissions.
+For a live database backup, use SQLite's backup command/API; copying only the `.db`
+file can omit uncheckpointed WAL data. Older `torrents.db` files may also contain
+unused `torrents` and `torrent_files` tables from a previous implementation.
+
 ## Tool notes
 
 <details>

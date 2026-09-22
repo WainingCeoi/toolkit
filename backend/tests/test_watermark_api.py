@@ -11,6 +11,7 @@ import time
 import zipfile
 
 import numpy as np
+import pytest
 from PIL import Image
 
 from toolkit_api.jobs import FINISHED_STATES
@@ -540,6 +541,162 @@ def test_lama_is_loaded_while_the_loading_message_is_up(client, app_state, monke
     assert messages and "Loading LaMa" in messages[0], (
         f"the model was loaded under the message {messages!r}"
     )
+
+
+@pytest.mark.parametrize("width", [600, 1500])
+def test_cancelling_the_cv2_probe_does_not_export_the_image(
+    client, app_state, monkeypatch, width
+):
+    from watermark import pipeline
+    from watermark.inpaint import inpaint_cv2
+
+    batch = upload(client, ("wide.png", png_bytes((width, 80)))).json()
+    image = batch["images"][0]
+    entered, resume = threading.Event(), threading.Event()
+    tiles = []
+
+    def blocking_probe(rgb, mask):
+        tiles.append(rgb.shape)
+        entered.set()
+        assert resume.wait(5.0)
+        return inpaint_cv2(rgb, mask)
+
+    monkeypatch.setattr(pipeline, "get_inpainter", lambda name: blocking_probe)
+    resp = client.post(
+        "/api/watermark/run",
+        json={
+            "batch_id": batch["batch_id"],
+            "inpainter": "cv2",
+            "masks": {image["id"]: mask_b64(width, 80, box=(10, 10, width - 10, 30))},
+        },
+    )
+    try:
+        assert entered.wait(5.0)
+        assert app_state.jobs.cancel(resp.json()["job_id"])
+    finally:
+        resume.set()
+    snap = wait_for_job(client, resp.json()["job_id"])
+    assert snap["state"] == "cancelled"
+    assert len(tiles) == 1
+    assert snap["result"]["done"] == []
+    assert "artifact_id" not in snap["result"]
+
+
+@pytest.mark.parametrize("masked", [False, True])
+def test_lama_is_not_loaded_for_empty_or_protected_masks(client, monkeypatch, masked):
+    from toolkit_api.routers import watermark as router
+
+    rgb = np.full((60, 80, 3), 128, np.uint8)
+    rgb[20:36, 30:50] = 255
+    batch = upload(client, ("square.png", imgio.encode_png(rgb))).json()
+    image = batch["images"][0]
+    loads = []
+    initializations = []
+
+    class UnavailableModel:
+        def load(self):
+            loads.append(1)
+            raise RuntimeError("Model download is unavailable")
+
+    def initialize(name):
+        initializations.append(name)
+        return UnavailableModel()
+
+    monkeypatch.setattr(router, "lama_available", lambda: True)
+    monkeypatch.setattr(router, "get_inpainter", initialize)
+    resp = client.post(
+        "/api/watermark/run",
+        json={
+            "batch_id": batch["batch_id"],
+            "inpainter": "lama",
+            "masks": {
+                image["id"]: mask_b64(80, 60, box=(30, 20, 50, 36) if masked else None)
+            },
+        },
+    )
+    snap = wait_for_job(client, resp.json()["job_id"])
+    assert snap["state"] == "done"
+    assert snap["result"]["protected" if masked else "skipped"] == ["square.png"]
+    assert loads == []
+    assert initializations == []
+
+
+def test_a_failed_model_load_is_not_retried_for_every_image(client, monkeypatch):
+    from toolkit_api.routers import watermark as router
+
+    batch = upload(
+        client,
+        ("clear.png", png_bytes((20, 10))),
+        ("first.png", png_bytes((20, 10))),
+        ("second.png", png_bytes((20, 10))),
+    ).json()
+    loads = []
+
+    class UnavailableModel:
+        def load(self):
+            loads.append(1)
+            raise RuntimeError("Model download is unavailable")
+
+    monkeypatch.setattr(router, "lama_available", lambda: True)
+    monkeypatch.setattr(router, "get_inpainter", lambda name: UnavailableModel())
+    masks = {
+        image["id"]: mask_b64(20, 10, box=(0, 0, 5, 5) if index else None)
+        for index, image in enumerate(batch["images"])
+    }
+    resp = client.post(
+        "/api/watermark/run",
+        json={"batch_id": batch["batch_id"], "inpainter": "lama", "masks": masks},
+    )
+    snap = wait_for_job(client, resp.json()["job_id"])
+    assert loads == [1]
+    assert snap["state"] == "failed"
+    assert snap["error"] == "Model download is unavailable"
+    assert snap["result"]["skipped"] == ["clear.png"]
+    assert snap["result"]["done"] == []
+
+
+def test_batch_survives_expiry_during_spooling_and_model_loading(
+    client, app_state, monkeypatch
+):
+    from toolkit_api.routers import watermark as router
+    from watermark.inpaint import inpaint_cv2
+
+    batch = upload(client, ("a.png", png_bytes((20, 10)))).json()
+    image = batch["images"][0]
+    stored = app_state.watermarks.get(batch["batch_id"])
+    real_mkdtemp = router.tempfile.mkdtemp
+
+    def expire_and_sweep():
+        stored["used"] -= app_state.watermarks.ttl + 1
+        app_state.watermarks.get("another-batch")
+
+    def sweeping_mkdtemp(*args, **kwargs):
+        expire_and_sweep()
+        return real_mkdtemp(*args, **kwargs)
+
+    class FakeLama:
+        def load(self):
+            expire_and_sweep()
+
+        def __call__(self, rgb, mask):
+            return inpaint_cv2(rgb, mask)
+
+    monkeypatch.setattr(router.tempfile, "mkdtemp", sweeping_mkdtemp)
+    monkeypatch.setattr(router, "lama_available", lambda: True)
+    monkeypatch.setattr(router, "get_inpainter", lambda name: FakeLama())
+    resp = client.post(
+        "/api/watermark/run",
+        json={
+            "batch_id": batch["batch_id"],
+            "inpainter": "lama",
+            "masks": {image["id"]: mask_b64(20, 10, box=(0, 0, 5, 5))},
+        },
+    )
+    snap = wait_for_job(client, resp.json()["job_id"])
+    assert snap["state"] == "done", snap["error"]
+    assert snap["result"]["done"] == ["a.png"]
+    assert stored["pins"] == 0
+    assert app_state.watermarks.get(batch["batch_id"]) is stored
 
 
 def test_run_rejects_an_unknown_inpainter(client):

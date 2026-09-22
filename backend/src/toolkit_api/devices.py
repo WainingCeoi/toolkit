@@ -82,7 +82,13 @@ class DeviceBook:
         self._lock = threading.Lock()
         try:
             self._prepare()
-        except sqlite3.DatabaseError:
+        except sqlite3.DatabaseError as exc:
+            # Busy/read-only/I/O errors do not mean the saved devices are corrupt.
+            if getattr(exc, "sqlite_errorcode", 0) & 0xFF not in (
+                sqlite3.SQLITE_CORRUPT,
+                sqlite3.SQLITE_NOTADB,
+            ):
+                raise
             self.path.rename(self.path.with_name(self.path.name + ".corrupt"))
             self._prepare()
 
@@ -91,7 +97,10 @@ class DeviceBook:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with closing(self._connect()) as conn, conn:
             conn.executescript(SCHEMA)
-            self._import_legacy(conn)
+            legacy = self._import_legacy(conn)
+        # Keep the source until the imported rows have committed successfully.
+        if legacy is not None:
+            legacy.unlink(missing_ok=True)
         # After the schema lands, so the chmod always has a file to act on.
         os.chmod(self.path, FILE_MODE)
 
@@ -100,11 +109,11 @@ class DeviceBook:
         conn.row_factory = sqlite3.Row
         return conn
 
-    def _import_legacy(self, conn: sqlite3.Connection) -> None:
+    def _import_legacy(self, conn: sqlite3.Connection) -> Path | None:
         """Import the pre-database JSON book once; OR IGNORE keeps a rerun harmless."""
         legacy = self.path.parent / LEGACY_FILENAME
         if not legacy.exists():
-            return
+            return None
         try:
             body = json.loads(legacy.read_text())
         except OSError, ValueError:
@@ -134,7 +143,7 @@ class DeviceBook:
                 " VALUES ('active', ?)",
                 (active,),
             )
-        legacy.unlink(missing_ok=True)
+        return legacy
 
     def _saved(self) -> list[Device]:
         try:

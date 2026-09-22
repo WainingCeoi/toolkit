@@ -63,6 +63,8 @@ def _inpaint_tiled(
                 np.ascontiguousarray(rgb[ctop:cbottom, cleft:cright]),
                 np.ascontiguousarray(mask[ctop:cbottom, cleft:cright]),
             )
+            if should_stop is not None and should_stop():
+                raise CancelledError
             core = mask[top:bottom, left:right] > 0
             out[top:bottom, left:right][core] = patch[
                 top - ctop : bottom - ctop, left - cleft : right - cleft
@@ -95,10 +97,13 @@ def _destruction_of(rgb: np.ndarray, probe: np.ndarray) -> float:
 
 
 def probe_removal(
-    rgb: np.ndarray, mask: np.ndarray, dilate_px: int
+    rgb: np.ndarray,
+    mask: np.ndarray,
+    dilate_px: int,
+    should_stop: Callable[[], bool] | None = None,
 ) -> tuple[np.ndarray, bool]:
     """The cv2 removal of ``mask``, and whether it rewrites more than it is worth."""
-    probe = remove_watermark(rgb, mask, get_inpainter("cv2"), dilate_px)
+    probe = remove_watermark(rgb, mask, get_inpainter("cv2"), dilate_px, should_stop)
     return probe, _destruction_of(rgb, probe) > MAX_DESTRUCTION
 
 

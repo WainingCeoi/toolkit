@@ -601,14 +601,38 @@ def commit_paths(
     repo_root: str, message: str, paths: list[Path]
 ) -> tuple[str | None, list[str], str | None]:
     """Commit exactly ``paths``, together, in one commit. (sha, rels, error)."""
-    rels: list[str] = []
+    candidates: list[str] = []
     for path in paths:
         if not path.is_file():
             continue
         try:
-            rel = str(path.relative_to(repo_root))
+            candidates.append(str(path.relative_to(repo_root)))
         except ValueError:
             continue  # outside this repo
+
+    nothing = "❌ Nothing to commit — the manifests and lockfiles are unchanged."
+    if not candidates:
+        return None, [], nothing
+    # Check every target before staging any: a failed commit resets these paths.
+    staged = subprocess.run(
+        ["git", "-C", repo_root, "diff", "--cached", "--quiet", "--", *candidates],
+        capture_output=True,
+        text=True,
+    )
+    if staged.returncode == 1:
+        return (
+            None,
+            [],
+            (
+                "❌ Target files already have staged changes. "
+                "Commit or unstage those changes before applying with a commit."
+            ),
+        )
+    if staged.returncode != 0:
+        return None, [], f"❌ Could not check staged changes: {staged.stderr.strip()}"
+
+    rels: list[str] = []
+    for rel in candidates:
         added = subprocess.run(
             ["git", "-C", repo_root, "add", "--", rel],
             capture_output=True,
@@ -617,7 +641,6 @@ def commit_paths(
         if added.returncode == 0:  # a gitignored file fails here and is skipped
             rels.append(rel)
 
-    nothing = "❌ Nothing to commit — the manifests and lockfiles are unchanged."
     if not rels:
         return None, [], nothing
     diff = subprocess.run(

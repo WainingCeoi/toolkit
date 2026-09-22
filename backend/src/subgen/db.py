@@ -35,7 +35,11 @@ class Store:
             )
         else:
             self._uri = None
-            Path(self.path).parent.mkdir(parents=True, exist_ok=True)
+            path = Path(self.path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            # Payloads include proxy credentials; WAL files inherit this mode.
+            path.touch(mode=0o600, exist_ok=True)
+            path.chmod(0o600)
         with closing(self._connect()) as conn:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.executescript(SCHEMA)

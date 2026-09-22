@@ -166,6 +166,40 @@ describe('api helpers', () => {
 })
 
 describe('retryingLoad', () => {
+  it.each(['success', 'failure'] as const)(
+    'ignores an older request finishing with %s after a reload',
+    async (outcome) => {
+      vi.useFakeTimers()
+      let resolveOlder!: (value: string) => void
+      let rejectOlder!: (error: Error) => void
+      let resolveNewer!: (value: string) => void
+      const older = new Promise<string>((resolve, reject) => {
+        resolveOlder = resolve
+        rejectOlder = reject
+      })
+      const newer = new Promise<string>((resolve) => { resolveNewer = resolve })
+      const fetcher = vi.fn().mockReturnValueOnce(older).mockReturnValueOnce(newer)
+      const values: string[] = []
+      const errors: Error[] = []
+      const loader = retryingLoad<string>(fetcher, (value) => values.push(value), (err) => errors.push(err))
+      try {
+        loader.reload()
+        resolveNewer('current')
+        await vi.advanceTimersByTimeAsync(0)
+        if (outcome === 'success') resolveOlder('stale')
+        else rejectOlder(new Error('stale failure'))
+        await vi.advanceTimersByTimeAsync(0)
+
+        expect(values).toEqual(['current'])
+        expect(errors).toEqual([])
+        expect(vi.getTimerCount()).toBe(0)
+      } finally {
+        loader.stop()
+        vi.useRealTimers()
+      }
+    },
+  )
+
   const emptyManifest = () =>
     Promise.resolve(
       new Response(JSON.stringify([]), {

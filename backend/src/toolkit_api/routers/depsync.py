@@ -175,25 +175,33 @@ def _apply_manifests(manifests: list, req: ApplyIn) -> ApplyOut:
                     groups.setdefault(root, {})[path] = None
 
         commit_error = None
+        committed_paths: set[Path] = set()
         for root, paths in groups.items():
             sha, rels, git_err = depsync.commit_paths(root, subject, list(paths))
             if git_err:
                 commit_error = git_err
                 break
             commits.append({"sha": sha, "files": rels})
+            committed_paths.update(paths)
 
         if commit_error:
+            pending = [
+                result
+                for result in results
+                if result["changed"]
+                and not all(path in committed_paths for path in result["changed"])
+            ]
             originals: dict[str, str | None] = {}
-            for result in results:
+            for result in pending:
                 for path_str, text in result["originals"].items():
                     # Members snapshot a shared lock in turn; the first is the original.
-                    originals.setdefault(path_str, text)
+                    if Path(path_str) not in committed_paths:
+                        originals.setdefault(path_str, text)
             depsync.restore(originals)
-            for result in results:
+            for result in pending:
                 result["written"] = 0
                 result["bumps"] = []
                 result["error"] = f"{commit_error} (rolled back)"
-            commits = []
 
     return ApplyOut(
         results=[

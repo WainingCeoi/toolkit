@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 from datetime import UTC, datetime
+from urllib.parse import quote
 
 import segno
 from fastapi import APIRouter, HTTPException, Request
@@ -63,8 +64,9 @@ def _sub_base_url(request: Request) -> str:
 
 def _build_urls(sub_id: str, request: Request) -> dict:
     base = f"{_sub_base_url(request)}/sub/{sub_id}"
-    tok = f"&token={config.ACCESS_TOKEN}" if config.ACCESS_TOKEN else ""
-    tok_only = f"?token={config.ACCESS_TOKEN}" if config.ACCESS_TOKEN else ""
+    token = quote(config.ACCESS_TOKEN, safe="")
+    tok = f"&token={token}" if token else ""
+    tok_only = f"?token={token}" if token else ""
     return {
         "auto": f"{base}{tok_only}",
         "raw (Shadowrocket / V2rayN)": f"{base}?target=raw{tok}",

@@ -11,5 +11,6 @@ Thumbs.db
 
 # Agent scratch
 .claude/
+.local-docs/
 
 .ruff_cache/

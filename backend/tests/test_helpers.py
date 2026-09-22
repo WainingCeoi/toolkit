@@ -36,6 +36,18 @@ def test_dedupe_filenames_disambiguates_collisions():
     ]
 
 
+def test_dedupe_filenames_avoids_collisions_with_numbered_inputs():
+    for names in (
+        ["a.pdf", "a.pdf", "a (2).pdf"],
+        ["a (2).pdf", "a.pdf", "a.pdf"],
+        ["a.pdf", "a.pdf", "a (2).pdf", "a (2).pdf", "a.pdf"],
+    ):
+        unique = fsutil.dedupe_filenames(names)
+        assert len(unique) == len(names)
+        assert len(set(unique)) == len(names)
+        assert unique[0] == names[0]
+
+
 def test_applescript_str_escapes_quotes_and_backslashes():
     assert picker._applescript_str("/a/b") == '"/a/b"'
     assert picker._applescript_str('a"b') == '"a\\"b"'

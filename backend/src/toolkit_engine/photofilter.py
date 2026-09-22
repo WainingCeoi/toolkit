@@ -303,6 +303,12 @@ def run(
         _verify(r, src / db, planned.__contains__)
         return r
 
+    # Existing directory links can redirect copies/snapshots outside the mirror.
+    # Check the whole plan before writing; source symlinks remain file entries.
+    for d in p.dirs:
+        if (dest / d).is_symlink():
+            raise PhotoFilterError(f"DEST contains a directory symlink: {d}")
+
     dest.mkdir(parents=True, exist_ok=True)
     for d in p.dirs:
         (dest / d).mkdir(exist_ok=True)
