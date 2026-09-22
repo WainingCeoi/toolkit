@@ -69,11 +69,11 @@ frontend:
 
 # npm run build alone does not typecheck (Vite strips types); explicit ruff paths override exclude.
 test:
-	cd backend && uv run --frozen pytest -q && uv run --frozen ruff check src tests benchmarks && uv run --frozen ruff format --check src tests benchmarks
+	cd backend && uv run --frozen pytest -q && uv run --frozen ruff check src tests && uv run --frozen ruff format --check src tests
 	cd frontend && npm run typecheck && npm run lint && npm run test && npm run build
 
 lint:
-	cd backend && uv run --frozen ruff check src tests benchmarks && uv run --frozen ruff format --check src tests benchmarks
+	cd backend && uv run --frozen ruff check src tests && uv run --frozen ruff format --check src tests
 	cd frontend && npm run typecheck && npm run lint
 
 clean:

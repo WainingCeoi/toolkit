@@ -154,19 +154,7 @@ make clean       # remove build artifacts
 ```
 
 From `backend/`: `uv run pytest` is the single backend test command, and
-`uv run ruff check src tests benchmarks` the lint.
-
-To measure watermark detection/removal with reproducible synthetic images, run:
-
-```bash
-backend/.venv/bin/python backend/benchmarks/watermark_benchmark.py \
-  --repeat 3 --output .local-docs/watermark-benchmark.json
-```
-
-The [benchmark guide](backend/benchmarks/README.md) explains quality metrics,
-per-stage timing, peak memory, and optional local datasets/model checkpoints.
-The default run uses cv2 and downloads nothing. Compare image-error metrics as
-well as speed: inpainting can worsen an image even when detection finds a mark.
+`uv run ruff check src tests` the lint.
 
 ## Local data
 
