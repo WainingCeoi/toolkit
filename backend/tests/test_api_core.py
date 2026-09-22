@@ -13,7 +13,12 @@ import weakref
 import pytest
 
 from toolkit_api.artifacts import ArtifactStore
-from toolkit_api.jobs import FINISHED_STATES, JobRegistry
+from toolkit_api.jobs import (
+    FINISHED_STATES,
+    JobCapacityError,
+    JobRegistry,
+    JobRegistryClosedError,
+)
 from toolkit_api.main import create_app
 from toolkit_engine import docmd
 
@@ -319,6 +324,158 @@ def test_pool_recovers_from_a_worker_thread_dying():
     assert reg.get(survivor.id).state == "done"
 
 
+@pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
+def test_pool_runs_queued_jobs_after_system_exit():
+    reg = JobRegistry(max_workers=1)
+    started, release, finished = (threading.Event() for _ in range(3))
+
+    def dying(job):
+        started.set()
+        release.wait(2)
+        raise SystemExit("library called exit")
+
+    try:
+        doomed = reg.submit("doomed", [], dying)
+        assert started.wait(1)
+        queued = reg.submit("queued", [], lambda job: finished.set() or {"ok": True})
+        release.set()
+        assert finished.wait(1), "a failed worker stranded an already queued job"
+        _wait_finished(reg, queued.id)
+        assert doomed.state == "failed"
+        assert queued.snapshot()["result"] == {"ok": True}
+    finally:
+        release.set()
+        reg.shutdown()
+
+
+def test_registry_bounds_outstanding_jobs_and_reuses_finished_slots():
+    reg = JobRegistry(max_workers=1)
+    release = threading.Event()
+    rejected_callbacks = []
+    try:
+        jobs = [
+            reg.submit("blocker", [], lambda job: release.wait(3) or {})
+            for _ in range(9)
+        ]
+        with pytest.raises(JobCapacityError, match="busy"):
+            reg.submit(
+                "overflow", [], lambda job: {}, on_finish=rejected_callbacks.append
+            )
+        release.set()
+        for job in jobs:
+            _wait_finished(reg, job.id)
+        resumed = reg.submit("resumed", [], lambda job: {"ok": True})
+        _wait_finished(reg, resumed.id)
+        assert resumed.snapshot()["result"] == {"ok": True}
+        assert rejected_callbacks == []
+    finally:
+        release.set()
+        reg.shutdown()
+
+
+@pytest.mark.parametrize("failure", [None, ValueError, SystemExit])
+def test_completion_callback_runs_once_after_terminal_state(failure):
+    reg = JobRegistry(max_workers=1)
+    completed = threading.Event()
+    states = []
+
+    def worker(job):
+        if failure is not None:
+            raise failure("conversion stopped")
+        return {"ok": True}
+
+    def finish(job):
+        states.append(job.snapshot()["state"])
+        completed.set()
+
+    try:
+        reg.submit("callback", [], worker, on_finish=finish)
+        assert completed.wait(1)
+        reg.shutdown()
+        assert states == ["done" if failure is None else "failed"]
+    finally:
+        reg.shutdown()
+
+
+def test_shutdown_finishes_queued_cancellations_and_rejects_new_work():
+    reg = JobRegistry(max_workers=1)
+    started, release = threading.Event(), threading.Event()
+    completed = []
+    queued_ran = threading.Event()
+
+    def blocking(job):
+        started.set()
+        release.wait(3)
+
+    def finish(job):
+        completed.append((job.tool, job.snapshot()["state"]))
+
+    try:
+        reg.submit("active", [], blocking, on_finish=finish)
+        assert started.wait(1)
+        queued = reg.submit(
+            "queued", [], lambda job: queued_ran.set(), on_finish=finish
+        )
+        assert reg.cancel(queued.id)
+        reg.shutdown(timeout=0)
+        assert completed == [("queued", "cancelled")]
+        assert not queued_ran.is_set()
+        with pytest.raises(JobRegistryClosedError, match="shutting down"):
+            reg.submit("rejected", [], lambda job: {}, on_finish=finish)
+        release.set()
+        reg.shutdown()
+        assert completed == [("queued", "cancelled"), ("active", "cancelled")]
+    finally:
+        release.set()
+        reg.shutdown()
+
+
+def test_a_completion_callback_failure_does_not_strand_queued_work(caplog):
+    reg = JobRegistry(max_workers=1)
+
+    def failing_callback(job):
+        raise SystemExit("cleanup failed")
+
+    try:
+        reg.submit("first", [], lambda job: {}, on_finish=failing_callback)
+        queued = reg.submit("next", [], lambda job: {"ok": True})
+        _wait_finished(reg, queued.id)
+        assert queued.snapshot()["result"] == {"ok": True}
+        assert "cleanup failed" in caplog.text
+    finally:
+        reg.shutdown()
+
+
+@pytest.mark.parametrize("unavailable", ["busy", "closed"])
+def test_job_admission_failure_returns_retryable_http_503(
+    client, app_state, tmp_path, unavailable
+):
+    app_state.jobs = JobRegistry(max_workers=1)
+    release = threading.Event()
+    source = tmp_path / "source"
+    source.mkdir()
+    try:
+        if unavailable == "busy":
+            for _ in range(9):
+                app_state.jobs.submit("blocker", [], lambda job: release.wait(3))
+        else:
+            app_state.jobs.shutdown()
+        response = client.post(
+            "/api/gather/start",
+            json={
+                "source": str(source),
+                "target": str(tmp_path / "target"),
+                "custom": "txt",
+            },
+        )
+        assert response.status_code == 503
+        assert response.headers["retry-after"] == "1"
+        assert response.json()["detail"]
+    finally:
+        release.set()
+        app_state.jobs.shutdown()
+
+
 def test_idle_worker_releases_the_finished_jobs_closure():
     class Payload:
         pass
@@ -342,7 +499,7 @@ def test_idle_worker_releases_the_finished_jobs_closure():
 
 
 def test_worker_pool_is_bounded_by_max_workers():
-    reg = JobRegistry(max_workers=2)
+    reg = JobRegistry(max_workers=2, max_outstanding=20)
     release = threading.Event()
     before = threading.active_count()
     for _ in range(20):

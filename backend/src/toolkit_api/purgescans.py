@@ -27,7 +27,8 @@ class PurgeScans:
                 "created": time.monotonic(),
             }
             while len(self._scans) > self.max_scans:
-                self._scans.pop(next(iter(self._scans)))
+                oldest = min(self._scans, key=lambda key: self._scans[key]["created"])
+                del self._scans[oldest]
         return scan_id
 
     def take(self, scan_id: str) -> dict | None:
@@ -35,6 +36,15 @@ class PurgeScans:
         with self._lock:
             self._sweep()
             return self._scans.pop(scan_id, None)
+
+    def restore(self, scan_id: str, scan: dict) -> None:
+        """Undo a rejected submission without renewing the preview's lifetime."""
+        with self._lock:
+            self._scans[scan_id] = scan
+            self._sweep()
+            if len(self._scans) > self.max_scans:
+                oldest = min(self._scans, key=lambda key: self._scans[key]["created"])
+                del self._scans[oldest]
 
     def _sweep(self) -> None:
         """Drop scans past the TTL. Caller holds the lock."""

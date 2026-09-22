@@ -256,8 +256,6 @@ def run(req: WatermarkRunIn, state: StateDep, watermarks: WatermarksDep):
         [f"{Path(entry['name']).stem}.png" for entry in selected]
     )
 
-    # Pin before creating the spool, through model loading and final publishing.
-    @watermarks.pin(req.batch_id)
     def worker(job):
         inpaint = None
         initializing = False
@@ -379,5 +377,19 @@ def run(req: WatermarkRunIn, state: StateDep, watermarks: WatermarksDep):
         finally:
             shutil.rmtree(spool, ignore_errors=True)
 
-    job = state.jobs.submit("watermark", [entry["name"] for entry in selected], worker)
+    # Retain inputs while queued too; rejected submissions must release the lease.
+    pin = watermarks.pin(req.batch_id)
+    if pin.__enter__() is None:
+        pin.__exit__(None, None, None)
+        raise HTTPException(status_code=404, detail="Unknown or expired batch.")
+    try:
+        job = state.jobs.submit(
+            "watermark",
+            [entry["name"] for entry in selected],
+            worker,
+            on_finish=lambda job: pin.__exit__(None, None, None),
+        )
+    except BaseException:
+        pin.__exit__(None, None, None)
+        raise
     return JobStartedOut(job_id=job.id)

@@ -106,6 +106,11 @@ sequenceDiagram
 Jobs are tracked app-wide, not per page: every open tool keeps a tab in the bottom
 dock with its running jobs, so switching tools — or reloading — never loses a run.
 
+The server accepts at most 16 outstanding jobs by default, with up to eight worker
+threads. When full it returns a retryable `503` instead of retaining more queued
+uploads. Queued watermark jobs retain their inputs until they finish or are
+cancelled; shutting down cancels queued jobs and releases their resources.
+
 ## Configuration
 
 Environment variables, or `backend/.env` (copy `backend/.env.example`). All optional.
@@ -149,7 +154,19 @@ make clean       # remove build artifacts
 ```
 
 From `backend/`: `uv run pytest` is the single backend test command, and
-`uv run ruff check src tests` the lint.
+`uv run ruff check src tests benchmarks` the lint.
+
+To measure watermark detection/removal with reproducible synthetic images, run:
+
+```bash
+backend/.venv/bin/python backend/benchmarks/watermark_benchmark.py \
+  --repeat 3 --output .local-docs/watermark-benchmark.json
+```
+
+The [benchmark guide](backend/benchmarks/README.md) explains quality metrics,
+per-stage timing, peak memory, and optional local datasets/model checkpoints.
+The default run uses cv2 and downloads nothing. Compare image-error metrics as
+well as speed: inpainting can worsen an image even when detection finds a mark.
 
 ## Local data
 

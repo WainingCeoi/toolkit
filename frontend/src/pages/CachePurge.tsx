@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react'
-import { api } from '../api'
+import { ApiError, api } from '../api'
 import { useToolJob } from '../jobs'
 import FolderField from '../components/FolderField'
 import JobPanel from '../components/JobPanel'
@@ -92,9 +92,17 @@ export default function CachePurge() {
   async function runDelete() {
     if (!scan) return
     setError(null)
-    const started = await start(() => api.purgeDelete(scan.scan_id))
-    if (started === null) {
-      // null means the scan expired server-side, so the preview no longer describes the disk.
+    let expired = false
+    const started = await start(async () => {
+      try {
+        return await api.purgeDelete(scan.scan_id)
+      } catch (err) {
+        expired = err instanceof ApiError && err.status === 409
+        throw err
+      }
+    })
+    if (started === null && expired) {
+      // Busy/network failures preserve the preview so the same request can be retried.
       setScan(null)
       setConfirm(false)
     }

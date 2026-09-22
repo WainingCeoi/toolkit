@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import tracemalloc
 
 import numpy as np
 import pytest
@@ -14,6 +15,30 @@ from watermark.__main__ import main
 from watermark.detect import propose_mask_detailed, propose_texture_mask
 from watermark.inpaint import get_inpainter, inpaint_cv2
 from watermark.pipeline import remove_watermark
+
+
+def test_destruction_score_avoids_full_frame_int16_scratch_buffers():
+    from watermark.pipeline import _destruction_of
+
+    rgb = np.zeros((1000, 1000, 3), np.uint8)
+    probe = np.full_like(rgb, 127)
+    tracemalloc.start()
+    try:
+        assert _destruction_of(rgb, probe) == 127
+        _current, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    # Three full RGB int16 intermediates previously needed 18 MB for this frame.
+    assert peak < 12_000_000
+
+
+def test_destruction_score_keeps_signed_extremes_and_percentile_interpolation():
+    from watermark.pipeline import _destruction_of
+
+    rgb = np.array([[[255, 128, 0], [0, 128, 255], [0, 0, 0], [9, 9, 9]]], np.uint8)
+    probe = np.array([[[0, 0, 0], [0, 0, 128], [0, 0, 2], [10, 10, 10]]], np.uint8)
+    # Changed pixels have maximum channel deltas 255 and 128; <=2 is ignored.
+    assert _destruction_of(rgb, probe) == pytest.approx(242.3)
 
 
 def synthetic_pair(

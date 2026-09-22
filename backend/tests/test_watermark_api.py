@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from toolkit_api.jobs import FINISHED_STATES
+from toolkit_api.jobs import FINISHED_STATES, JobRegistry
 from toolkit_api.watermarks import WatermarkBatches
 from watermark import imgio
 
@@ -365,13 +365,13 @@ def test_results_are_published_before_the_batch_ends(client, app_state):
 
     real_submit = app_state.jobs.submit
 
-    def spy_submit(tool, names, worker):
+    def spy_submit(tool, names, worker, *, on_finish=None):
         def wrapper(job):
             out = worker(job)
             seen.append(job.snapshot()["result"])
             return out
 
-        return real_submit(tool, names, wrapper)
+        return real_submit(tool, names, wrapper, on_finish=on_finish)
 
     app_state.jobs.submit = spy_submit
     resp = client.post(
@@ -465,12 +465,12 @@ def test_cancelling_stops_partway_through_a_big_image(client, app_state, monkeyp
     running = []
     real_submit = app_state.jobs.submit
 
-    def spy_submit(tool, names, worker):
+    def spy_submit(tool, names, worker, *, on_finish=None):
         def wrapper(job):
             running.append(job)
             return worker(job)
 
-        return real_submit(tool, names, wrapper)
+        return real_submit(tool, names, wrapper, on_finish=on_finish)
 
     app_state.jobs.submit = spy_submit
 
@@ -507,12 +507,12 @@ def test_lama_is_loaded_while_the_loading_message_is_up(client, app_state, monke
     running = []
     real_submit = app_state.jobs.submit
 
-    def spy_submit(tool, names, worker):
+    def spy_submit(tool, names, worker, *, on_finish=None):
         def wrapper(job):
             running.append(job)
             return worker(job)
 
-        return real_submit(tool, names, wrapper)
+        return real_submit(tool, names, wrapper, on_finish=on_finish)
 
     app_state.jobs.submit = spy_submit
     messages = []
@@ -697,6 +697,77 @@ def test_batch_survives_expiry_during_spooling_and_model_loading(
     assert snap["result"]["done"] == ["a.png"]
     assert stored["pins"] == 0
     assert app_state.watermarks.get(batch["batch_id"]) is stored
+
+
+@pytest.mark.parametrize("ending", ["done", "cancelled", "shutdown"])
+def test_queued_batch_stays_pinned_until_its_job_finishes(client, app_state, ending):
+    app_state.jobs.shutdown()
+    app_state.jobs = JobRegistry(max_workers=1)
+    entered, release = threading.Event(), threading.Event()
+
+    def blocker(job):
+        entered.set()
+        release.wait(5)
+
+    app_state.jobs.submit("blocker", [], blocker)
+    assert entered.wait(2)
+    try:
+        batch = upload(client, ("a.png", png_bytes((20, 10)))).json()
+        image = batch["images"][0]
+        stored = app_state.watermarks.get(batch["batch_id"])
+        response = client.post(
+            "/api/watermark/run",
+            json={
+                "batch_id": batch["batch_id"],
+                "inpainter": "cv2",
+                "masks": {image["id"]: mask_b64(20, 10)},
+            },
+        )
+        assert response.status_code == 200
+        assert stored["pins"] == 1
+        stored["used"] -= app_state.watermarks.ttl + 1
+        assert app_state.watermarks.get(batch["batch_id"]) is stored
+        job_id = response.json()["job_id"]
+        if ending == "cancelled":
+            client.post(f"/api/jobs/{job_id}/cancel")
+        elif ending == "shutdown":
+            app_state.jobs.shutdown(timeout=0)
+            assert stored["pins"] == 0
+        release.set()
+        snap = wait_for_job(client, job_id)
+        assert snap["state"] == ("done" if ending == "done" else "cancelled")
+        assert stored["pins"] == 0
+        stored["used"] -= app_state.watermarks.ttl + 1
+        assert app_state.watermarks.get(batch["batch_id"]) is None
+        assert not stored["dir"].exists()
+    finally:
+        release.set()
+
+
+def test_rejected_watermark_job_releases_its_batch_pin(client, app_state):
+    app_state.jobs.shutdown()
+    app_state.jobs = JobRegistry(max_workers=1, max_outstanding=1)
+    release = threading.Event()
+    app_state.jobs.submit("blocker", [], lambda job: release.wait(5))
+    try:
+        batch = upload(client, ("a.png", png_bytes((20, 10)))).json()
+        image = batch["images"][0]
+        stored = app_state.watermarks.get(batch["batch_id"])
+        response = client.post(
+            "/api/watermark/run",
+            json={
+                "batch_id": batch["batch_id"],
+                "inpainter": "cv2",
+                "masks": {image["id"]: mask_b64(20, 10)},
+            },
+        )
+        assert response.status_code == 503
+        assert response.headers["Retry-After"] == "1"
+        assert stored["pins"] == 0
+        stored["used"] -= app_state.watermarks.ttl + 1
+        assert app_state.watermarks.get(batch["batch_id"]) is None
+    finally:
+        release.set()
 
 
 def test_run_rejects_an_unknown_inpainter(client):

@@ -198,6 +198,54 @@ def test_start_rejects_a_case_variant_output_folder(tool_client, tmp_path, monke
     assert "remuxing would overwrite the input (A.mkv)" in resp.json()["detail"]
 
 
+@pytest.mark.parametrize("link_kind", ["symlink", "hardlink"])
+@pytest.mark.parametrize("other_kind", ["video", "subtitle"])
+def test_start_rejects_output_aliasing_another_input(
+    tool_client, app_state, tmp_path, monkeypatch, link_kind, other_kind
+):
+    monkeypatch.setattr("shutil.which", lambda cmd: "/opt/fake/ffmpeg")
+    video = tmp_path / "a.mkv"
+    other = tmp_path / ("b.mkv" if other_kind == "video" else "b.srt")
+    video.write_bytes(b"first input")
+    other.write_bytes(b"other input")
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    dest = out_dir / video.name
+    if link_kind == "symlink":
+        dest.symlink_to(other)
+    else:
+        dest.hardlink_to(other)
+
+    # Submission is recorded only; an unsafe request must never start ffmpeg.
+    from types import SimpleNamespace
+
+    submitted = []
+
+    def record_submission(*args):
+        submitted.append(args)
+        return SimpleNamespace(id="not-started")
+
+    monkeypatch.setattr(app_state.jobs, "submit", record_submission)
+    selected = [str(video), str(other)] if other_kind == "video" else [str(video)]
+    resp = tool_client.post(
+        "/api/remux/start",
+        json=start_payload(
+            selected=selected,
+            out_folder=str(out_dir),
+            use_external_sub=other_kind == "subtitle",
+            external_sub_map={str(video): str(other)}
+            if other_kind == "subtitle"
+            else {},
+        ),
+    )
+
+    assert resp.status_code == 400
+    assert "remuxing would overwrite the input" in resp.json()["detail"]
+    assert submitted == []
+    assert video.read_bytes() == b"first input"
+    assert other.read_bytes() == b"other input"
+
+
 def test_start_accepts_a_video_without_an_external_subtitle(
     tool_client, tmp_path, monkeypatch
 ):

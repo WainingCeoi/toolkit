@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import base64
+import json
+import subprocess
+import sys
 import threading
 import time
 from io import BytesIO
@@ -10,7 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
-from PIL import Image
+from PIL import Image, PdfParser
 
 from toolkit_api.main import create_app
 from toolkit_api.routers import webpdf
@@ -133,6 +136,13 @@ def test_images_to_pdf_orders_pages_naturally():
     assert boxes[0][2:] == (20.0, 20.0)
 
 
+def test_images_to_pdf_rejects_an_empty_batch():
+    from toolkit_engine.imgpdf import images_to_pdf_bytes
+
+    with pytest.raises(ValueError, match="at least one image"):
+        images_to_pdf_bytes([])
+
+
 def test_images_to_pdf_applies_exif_orientation():
     from toolkit_engine import imgpdf as imgpdf_engine
 
@@ -146,6 +156,97 @@ def test_images_to_pdf_applies_exif_orientation():
     pdf = imgpdf_engine.images_to_pdf_bytes([("photo.jpg", buf.getvalue())])
     boxes = [tuple(map(float, m.decode().split())) for m in _mediaboxes(pdf)]
     assert boxes[0][2:] == (20.0, 40.0)
+
+
+def test_images_to_pdf_bounds_retained_decoded_pixels(monkeypatch):
+    from toolkit_engine import imgpdf as imgpdf_engine
+
+    converted = []
+    peak_pixels = 0
+    budget = 32
+    monkeypatch.setattr(imgpdf_engine, "MAX_BATCH_PIXELS", budget)
+    original_convert = Image.Image.convert
+
+    def remains_open(image):
+        try:
+            image.getpixel((0, 0))
+        except ValueError:
+            return False
+        return True
+
+    def count_open_pages(self, *args, **kwargs):
+        nonlocal peak_pixels
+        image = original_convert(self, *args, **kwargs)
+        converted.append(image)
+        pixels = sum(
+            page.width * page.height for page in converted if remains_open(page)
+        )
+        peak_pixels = max(peak_pixels, pixels)
+        return image
+
+    monkeypatch.setattr(Image.Image, "convert", count_open_pages)
+    try:
+        pdf = imgpdf_engine.images_to_pdf_bytes(
+            [(f"page-{i}.png", _png_bytes()) for i in range(4)]
+        )
+        with PdfParser.PdfParser(buf=pdf) as document:
+            assert len(document.pages) == 4
+        assert peak_pixels <= budget
+    finally:
+        for page in converted:
+            page.close()
+
+
+def test_images_to_pdf_rendering_preserves_page_order_orientation_and_rgb(monkeypatch):
+    from toolkit_engine import imgpdf as imgpdf_engine
+
+    # Force an append boundary; the second page may exceed a batch budget by itself.
+    monkeypatch.setattr(imgpdf_engine, "MAX_BATCH_PIXELS", 6000)
+
+    portrait = BytesIO()
+    with Image.new("RGB", (80, 40), "blue") as image:
+        exif = image.getexif()
+        exif[0x0112] = 6
+        image.save(portrait, format="JPEG", exif=exif)
+    translucent = BytesIO()
+    with Image.new("RGBA", (96, 64), (255, 0, 0, 128)) as image:
+        image.save(translucent, format="PNG")
+
+    pdf = imgpdf_engine.images_to_pdf_bytes(
+        [("p10.png", translucent.getvalue()), ("p2.jpg", portrait.getvalue())]
+    )
+    # Isolate the native renderer from pytest's warning filters / Python teardown.
+    rendered = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import json, sys, warnings\n"
+            "with warnings.catch_warnings():\n"
+            "    warnings.simplefilter('ignore')\n"
+            "    import pymupdf\n"
+            "with pymupdf.open(stream=sys.stdin.buffer.read(), "
+            "filetype='pdf') as doc:\n"
+            "    pages = []\n"
+            "    for page in doc:\n"
+            "        pix = page.get_pixmap()\n"
+            "        pages.append([[page.rect.width, page.rect.height], "
+            "pix.pixel(pix.width // 2, pix.height // 2)])\n"
+            "    print(json.dumps(pages))\n",
+        ],
+        input=pdf,
+        capture_output=True,
+        check=True,
+    )
+    pages = json.loads(rendered.stdout)
+    assert len(pages) == 2
+    for (size, pixel), expected_size, rgb in zip(
+        pages, [[40, 80], [96, 64]], [(0, 0, 255), (255, 0, 0)], strict=True
+    ):
+        assert size == expected_size
+        # Preserve Pillow's existing RGB conversion, including dropped alpha.
+        assert all(
+            abs(actual - wanted) < 5 for actual, wanted in zip(pixel, rgb, strict=True)
+        )
 
 
 def test_images_to_pdf_transposes_without_an_extra_pixel_copy(monkeypatch):

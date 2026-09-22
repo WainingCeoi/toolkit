@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 
 from toolkit_api.jobs import FINISHED_STATES
 from toolkit_api.main import create_app
+from toolkit_api.purgescans import PurgeScans
 from toolkit_engine import gather, purge
 
 
@@ -304,6 +305,48 @@ def test_purge_delete_refuses_an_unknown_or_expired_scan(tool_client):
     resp = tool_client.post("/api/purge/delete", json={"scan_id": "deadbeefcafe"})
     assert resp.status_code == 409
     assert "scan again" in resp.json()["detail"]
+
+
+def test_purge_keeps_the_scan_when_job_submission_fails(
+    tool_client, app_state, tmp_path, monkeypatch
+):
+    target = tmp_path / "a.log"
+    target.write_text("junk")
+    scan = tool_client.post(
+        "/api/purge/scan",
+        json={"folder": str(tmp_path), "patterns_raw": "*.log"},
+    ).json()
+    submit = app_state.jobs.submit
+
+    def unavailable(*args, **kwargs):
+        raise RuntimeError("No job capacity")
+
+    monkeypatch.setattr(app_state.jobs, "submit", unavailable)
+    with pytest.raises(RuntimeError, match="No job capacity"):
+        tool_client.post("/api/purge/delete", json={"scan_id": scan["scan_id"]})
+    assert target.exists()
+    monkeypatch.setattr(app_state.jobs, "submit", submit)
+    retry = tool_client.post("/api/purge/delete", json={"scan_id": scan["scan_id"]})
+    assert retry.status_code == 200
+    result = wait_for_job(tool_client, retry.json()["job_id"])
+    assert result["state"] == "done"
+    assert result["result"]["deleted"] == [str(target)]
+
+
+def test_rejected_scan_keeps_its_original_eviction_age(monkeypatch):
+    now = [0.0]
+    monkeypatch.setattr("toolkit_api.purgescans.time.monotonic", lambda: now[0])
+    scans = PurgeScans(max_scans=2)
+    oldest = scans.put("/old", ["/old/a.log"])
+    now[0] = 1.0
+    newer = scans.put("/new", ["/new/b.log"])
+    scans.restore(oldest, scans.take(oldest))
+    now[0] = 2.0
+    newest = scans.put("/last", ["/last/c.log"])
+
+    assert scans.take(oldest) is None
+    assert scans.take(newer)["folder"] == "/new"
+    assert scans.take(newest)["folder"] == "/last"
 
 
 def test_purge_delete_cancel_keeps_partial_report(

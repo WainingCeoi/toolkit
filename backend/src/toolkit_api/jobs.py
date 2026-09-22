@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import queue
 import threading
 import time
@@ -11,6 +12,15 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 
 FINISHED_STATES = frozenset({"done", "failed", "cancelled"})
+logger = logging.getLogger(__name__)
+
+
+class JobCapacityError(RuntimeError):
+    """The bounded registry cannot retain another job's inputs yet."""
+
+
+class JobRegistryClosedError(RuntimeError):
+    """Shutdown has started, so no new work can be accepted."""
 
 
 class Job:
@@ -88,12 +98,25 @@ class Job:
 class JobRegistry:
     """Creates jobs, runs their workers on a bounded daemon pool, keeps the last N."""
 
-    def __init__(self, max_jobs: int = 50, max_workers: int = 8):
+    def __init__(
+        self,
+        max_jobs: int = 50,
+        max_workers: int = 8,
+        max_outstanding: int | None = None,
+    ):
+        max_outstanding = (
+            max_workers + 8 if max_outstanding is None else max_outstanding
+        )
+        if max_workers < 1 or max_outstanding < 1:
+            raise ValueError("Worker and outstanding-job limits must be positive.")
         self._jobs: OrderedDict[str, Job] = OrderedDict()
         self._lock = threading.Lock()
         self._max_jobs = max_jobs
         self._max_workers = max_workers
-        # A queued item is a (job, worker) pair; None is the retire signal.
+        self._max_outstanding = max_outstanding
+        self._outstanding = 0
+        self._closed = False
+        # A queued item is (job, worker, on_finish); None is the retire signal.
         self._queue: queue.SimpleQueue = queue.SimpleQueue()
         self._workers: list[threading.Thread] = []
 
@@ -102,14 +125,23 @@ class JobRegistry:
         tool: str,
         item_names: list[str],
         worker: Callable[[Job], dict | None],
+        *,
+        on_finish: Callable[[Job], None] | None = None,
     ) -> Job:
-        """Create a job and queue ``worker(job)``; the worker polls job.cancelled."""
-        job = Job(tool, item_names)
+        """Accept work or raise; accepted jobs call ``on_finish(job)`` once at exit."""
         with self._lock:
-            self._jobs[job.id] = job
-            self._evict_finished()
+            if self._closed:
+                raise JobRegistryClosedError("The job service is shutting down.")
+            if self._outstanding >= self._max_outstanding:
+                raise JobCapacityError("The job service is busy. Try again shortly.")
+            # A thread-start failure must not leave a registered, unserviceable job.
             self._grow_pool()
-        self._queue.put((job, worker))
+            job = Job(tool, item_names)
+            self._jobs[job.id] = job
+            self._outstanding += 1
+            self._evict_finished()
+            # Keep admission and enqueue atomic with respect to shutdown sentinels.
+            self._queue.put((job, worker, on_finish))
         return job
 
     def _grow_pool(self) -> None:
@@ -123,20 +155,35 @@ class JobRegistry:
         thread.start()
         self._workers.append(thread)
 
-    def _run_one(self, job: Job, worker: Callable[[Job], dict | None]) -> None:
-        # Honour a cancel from the queue: purge deletes before its own check.
-        if job.cancelled:
-            job._finish(None)
-            return
+    def _run_one(
+        self,
+        job: Job,
+        worker: Callable[[Job], dict | None],
+        on_finish: Callable[[Job], None] | None,
+    ) -> None:
         try:
-            result = worker(job)
-        except Exception as exc:  # noqa: BLE001 — surfaced to the client
-            job._fail(str(exc))
-        except BaseException as exc:  # noqa: BLE001 — thread is dying
-            job._fail(f"The worker stopped unexpectedly: {exc!r}")
-            raise
-        else:
-            job._finish(result)
+            # Honour a cancel from the queue: purge deletes before its own check.
+            if job.cancelled:
+                job._finish(None)
+                return
+            try:
+                result = worker(job)
+            except Exception as exc:  # noqa: BLE001 — surfaced to the client
+                job._fail(str(exc))
+            except BaseException as exc:  # noqa: BLE001 — keep queued work serviceable
+                job._fail(f"The worker stopped unexpectedly: {exc!r}")
+            else:
+                job._finish(result)
+        finally:
+            try:
+                if on_finish is not None:
+                    on_finish(job)
+            except BaseException:  # noqa: BLE001 — cleanup must not kill the pool
+                logger.exception("Completion callback failed for job %s", job.id)
+            finally:
+                with self._lock:
+                    self._outstanding -= 1
+                    self._evict_finished()
 
     def _serve(self) -> None:
         try:
@@ -154,21 +201,32 @@ class JobRegistry:
                 self._workers = [t for t in self._workers if t is not here]
 
     def shutdown(self, timeout: float = 3.0) -> None:
-        """Cancel in-flight jobs and briefly join the workers (teardown)."""
+        """Close admission, cancel queued work immediately, and briefly join workers."""
+        pending = []
         with self._lock:
-            jobs = list(self._jobs.values())
+            if not self._closed:
+                self._closed = True
+                for job in self._jobs.values():
+                    if job.state not in FINISHED_STATES:
+                        job._cancel.set()
+                while True:
+                    try:
+                        pending.append(self._queue.get_nowait())
+                    except queue.Empty:
+                        break
+                for _ in self._workers:
+                    self._queue.put(None)
             workers = list(self._workers)
-        for job in jobs:
-            if job.state not in FINISHED_STATES:
-                job._cancel.set()
-        for _ in workers:
-            self._queue.put(None)
+        # Run cleanup outside the registry lock, even if active jobs cannot exit yet.
+        while pending:
+            self._run_one(*pending.pop())
         deadline = time.monotonic() + timeout
         for thread in workers:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break
-            thread.join(remaining)
+            if thread is not threading.current_thread():
+                thread.join(remaining)
 
     def get(self, job_id: str) -> Job | None:
         with self._lock:

@@ -89,7 +89,7 @@ def remove_watermark(
 
 
 def _destruction_of(rgb: np.ndarray, probe: np.ndarray) -> float:
-    moved = np.abs(rgb.astype(np.int16) - probe.astype(np.int16)).max(axis=2)
+    moved = cv2.absdiff(rgb, probe).max(axis=2)
     changed = moved > 2
     if not changed.any():
         return 0.0

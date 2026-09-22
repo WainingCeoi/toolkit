@@ -104,7 +104,7 @@ class WatermarkBatches:
             if batch is not None:
                 batch["pins"] += 1
         try:
-            yield
+            yield batch
         finally:
             with self._lock:
                 if batch is not None:

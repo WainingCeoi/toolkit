@@ -7,10 +7,12 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from .jobs import JobCapacityError, JobRegistryClosedError
 from .routers import (
     depsync,
     docmd,
@@ -72,6 +74,16 @@ def create_app(state: AppState | None = None) -> FastAPI:
         app.state.state.artifacts.cleanup()
 
     app = FastAPI(title="Toolkit API", version="0.1.0", lifespan=lifespan)
+
+    @app.exception_handler(JobCapacityError)
+    @app.exception_handler(JobRegistryClosedError)
+    async def job_unavailable(_request: Request, exc: RuntimeError) -> JSONResponse:
+        return JSONResponse(
+            status_code=503,
+            content={"detail": str(exc)},
+            headers={"Retry-After": "1"},
+        )
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=_cors_origins(),

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import shutil
+import stat
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
@@ -134,6 +135,7 @@ def start(req: StartIn, jobs: JobsDep) -> JobStartedOut:
 
     # The map mirrors /subtitles, whose unmatched videos carry a null subtitle.
     ext_subs = req.external_sub_map.values() if req.use_external_sub else ()
+    input_ids: set[tuple[int, int]] = set()
     # Security boundary: ffmpeg fetches URLs itself, so inputs must be local files.
     for video in [*req.selected, *(sub for sub in ext_subs if sub)]:
         if not video or "://" in video or _SCHEME.match(video):
@@ -141,10 +143,15 @@ def start(req: StartIn, jobs: JobsDep) -> JobStartedOut:
                 status_code=400,
                 detail="❌ Inputs must be local file paths, not URLs.",
             )
-        if not Path(video).expanduser().is_file():
+        try:
+            info = Path(video).expanduser().stat()
+        except OSError:
+            info = None
+        if info is None or not stat.S_ISREG(info.st_mode):
             raise HTTPException(
                 status_code=400, detail=f"❌ Not a file on this machine: {video}"
             )
+        input_ids.add((info.st_dev, info.st_ino))
 
     out_path = Path(req.out_folder).expanduser()
     try:
@@ -154,13 +161,15 @@ def start(req: StartIn, jobs: JobsDep) -> JobStartedOut:
             status_code=400, detail=f"❌ Cannot create the output folder: {e}"
         ) from e
 
-    # Match by inode: ffmpeg's same-file guard is string-only, resolve() folds no case.
+    # Protect every input: one task's output can alias another video or subtitle.
+    # Inodes also catch hardlinks and case aliases without an all-pairs comparison.
     out_resolved = out_path.resolve()
     seen_outputs: set[str] = set()
     for video in req.selected:
         name = Path(video).name
         dest = out_resolved / name
-        if dest.exists() and dest.samefile(Path(video).expanduser()):
+        dest_info = dest.stat() if dest.exists() else None
+        if dest_info is not None and (dest_info.st_dev, dest_info.st_ino) in input_ids:
             raise HTTPException(
                 status_code=400,
                 detail=(

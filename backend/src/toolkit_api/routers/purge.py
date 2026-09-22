@@ -91,5 +91,9 @@ def delete_files(
             ],
         }
 
-    job = jobs.submit("cache-purge", [], worker)
+    try:
+        job = jobs.submit("cache-purge", [], worker)
+    except BaseException:
+        scans.restore(req.scan_id, scan)
+        raise
     return JobStartedOut(job_id=job.id)
