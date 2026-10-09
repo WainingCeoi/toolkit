@@ -5,7 +5,6 @@ export const TOOL_EMOJI: Record<string, string> = {
   '/tools/web-images-to-pdf': '🌐',
   '/tools/file-gatherer': '📦',
   '/tools/image-to-pdf': '🖼️',
-  '/tools/watermark-remover': '🧽',
   '/tools/doc-to-pdf': '📄',
   '/tools/doc-to-markdown': '📝',
   '/tools/cache-purge': '🧹',

@@ -14,3 +14,4 @@ Thumbs.db
 .local-docs/
 
 .ruff_cache/
+.pytest_cache/

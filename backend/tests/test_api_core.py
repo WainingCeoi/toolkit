@@ -33,14 +33,14 @@ def wait_for_job(client, job_id, timeout=5.0):
     raise AssertionError(f"job {job_id} did not finish within {timeout}s")
 
 
-def test_tools_manifest_has_thirteen_tools_in_three_categories(client):
+def test_tools_manifest_has_twelve_tools_in_three_categories(client):
     categories = client.get("/api/tools").json()
     assert [c["name"] for c in categories] == [
         "🎬 Media",
         "🗂️ Files & Tools",
         "🌐 Network",
     ]
-    assert sum(len(c["tools"]) for c in categories) == 13
+    assert sum(len(c["tools"]) for c in categories) == 12
 
 
 def test_disabled_tools_are_hidden_from_the_manifest(client, monkeypatch):
@@ -50,7 +50,7 @@ def test_disabled_tools_are_hidden_from_the_manifest(client, monkeypatch):
     assert "doc-to-markdown" not in slugs
     assert "remux" not in slugs
     assert "cache-purge" in slugs
-    assert sum(len(c["tools"]) for c in categories) == 11
+    assert sum(len(c["tools"]) for c in categories) == 10
 
 
 def test_disabling_a_whole_category_drops_the_category(client, monkeypatch):
@@ -63,7 +63,7 @@ def test_disabling_a_whole_category_drops_the_category(client, monkeypatch):
 def test_unset_disabled_tools_lists_everything(client, monkeypatch):
     monkeypatch.delenv("TOOLKIT_DISABLED_TOOLS", raising=False)
     categories = client.get("/api/tools").json()
-    assert sum(len(c["tools"]) for c in categories) == 13
+    assert sum(len(c["tools"]) for c in categories) == 12
 
 
 def test_health_reports_dependency_booleans(client):
@@ -203,11 +203,6 @@ def test_all_api_routers_are_wired(app_state):
         "/api/torrent/resolve",
         "/api/torrent/resolve/{infohash}",
         "/api/torrent/{infohash}",
-        "/api/watermark/health",
-        "/api/watermark/batch",
-        "/api/watermark/run",
-        "/api/watermark/{batch_id}/{image_id}/image",
-        "/api/watermark/{batch_id}/{image_id}/mask",
         "/sub/{sub_id}",
     }
     assert expected <= paths, f"unwired routes: {expected - paths}"
@@ -351,98 +346,48 @@ def test_pool_runs_queued_jobs_after_system_exit():
 def test_registry_bounds_outstanding_jobs_and_reuses_finished_slots():
     reg = JobRegistry(max_workers=1)
     release = threading.Event()
-    rejected_callbacks = []
     try:
         jobs = [
             reg.submit("blocker", [], lambda job: release.wait(3) or {})
             for _ in range(9)
         ]
         with pytest.raises(JobCapacityError, match="busy"):
-            reg.submit(
-                "overflow", [], lambda job: {}, on_finish=rejected_callbacks.append
-            )
+            reg.submit("overflow", [], lambda job: {})
         release.set()
         for job in jobs:
             _wait_finished(reg, job.id)
         resumed = reg.submit("resumed", [], lambda job: {"ok": True})
         _wait_finished(reg, resumed.id)
         assert resumed.snapshot()["result"] == {"ok": True}
-        assert rejected_callbacks == []
     finally:
         release.set()
-        reg.shutdown()
-
-
-@pytest.mark.parametrize("failure", [None, ValueError, SystemExit])
-def test_completion_callback_runs_once_after_terminal_state(failure):
-    reg = JobRegistry(max_workers=1)
-    completed = threading.Event()
-    states = []
-
-    def worker(job):
-        if failure is not None:
-            raise failure("conversion stopped")
-        return {"ok": True}
-
-    def finish(job):
-        states.append(job.snapshot()["state"])
-        completed.set()
-
-    try:
-        reg.submit("callback", [], worker, on_finish=finish)
-        assert completed.wait(1)
-        reg.shutdown()
-        assert states == ["done" if failure is None else "failed"]
-    finally:
         reg.shutdown()
 
 
 def test_shutdown_finishes_queued_cancellations_and_rejects_new_work():
     reg = JobRegistry(max_workers=1)
     started, release = threading.Event(), threading.Event()
-    completed = []
     queued_ran = threading.Event()
 
     def blocking(job):
         started.set()
         release.wait(3)
 
-    def finish(job):
-        completed.append((job.tool, job.snapshot()["state"]))
-
     try:
-        reg.submit("active", [], blocking, on_finish=finish)
+        active = reg.submit("active", [], blocking)
         assert started.wait(1)
-        queued = reg.submit(
-            "queued", [], lambda job: queued_ran.set(), on_finish=finish
-        )
+        queued = reg.submit("queued", [], lambda job: queued_ran.set())
         assert reg.cancel(queued.id)
         reg.shutdown(timeout=0)
-        assert completed == [("queued", "cancelled")]
+        assert queued.snapshot()["state"] == "cancelled"
         assert not queued_ran.is_set()
         with pytest.raises(JobRegistryClosedError, match="shutting down"):
-            reg.submit("rejected", [], lambda job: {}, on_finish=finish)
+            reg.submit("rejected", [], lambda job: {})
         release.set()
         reg.shutdown()
-        assert completed == [("queued", "cancelled"), ("active", "cancelled")]
+        assert active.snapshot()["state"] == "cancelled"
     finally:
         release.set()
-        reg.shutdown()
-
-
-def test_a_completion_callback_failure_does_not_strand_queued_work(caplog):
-    reg = JobRegistry(max_workers=1)
-
-    def failing_callback(job):
-        raise SystemExit("cleanup failed")
-
-    try:
-        reg.submit("first", [], lambda job: {}, on_finish=failing_callback)
-        queued = reg.submit("next", [], lambda job: {"ok": True})
-        _wait_finished(reg, queued.id)
-        assert queued.snapshot()["result"] == {"ok": True}
-        assert "cleanup failed" in caplog.text
-    finally:
         reg.shutdown()
 
 

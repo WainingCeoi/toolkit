@@ -14,7 +14,6 @@ from .artifacts import ArtifactStore
 from .devices import Device, DeviceBook
 from .jobs import JobRegistry
 from .purgescans import PurgeScans
-from .watermarks import WatermarkBatches
 
 
 @dataclass
@@ -34,7 +33,6 @@ class AppState:
     torrents_lock: threading.Lock = field(default_factory=threading.Lock)
     # id(manager) -> in-flight requests; safe because each holder keeps a reference.
     torrents_users: dict[int, int] = field(default_factory=dict)
-    watermarks: WatermarkBatches | None = None
     purge_scans: PurgeScans = field(default_factory=PurgeScans)
 
 
@@ -97,5 +95,4 @@ def build_state() -> AppState:
         artifacts=ArtifactStore(),
         devices=devices,
         torrents=build_torrent_manager(devices.active()),
-        watermarks=WatermarkBatches(data_dir() / "watermark"),
     )

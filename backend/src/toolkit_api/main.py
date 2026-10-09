@@ -28,7 +28,6 @@ from .routers import (
     remux,
     subs,
     torrent,
-    watermark,
     webpdf,
 )
 from .routers.meta import disabled_slugs
@@ -110,7 +109,6 @@ def create_app(state: AppState | None = None) -> FastAPI:
         ("subscription", subs.router),
         ("dep-upgrade", depsync.router),
         ("torrent-downloader", torrent.router),
-        ("watermark-remover", watermark.router),
     ):
         if slug not in disabled:
             app.include_router(api_router, prefix="/api")

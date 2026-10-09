@@ -28,10 +28,6 @@ import type {
   TorrentSendPayload,
   TorrentSent,
   TorrentStatus,
-  WatermarkBatch,
-  WatermarkDetector,
-  WatermarkHealth,
-  WatermarkRunPayload,
   WebPdfCapture,
   WebPdfStatus,
 } from './types/api'
@@ -361,21 +357,4 @@ export const api = {
       method: 'POST',
       body: payload,
     }),
-
-  watermarkHealth: () => request<WatermarkHealth>('/watermark/health'),
-  watermarkUpload: (formData: FormData) =>
-    request<WatermarkBatch>('/watermark/batch', { method: 'POST', body: formData }),
-  watermarkRun: (payload: WatermarkRunPayload) =>
-    request<JobStarted>('/watermark/run', { method: 'POST', body: payload }),
 }
-
-export const watermarkImageUrl = (batchId: string, imageId: string): string =>
-  `${BASE}/watermark/${batchId}/${imageId}/image`
-export const watermarkMaskUrl = (
-  batchId: string,
-  imageId: string,
-  sensitivity: number,
-  detector: WatermarkDetector = 'auto',
-): string =>
-  `${BASE}/watermark/${batchId}/${imageId}/mask` +
-  `?sensitivity=${sensitivity}&detector=${detector}`

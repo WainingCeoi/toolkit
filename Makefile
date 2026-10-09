@@ -5,7 +5,7 @@ PORT ?= 8000
 
 # Backend extras; skipped on Intel Macs (no torch wheel). Override: make install EXTRAS=docmd
 EXTRAS ?= $(shell if [ "$$(uname -s)" = "Darwin" ] && [ "$$(uname -m)" = "x86_64" ]; \
-                  then echo ""; else echo "docmd watermark"; fi)
+                  then echo ""; else echo "docmd"; fi)
 EXTRA_FLAGS := $(foreach extra,$(strip $(EXTRAS)),--extra $(extra))
 
 .PHONY: help install dev backend frontend build start host test lint clean
@@ -21,9 +21,9 @@ help:
 
 install:
 	@if [ -z "$(strip $(EXTRAS))" ]; then \
-	  echo "note: skipping the MinerU and torch extras on this machine (no macOS x86_64 wheels)."; \
-	  echo "      Doc to Markdown will be unavailable and Watermark Remover falls back to its"; \
-	  echo "      cv2 inpainter; every other tool works. Hide Doc to Markdown from the UI with"; \
+	  echo "note: skipping the MinerU extra on this machine (no macOS x86_64 wheels)."; \
+	  echo "      Doc to Markdown will be unavailable; every other tool works."; \
+	  echo "      Hide Doc to Markdown from the UI with"; \
 	  echo "      TOOLKIT_DISABLED_TOOLS=doc-to-markdown in backend/.env"; \
 	fi
 	cd backend && uv sync $(EXTRA_FLAGS)

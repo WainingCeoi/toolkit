@@ -335,52 +335,6 @@ export interface DownloadedBlob {
   filename: string
 }
 
-// --- Watermark Remover ---
-
-export interface WatermarkImage {
-  id: string
-  name: string
-  /** Dimensions of the normalized (EXIF-upright) working copy — the canvas size. */
-  width: number
-  height: number
-}
-
-export interface WatermarkBatch {
-  batch_id: string
-  images: WatermarkImage[]
-}
-
-/** `auto` recovers a repeating mark, falling back to `texture`; the others run one detector. */
-export type WatermarkDetector = 'auto' | 'texture' | 'pattern'
-
-export interface WatermarkHealth {
-  /** torch importable — the LaMa inpainter can run (cv2 always can). */
-  lama: boolean
-  device: string
-}
-
-/** `masks` maps image id -> base64 PNG (white = remove). */
-export interface WatermarkRunPayload {
-  batch_id: string
-  inpainter: 'lama' | 'cv2'
-  masks: Record<string, string>
-  dilate_px?: number
-}
-
-export interface WatermarkResult {
-  /** Tells the page a stale snapshot from the batch currently staged. */
-  batch_id: string
-  done: string[]
-  failed: TupleFailure[]
-  /** No mask was proposed, so nothing was inpainted. */
-  skipped: string[]
-  /** A mark was found, but removing it would destroy the picture under it. */
-  protected: string[]
-  /** Zip of everything cleaned so far, republished under one id; absent until the first. */
-  artifact_id?: string
-  filename?: string
-}
-
 // --- Torrent Downloader ---
 
 export interface TorrentFileRow {

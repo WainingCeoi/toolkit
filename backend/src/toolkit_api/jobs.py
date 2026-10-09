@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 import queue
 import threading
 import time
@@ -12,7 +11,6 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 
 FINISHED_STATES = frozenset({"done", "failed", "cancelled"})
-logger = logging.getLogger(__name__)
 
 
 class JobCapacityError(RuntimeError):
@@ -116,7 +114,7 @@ class JobRegistry:
         self._max_outstanding = max_outstanding
         self._outstanding = 0
         self._closed = False
-        # A queued item is (job, worker, on_finish); None is the retire signal.
+        # A queued item is (job, worker); None is the retire signal.
         self._queue: queue.SimpleQueue = queue.SimpleQueue()
         self._workers: list[threading.Thread] = []
 
@@ -125,10 +123,8 @@ class JobRegistry:
         tool: str,
         item_names: list[str],
         worker: Callable[[Job], dict | None],
-        *,
-        on_finish: Callable[[Job], None] | None = None,
     ) -> Job:
-        """Accept work or raise; accepted jobs call ``on_finish(job)`` once at exit."""
+        """Accept work or raise if the registry is closed or at capacity."""
         with self._lock:
             if self._closed:
                 raise JobRegistryClosedError("The job service is shutting down.")
@@ -141,7 +137,7 @@ class JobRegistry:
             self._outstanding += 1
             self._evict_finished()
             # Keep admission and enqueue atomic with respect to shutdown sentinels.
-            self._queue.put((job, worker, on_finish))
+            self._queue.put((job, worker))
         return job
 
     def _grow_pool(self) -> None:
@@ -159,7 +155,6 @@ class JobRegistry:
         self,
         job: Job,
         worker: Callable[[Job], dict | None],
-        on_finish: Callable[[Job], None] | None,
     ) -> None:
         try:
             # Honour a cancel from the queue: purge deletes before its own check.
@@ -175,15 +170,9 @@ class JobRegistry:
             else:
                 job._finish(result)
         finally:
-            try:
-                if on_finish is not None:
-                    on_finish(job)
-            except BaseException:  # noqa: BLE001 — cleanup must not kill the pool
-                logger.exception("Completion callback failed for job %s", job.id)
-            finally:
-                with self._lock:
-                    self._outstanding -= 1
-                    self._evict_finished()
+            with self._lock:
+                self._outstanding -= 1
+                self._evict_finished()
 
     def _serve(self) -> None:
         try:
@@ -217,7 +206,7 @@ class JobRegistry:
                 for _ in self._workers:
                     self._queue.put(None)
             workers = list(self._workers)
-        # Run cleanup outside the registry lock, even if active jobs cannot exit yet.
+        # Finish queued cancellations even if active jobs cannot exit yet.
         while pending:
             self._run_one(*pending.pop())
         deadline = time.monotonic() + timeout

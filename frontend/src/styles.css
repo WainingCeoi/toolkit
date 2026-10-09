@@ -645,37 +645,6 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; gap: 6
 
 .qr { background: #fff; padding: 10px; border-radius: var(--radius-s); display: inline-block; }
 
-/* --- Watermark Remover: the canvas is native resolution, CSS-scaled to fit --- */
-.wm-card {
-  border: 1px solid var(--edge);
-  border-radius: var(--radius-s);
-  background: var(--bench);
-  padding: 12px;
-  margin: 12px 0;
-}
-.wm-canvas {
-  display: block;
-  max-width: 100%;
-  height: auto;
-  margin: 10px 0;
-  border: 1px solid var(--edge);
-  border-radius: var(--radius-s);
-}
-.wm-file { justify-content: space-between; padding: 6px 0; }
-.wm-toolbar { margin-bottom: 4px; }
-.wm-slider {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font: 12px var(--mono);
-  color: var(--muted);
-  white-space: nowrap;
-}
-.wm-slider input[type="range"] { accent-color: var(--amber); width: 140px; }
-.wm-hint { font: 12px var(--mono); color: var(--faint); flex: 1; }
-.wm-dims { font: 12px var(--mono); color: var(--faint); }
-
-
 /* --- Torrent Downloader --- */
 /* minmax(0, 1fr), not 1fr: nowrap content would otherwise widen the track */
 .tor-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; }

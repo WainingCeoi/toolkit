@@ -1,6 +1,6 @@
 # 🧰 Toolkit
 
-Thirteen small media & file utilities in one local app — a FastAPI backend driving
+Twelve small media & file utilities in one local app — a FastAPI backend driving
 the engines, a React single-page UI, and one `make` entrance.
 
 > **macOS only.** Folder pickers use AppleScript (`osascript`), and several tools
@@ -23,7 +23,6 @@ the engines, a React single-page UI, and one `make` entrance.
 | 🌐  | **Web Images to PDF**   | Open a page, scroll to load its images, capture them into one PDF.               |
 | 📦  | **File Gatherer**       | Recursively gather files by type and move them into one folder.                  |
 | 🖼️  | **Image to PDF**        | Combine selected images (incl. iPhone HEIC) into a single PDF.                   |
-| 🧽  | **Watermark Remover**   | Detect watermarks — tiled or once-per-photo — and inpaint them away.             |
 | 📄  | **Doc to PDF**          | Accept tracked changes, strip comments, render to PDF via LibreOffice.           |
 | 📝  | **Doc to Markdown**     | PDFs / Office docs / images → Markdown with MinerU (text, tables, formulas).     |
 | 🧹  | **Cache Purge**         | Recursively find and delete cache / junk files.                                  |
@@ -68,7 +67,7 @@ flowchart LR
     subgraph one["one Python process"]
         API["FastAPI<br/>routers/ — one per tool"]
         REG["job registry<br/>bounded worker pool"]
-        ENG["engines<br/>toolkit_engine · subgen · watermark"]
+        ENG["engines<br/>toolkit_engine · subgen"]
     end
     EXT["ffmpeg · Chrome · LibreOffice<br/>MinerU · BitComet · SQLite"]
     UI -- "JSON + SSE over /api" --> API
@@ -79,7 +78,6 @@ flowchart LR
 | ------------------------------- | ----------------------------------------------------------------------- |
 | `backend/src/toolkit_engine/`   | Framework-free domain logic: ffmpeg, docx, scanning, scraping, PDFs.    |
 | `backend/src/subgen/`           | Subscription engine — parse / rewrite / render / SQLite.                |
-| `backend/src/watermark/`        | Watermark detection and inpainting.                                     |
 | `backend/src/toolkit_api/`      | App factory, `deps.py`, `schemas.py`, `routers/`, the job registry.     |
 | `frontend/src/`                 | `api.ts` (one HTTP + SSE wrapper) and the React pages.                  |
 
@@ -108,8 +106,7 @@ dock with its running jobs, so switching tools — or reloading — never loses 
 
 The server accepts at most 16 outstanding jobs by default, with up to eight worker
 threads. When full it returns a retryable `503` instead of retaining more queued
-uploads. Queued watermark jobs retain their inputs until they finish or are
-cancelled; shutting down cancels queued jobs and releases their resources.
+uploads. Shutting down cancels queued jobs and releases their resources.
 
 ## Configuration
 
@@ -122,8 +119,6 @@ Environment variables, or `backend/.env` (copy `backend/.env.example`). All opti
 | `SUB_DB_PATH`            | `backend/data/sub.db` | Subscription: SQLite database path                               |
 | `SUB_ACCESS_TOKEN`       | empty                 | Require `?token=…` on subscription links                         |
 | `SUB_PUBLIC_HOST`        | `.local` name         | Host used in subscription links, then a LAN IP                   |
-| `WATERMARK_DEVICE`       | auto                  | Pin LaMa to `cpu` / `mps` / `cuda`                               |
-| `WATERMARK_LAMA_MODEL`   | empty                 | Path to a pre-downloaded `big-lama.pt` (skips the download)      |
 | `APP_CORS_ORIGINS`       | Vite dev origins      | CORS allowlist (cross-origin API calls only)                     |
 | `APP_STATIC_DIR`         | `../frontend/dist`    | Built UI served by the single-server modes                       |
 | `TOOLKIT_DISABLED_TOOLS` | empty                 | Slugs to switch off — hidden **and** unmounted (404). Read at startup |
@@ -137,7 +132,6 @@ Environment variables, or `backend/.env` (copy `backend/.env.example`). All opti
 | everything            | [Node.js](https://nodejs.org/) 22.22+, 24.15+ or 26+   | frontend build                                                    |
 | Remux Processor       | [FFmpeg](https://ffmpeg.org/)                          | `brew install ffmpeg`                                             |
 | Torrent Downloader    | [BitComet](https://www.bitcomet.com/)                  | *Options → Remote Access*: enable **both** switches, set user/pass |
-| Watermark Remover     | [torch](https://pytorch.org/)                          | via the `watermark` extra; big-lama (~200 MB) auto-downloads. Falls back to cv2 |
 | Web Images to PDF     | [Google Chrome](https://www.google.com/chrome/)        | matching driver downloaded automatically                          |
 | Doc to PDF            | [LibreOffice](https://www.libreoffice.org/)            | `brew install --cask libreoffice`                                 |
 | Doc to Markdown       | [MinerU](https://github.com/opendatalab/MinerU)        | the `docmd` extra (`uv sync --extra docmd`); models download on first run |
@@ -167,12 +161,11 @@ database path and moves the other persistent stores into its parent folder.
 | `data/sub.db` | `subscriptions`: generated nodes as JSON, unique input hash, options, counts, timestamp | Yes |
 | `data/torrents.db` | `devices`: saved BitComet connections; `device_settings`: selected device | Yes |
 | `data/bitcomet-device-id` | BitComet pairing identity | Yes |
-| `data/watermark/` | Uploaded images and batch working files; eligible for cleanup after six idle hours | No; old batches are cleared on startup |
 | Job registry and temporary artifacts | Job status/results in memory; temporary output files eligible for cleanup after six idle hours | No |
 
-Expiry cleanup runs on subsequent store access; active watermark runs pin their batches.
+Expiry cleanup runs on subsequent store access.
 
-Keep **one API worker process**: jobs, staged batches, browser sessions, and locks
+Keep **one API worker process**: jobs, staged uploads, browser sessions, and locks
 are shared in memory. Browser reloads can reattach to jobs while that process is
 alive; restarting the API does not resume them. SQLite fits this local metadata
 workload; image processing and conversion work happen outside the database.
@@ -244,69 +237,6 @@ and `~/…` is refused rather than expanded to this Mac's home.
 Devices live in `backend/data/torrents.db` (mode `0600`). Remote passwords are
 stored in plaintext because BitComet's login needs the password itself, not a digest
 — the same exposure as `BitComet.xml`, which holds the local one in plaintext too.
-
-</details>
-
-<details>
-<summary><b>🧽 Watermark Remover</b> — the mark repeats, or the batch proves it</summary>
-
-```mermaid
-flowchart TD
-    A["up to 20 png / jpg / webp"] --> D["detect — chosen automatically"]
-    D --> D1["fold the repeating grid<br/>median all tiles together"]
-    D --> D2["pool sparse instances<br/>across the batch"]
-    D --> D4["stack the batch<br/>mark stamped once per photo"]
-    D --> D3["dual top-hat fallback<br/>evidence-gated"]
-    D1 --> V{"does the photo really<br/>deviate under the stamp?"}
-    D2 --> V
-    D4 --> V
-    D3 --> V
-    V -- yes --> M["mask, previewed in red<br/>sensitivity slider widens it"]
-    V -- no --> K["image skipped — nothing written"]
-    M --> I["dilate → inpaint<br/>LaMa, else cv2 · tiled for big photos"]
-    I --> Z["one zip of cleaned PNGs"]
-```
-
-- **You see every mask before anything changes.** There is no brush: the
-  detector masks what it actually proved, or reports that it proved nothing and
-  the image is skipped — a mask hand-drawn over a watermark detection could not
-  find is a mask over whatever the person could see, and inpainting that
-  damaged photographs while leaving the watermark in place.
-- **A one-off mark is proven by the batch, not painted.** A mark that never
-  repeats has no copies to fold within its own frame — but a supplier stamps
-  the same mark at the same place on every photo, so the batch stacks its
-  frames' detail fields and keeps what they all deviate on together
-  (`backend/src/watermark/stacked.py`). Every constant is measured: 70/75
-  synthetic marked batches detected with 0/286 false fires. It needs company —
-  three frames minimum, and a lone image with a one-off mark is skipped, not
-  guessed at — and it refuses a batch of near-identical shots, where
-  "everything agrees" describes the scene rather than a mark. The run's
-  destruction guard (`would_destroy_content` in
-  `backend/src/watermark/pipeline.py`) still vetoes any mask that would take
-  the picture with it.
-- Folding recovers the mark itself rather than judging pixels — the overlay is
-  identical in every tile, so it survives the median while the photograph cancels
-  out. That makes a mark far too faint to see anywhere on its own legible.
-- Folding alone is **not** evidence: a clean photo can lock onto its own sky
-  gradient. Verifying each stamp against the image is what separates them, and it
-  is why a mark buried in busy texture is skipped rather than guessed at. The gates
-  and the measured constants behind them are in `backend/src/watermark/pattern.py`.
-- Marks are shared across the batch — one watermarking tool usually ran over all of
-  them — so an image that cannot recover its own is masked from a sibling's.
-- Only marked pixels are ever written, always as PNG (re-encoding inpainted pixels
-  as JPEG would stamp fresh artifacts right where the fill happened). LaMa picks
-  CUDA → MPS → CPU; on an M-series Mac MPS is ~8× faster for output differing by at
-  most one grey level.
-
-Headless over a folder, no web app involved — it shares marks across the folder the
-same way, and prints what it skipped:
-
-```bash
-cd backend && uv run python -m watermark clean IN_DIR OUT_DIR --inpainter lama
-```
-
-> For images you own or are licensed to edit — removing someone else's watermark
-> from content you have no rights to is not what this is for.
 
 </details>
 

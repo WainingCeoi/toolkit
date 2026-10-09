@@ -13,7 +13,6 @@ from toolkit_api.devices import DeviceBook
 from toolkit_api.jobs import JobRegistry
 from toolkit_api.main import create_app
 from toolkit_api.state import AppState
-from toolkit_api.watermarks import WatermarkBatches
 
 # starlette's TestClient imports `httpx`; httpx2 shares its API, so alias it first.
 sys.modules.setdefault("httpx", httpx2)
@@ -26,7 +25,6 @@ def app_state(tmp_path):
         jobs=JobRegistry(),
         artifacts=ArtifactStore(),
         devices=DeviceBook(tmp_path / "torrents.db"),
-        watermarks=WatermarkBatches(tmp_path / "watermark"),
     )
     yield state
     state.artifacts.cleanup()
