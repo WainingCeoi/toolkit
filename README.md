@@ -137,10 +137,9 @@ nothing to configure twice.
 
 ## Maintenance and development
 
-The small root `Makefile` contains the everyday startup command and help text.
-`make/maintenance.mk` holds the setup, development, testing, hosting, and cleanup
-recipes. These are available to maintainers and coding agents through the same
-`make` interface.
+The root `Makefile` contains startup, setup, development, testing, hosting, and
+cleanup commands. `make` shows the short everyday guide; `make help-maintenance`
+lists the commands used by maintainers and coding agents.
 
 | Command | Purpose |
 | --- | --- |
