@@ -37,27 +37,23 @@ the engines, a React single-page UI, and one `make` entrance.
 
 ## Quick start
 
+Install [uv](https://docs.astral.sh/uv/) and a supported
+[Node.js](https://nodejs.org/) version once, then run this from the project folder:
+
 ```bash
-make install     # backend deps (uv) + frontend deps (npm)
-make dev         # → http://localhost:5173
+make start
 ```
 
-| Command      | What runs                                | Reachable from            |
-| ------------ | ---------------------------------------- | ------------------------- |
-| `make dev`   | Vite `:5173` + API `:8000`, hot-reload   | this Mac                  |
-| `make start` | built UI + API in one process, `:8000`   | this Mac (loopback)       |
-| `make host`  | the same, bound to `0.0.0.0`             | every device on the Wi-Fi |
+This prepares the locked Python and Node dependencies, builds the frontend, and
+serves the UI and API together on this Mac. The first run downloads dependencies;
+later runs reuse the Python environment and dependency caches. Doc to Markdown's
+MinerU extra is included on supported Macs.
 
-Run the two halves in separate terminals with `make backend` and `make frontend`:
-`make backend` writes the port it settled on to `backend/.port`, and `make frontend`
-points Vite's `/api` proxy there.
+Open the URL printed in the terminal, normally `http://127.0.0.1:8000`. If that
+port is busy, Toolkit picks the next available one. Press **Ctrl-C** to stop.
 
-One Ctrl-C stops everything. In dev, Vite proxies `/api` to the backend, so the UI
-calls same-origin and streaming needs no CORS. `make host PORT=9000` moves the base
-port (auto-advances if busy); `HOST=127.0.0.1 make host` keeps it local.
-
-> ⚠️ **`make host` has no authentication**, and these tools move and permanently
-> delete files on this Mac. It's plain HTTP — run it only on a network you trust.
+For everyday use, `make start` is the only command to remember. `make` shows this
+short usage guide; `make help-maintenance` lists the other commands.
 
 ## How it works
 
@@ -139,12 +135,44 @@ Environment variables, or `backend/.env` (copy `backend/.env.example`). All opti
 For BitComet on *this* Mac the app reads credentials from BitComet's own config —
 nothing to configure twice.
 
-## Development
+## Maintenance and development
+
+The small root `Makefile` contains the everyday startup command and help text.
+`make/maintenance.mk` holds the setup, development, testing, hosting, and cleanup
+recipes. These are available to maintainers and coding agents through the same
+`make` interface.
+
+| Command | Purpose |
+| --- | --- |
+| `make test` | Backend tests and Ruff; frontend type checks, lint, tests, and build |
+| `make dev` | Prepare dependencies, then run API + Vite with hot reload |
+| `make host` | Prepare dependencies, build, and serve the UI + API to the LAN |
+| `make install` | Prepare locked dependencies without starting the app |
+| `make build` | Build the frontend |
+| `make lint` | Run lint, formatting, and type checks |
+| `make clean` | Remove project build outputs and caches; keep dependencies and runtime data |
+
+For separate development terminals, use `make backend` and `make frontend` after
+`make install`. The backend records its chosen port in `backend/.port`; the
+frontend proxies `/api` to that port. `make dev` normally serves the UI at
+`http://localhost:5173`.
+
+`make start PORT=9000` or `make host PORT=9000` changes the base port.
+`HOST=127.0.0.1 make host` keeps hosting local. To omit the optional MinerU stack,
+use `make start EXTRAS=`; Intel Macs omit it automatically.
+
+> ⚠️ **`make host` has no authentication**, and these tools move and permanently
+> delete files on this Mac. It's plain HTTP — run it only on a network you trust.
+
+### Continuous integration
+
+[GitHub Actions](.github/workflows/ci.yml) runs `make test` on pull requests,
+pushes to `main`, and manual runs from the repository's Actions tab. It uses
+macOS for the native Photos-library tests, installs the committed lockfiles,
+and skips the optional MinerU stack. Local checks and CI share the same command:
 
 ```bash
-make test        # backend pytest + ruff, then frontend typecheck + eslint + vitest + build
-make build       # frontend/dist only
-make clean       # remove build artifacts
+make test
 ```
 
 From `backend/`: `uv run pytest` is the single backend test command, and
