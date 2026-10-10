@@ -1,4 +1,5 @@
 import { useRef, useState } from 'react'
+import Icon from './Icon'
 
 function fmtSize(bytes: number): string {
   if (bytes > 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`
@@ -26,8 +27,11 @@ export default function FileDrop({ accept, files, onChange, hint }: FileDropProp
       <div
         className={`filedrop ${drag ? 'drag' : ''}`}
         onClick={() => input.current?.click()}
-        onKeyDown={(e) => e.key === 'Enter' && input.current?.click()}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); input.current?.click() }
+        }}
         role="button"
+        aria-label={hint || 'Choose files to upload'}
         tabIndex={0}
         onDragOver={(e) => {
           e.preventDefault()
@@ -40,7 +44,9 @@ export default function FileDrop({ accept, files, onChange, hint }: FileDropProp
           addFiles(e.dataTransfer.files)
         }}
       >
-        {hint || 'Drop files here or click to choose'}
+        <span className="upload-icon"><Icon name="upload" size={23} /></span>
+        <span>{hint || 'Drop files here or click to choose'}</span>
+        <span className="filedrop-caption">Choose files from your device</span>
         <input
           ref={input}
           type="file"
@@ -59,8 +65,8 @@ export default function FileDrop({ accept, files, onChange, hint }: FileDropProp
               <span>
                 {f.name} · {fmtSize(f.size)}
               </span>
-              <button type="button" onClick={() => onChange(files.filter((_, j) => j !== i))}>
-                remove
+              <button type="button" aria-label={`Remove ${f.name}`} onClick={() => onChange(files.filter((_, j) => j !== i))}>
+                <Icon name="close" size={14} />
               </button>
             </li>
           ))}

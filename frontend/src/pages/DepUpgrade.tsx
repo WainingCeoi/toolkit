@@ -4,16 +4,19 @@ import { useToolJob } from '../jobs'
 import FolderField from '../components/FolderField'
 import JobPanel from '../components/JobPanel'
 import Button from '../components/Button'
+import ToolHeader from '../components/ToolHeader'
+import EmptyState from '../components/EmptyState'
+import Icon from '../components/Icon'
 import type { Bump, DepApplyResult, DepScanResult } from '../types/api'
 
 // Mirrors depsync.COMMIT_SUBJECT; keep them in sync.
 const DEFAULT_COMMIT_MESSAGE = 'chore(deps): update dependencies'
 
 const mono: CSSProperties = { font: '11px var(--mono)', color: 'var(--faint)' }
-const caption: CSSProperties = { font: '11px var(--mono)', color: 'var(--faint)', margin: '6px 0 0' }
+const caption: CSSProperties = { fontSize: 12, color: 'var(--muted)', margin: '6px 0 0' }
 const change: CSSProperties = { font: '12px var(--mono)' }
 const badge: CSSProperties = {
-  font: '10px var(--mono)',
+  fontSize: 10,
   textTransform: 'uppercase',
   padding: '1px 6px',
   borderRadius: 4,
@@ -100,72 +103,87 @@ export default function DepUpgrade() {
 
   return (
     <div>
-      <div className="page-head"><h1>📦 Dependency Upgrader</h1></div>
+      <ToolHeader slug="dep-upgrade" />
       <p className="page-sub">
-        Scan a project for uv (<code>pyproject.toml</code>) and npm
-        (<code>package.json</code>) manifests — including subfolders — review the
-        outdated dependencies, then upgrade and commit each one.
+        Find Python and Node.js package updates across your project. Refresh
+        lockfiles, review the proposed version changes, then apply them with an optional commit.
       </p>
 
       <div className="station">
-        <div className="panel">
-          <div className="step"><span className="n">01</span><span>Project &amp; scan</span></div>
+        <div>
+          <div className="panel">
+            <div className="step"><span className="n">01</span><span>Project &amp; scan</span></div>
 
-          <FolderField
-            label="Project folder"
-            value={folder}
-            onChange={setTypedFolder}
-            placeholder="/Users/you/my-monorepo"
-            startDir={folder}
-          />
-
-          <label className="check" style={{ margin: '12px 0 8px' }}>
-            <input
-              type="checkbox"
-              checked={commitAfter}
-              onChange={(e) => setCommitAfter(e.target.checked)}
+            <FolderField
+              label="Project folder"
+              value={folder}
+              onChange={setTypedFolder}
+              placeholder="/Users/you/my-monorepo"
+              startDir={folder}
             />
-            Commit after applying
-          </label>
 
-          <div className="field">
-            <label htmlFor="dep-commit-message">Commit message</label>
-            <input
-              id="dep-commit-message"
-              className="control"
-              value={commitMessage}
-              onChange={(e) => setCommitMessage(e.target.value)}
-              placeholder={DEFAULT_COMMIT_MESSAGE}
-              disabled={!commitAfter}
-              spellCheck={false}
-            />
-            <p style={caption}>
-              One commit covers every upgraded manifest and its lockfile. Blank
-              falls back to “{DEFAULT_COMMIT_MESSAGE}”.
-            </p>
+            <div className="action-summary">
+              <strong>Scanning updates lockfiles</strong>
+              <p>The scan runs uv lock -U or npm install --package-lock-only, including in subfolders. Manifest version changes are applied after review.</p>
+            </div>
+
+            <Button
+              variant="primary"
+              onClick={runScan}
+              loading={running}
+              disabled={!folder.trim() || running || applying}
+            >
+              <Icon name="search" size={17} /> Scan &amp; refresh locks
+            </Button>
+            {!folder.trim() && <p className="hint">Choose a project containing pyproject.toml or package.json.</p>}
+            {error && <div className="note error">{error}</div>}
           </div>
 
-          <Button
-            variant="primary"
-            onClick={runScan}
-            loading={running}
-            disabled={!folder.trim() || running || applying}
-            style={{ marginTop: 10 }}
-          >
-            🔍 Scan &amp; upgrade
-          </Button>
+          <div className="panel">
+            <div className="step"><span className="n">02</span><span>Apply options</span></div>
 
-          {error && <div className="note error">{error}</div>}
+            <label className="check" style={{ margin: '12px 0 8px' }}>
+              <input
+                type="checkbox"
+                checked={commitAfter}
+                onChange={(e) => setCommitAfter(e.target.checked)}
+              />
+              Commit after applying
+            </label>
+
+            <div className="field">
+              <label htmlFor="dep-commit-message">Commit message</label>
+              <input
+                id="dep-commit-message"
+                className="control"
+                value={commitMessage}
+                onChange={(e) => setCommitMessage(e.target.value)}
+                placeholder={DEFAULT_COMMIT_MESSAGE}
+                disabled={!commitAfter}
+                spellCheck={false}
+              />
+              <p style={caption}>
+                One commit covers every upgraded manifest and its lockfile. Blank
+                falls back to “{DEFAULT_COMMIT_MESSAGE}”.
+              </p>
+            </div>
+
+            <p className="hint">Review major version changes for compatibility before applying.</p>
+          </div>
         </div>
 
-        <div className="panel">
-          <div className="step"><span className="n">02</span><span>Review &amp; apply</span></div>
+        <div className="panel result-panel">
+          <div className="step"><span className="n">03</span><span>Review &amp; apply</span></div>
 
           {!snapshot && (
-            <div className="note info">Scan a project to see what's outdated.</div>
+            <EmptyState icon="package" title="Package updates appear here">Scan a project to compare current and proposed versions, including major changes.</EmptyState>
           )}
 
           <JobPanel snapshot={snapshot}>
+            {result && <div className="metrics">
+              <div className="metric"><span className="v">{targets.length}</span><span className="k">Manifests scanned</span></div>
+              <div className={totalBumps > 0 ? 'metric' : 'metric ok'}><span className="v">{totalBumps}</span><span className="k">Proposed updates</span></div>
+            </div>}
             {result && targets.length === 0 && (
               <div className="note info">
                 No uv or npm manifests found under that folder.
@@ -203,7 +221,7 @@ export default function DepUpgrade() {
                   disabled={!canApply}
                   style={{ marginTop: 14 }}
                 >
-                  ✍️ Apply {totalBumps} upgrade(s){commitAfter ? ' & commit' : ''}
+                  <Icon name="check" size={17} /> Apply {totalBumps} upgrade(s){commitAfter ? ' & commit' : ''}
                 </Button>
               ))}
 
@@ -211,6 +229,7 @@ export default function DepUpgrade() {
 
             {applyResult && (
               <div style={{ marginTop: 12 }}>
+                <div className="action-summary"><strong>{applyResult.written_total} version changes applied</strong><p>{applyResult.commits.length} commit(s) created. Review individual manifests below.</p></div>
                 {applyResult.results.map((r) => (
                   <div
                     key={r.rel}
@@ -225,7 +244,7 @@ export default function DepUpgrade() {
                         ? 'nothing upgraded'
                         : `upgraded ${r.written}`}
                     {r.skipped.length > 0 && (
-                      <div style={{ marginTop: 4, font: '11px var(--mono)' }}>
+                      <div className="hint" style={{ marginTop: 4 }}>
                         skipped {r.skipped.map((s) => s.name).join(', ')} —{' '}
                         {r.skipped[0].reason}
                       </div>

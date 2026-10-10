@@ -5,6 +5,9 @@ import FolderField from '../components/FolderField'
 import JobPanel from '../components/JobPanel'
 import CodeBox from '../components/CodeBox'
 import Button from '../components/Button'
+import ToolHeader from '../components/ToolHeader'
+import EmptyState from '../components/EmptyState'
+import Icon from '../components/Icon'
 import { formatBytes } from '../torrent'
 import type { PhotoFilterResult } from '../types/api'
 
@@ -31,7 +34,7 @@ private/**/caches/
 // A first run can delete tens of thousands of files; the count stays exact, the list is capped.
 const LIST_LIMIT = 200
 
-const caption: CSSProperties = { font: '11px var(--mono)', color: 'var(--faint)', margin: '6px 0 0' }
+const caption: CSSProperties = { fontSize: 12, color: 'var(--muted)', margin: '6px 0 0' }
 const mono: CSSProperties = { font: '12px var(--mono)', color: 'var(--muted)', overflowWrap: 'anywhere' }
 const num: CSSProperties = { textAlign: 'right', whiteSpace: 'nowrap' }
 
@@ -125,12 +128,12 @@ function Report({ result }: { result: PhotoFilterResult }) {
         </p>
       )}
 
-      <ListExpander title={`🗑️ Deleted from the destination (${result.deleted.length})`} items={result.deleted} />
+      <ListExpander title={`Deleted from the destination (${result.deleted.length})`} items={result.deleted} />
 
       {result.errors.length > 0 && (
         <>
           <div className="note error">{result.errors.length} error(s) during the run.</div>
-          <ListExpander title={`⚠️ Errors (${result.errors.length})`} items={result.errors} />
+          <ListExpander title={`Errors (${result.errors.length})`} items={result.errors} />
         </>
       )}
 
@@ -147,7 +150,7 @@ function Report({ result }: { result: PhotoFilterResult }) {
             {verify.problems.length} problem(s) across {verify.assets} asset(s),{' '}
             {verify.edited} edited.
           </div>
-          <ListExpander title={`❌ Problems (${verify.problems.length})`} items={verify.problems} />
+          <ListExpander title={`Problems (${verify.problems.length})`} items={verify.problems} />
         </>
       )}
     </div>
@@ -181,21 +184,20 @@ export default function PhotosLibraryFilter() {
 
   return (
     <div>
-      <div className="page-head"><h1>📸 Photos Library Filter</h1></div>
+      <ToolHeader slug="photos-library-filter" />
       <p className="page-sub">
-        Mirror a Photos library into a cache-free copy Photos can still open, while
-        Photos is running: the live database is snapshotted with its WAL folded in,
-        originals are cloned with their metadata, and every asset is verified.
+        Create a lighter copy of your Photos library. Preserve originals, metadata,
+        and edits, then verify every asset. Preview the plan before writing the mirror.
       </p>
 
       <div className="station">
         <div className="panel">
-          <div className="step"><span className="n">01</span><span>Libraries &amp; rules</span></div>
+          <div className="step"><span className="n">01</span><span>Set up the mirror</span></div>
 
           <FolderField
             label="Source library (read only)"
             value={source}
-            onChange={setSource}
+            onChange={(value) => { setSource(value); setConfirm(false) }}
             placeholder="~/Pictures/Photos Library.photoslibrary"
             startDir="~/Pictures"
             packages
@@ -203,19 +205,16 @@ export default function PhotosLibraryFilter() {
           <FolderField
             label="Destination library (the mirror)"
             value={dest}
-            onChange={setDest}
+            onChange={(value) => { setDest(value); setConfirm(false) }}
             placeholder="~/Pictures/backup_filtered/Photos Library.photoslibrary"
             startDir="~/Pictures"
             packages
           />
-          <p style={{ ...caption, margin: '-6px 0 12px' }}>
-            Must end in .photoslibrary and lie outside the source. Created if missing;
-            anything already in it that is not part of the plan is deleted.
-          </p>
+          <p className="hint">Use a .photoslibrary destination outside the source. A new library is created if needed.</p>
 
           <details className="expander">
             <summary>
-              🧹 Exclude rules · {activeRules} active
+              Exclude rules · {activeRules} active
               {rules === DEFAULT_RULES ? '' : ' · edited'}
             </summary>
             <div className="body">
@@ -224,7 +223,7 @@ export default function PhotosLibraryFilter() {
                 className="control"
                 rows={14}
                 value={rules}
-                onChange={(e) => setRules(e.target.value)}
+                onChange={(e) => { setRules(e.target.value); setConfirm(false) }}
                 spellCheck={false}
                 // One line per rule: a wrapped comment would read as a rule.
                 wrap="off"
@@ -237,24 +236,25 @@ export default function PhotosLibraryFilter() {
             </div>
           </details>
 
+          <div className="step"><span className="n">02</span><span>Preview or write</span></div>
           <div className="segmented" role="group" aria-label="Run mode">
             <button
               type="button"
               className={`seg-opt${dryRun ? ' active' : ''}`}
               aria-pressed={dryRun}
               disabled={running}
-              onClick={() => setDryRun(true)}
+              onClick={() => { setDryRun(true); setConfirm(false) }}
             >
-              🔍 Dry run
+              <Icon name="search" size={16} /> Dry run
             </button>
             <button
               type="button"
               className={`seg-opt danger${dryRun ? '' : ' active'}`}
               aria-pressed={!dryRun}
               disabled={running}
-              onClick={() => setDryRun(false)}
+              onClick={() => { setDryRun(false); setConfirm(false) }}
             >
-              📸 Mirror
+              <Icon name="photos" size={16} /> Mirror
             </button>
           </div>
           <p style={{ ...caption, margin: '6px 0 10px' }}>
@@ -263,6 +263,7 @@ export default function PhotosLibraryFilter() {
               : 'Writes the mirror: copies what changed, deletes what the plan no longer holds.'}
           </p>
 
+          {!dryRun && <div className="note warn">Files already in the destination that are outside the plan will be deleted.</div>}
           {!dryRun && (
             <label className="check" style={{ margin: '0 0 10px' }}>
               <input
@@ -281,20 +282,20 @@ export default function PhotosLibraryFilter() {
             loading={running}
             disabled={!ready || running || (!dryRun && !confirm)}
           >
-            {dryRun ? '▶ Start dry run' : '▶ Mirror library'}
+            <Icon name={dryRun ? 'search' : 'photos'} size={17} /> {dryRun ? 'Start dry run' : 'Mirror library'}
           </Button>
+          {!ready && <p className="hint">Choose a source and destination library to continue.</p>}
 
           {error && <div className="note error">{error}</div>}
         </div>
 
-        <div className="panel">
-          <div className="step"><span className="n">02</span><span>Report</span></div>
+        <div className="panel result-panel">
+          <div className="step"><span className="n">03</span><span>Library report</span></div>
 
           {!snapshot && (
-            <div className="note info">
-              Dry-run first: it shows what would be kept, what each rule excludes and how much
-              it saves, and whether every asset would still be there — without writing a byte.
-            </div>
+            <EmptyState icon="photos" title="Preview your library">
+              A dry run shows the files to keep, space saved by each rule, and asset verification results.
+            </EmptyState>
           )}
 
           <JobPanel snapshot={snapshot}>{result && <Report result={result} />}</JobPanel>

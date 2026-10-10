@@ -4,12 +4,15 @@ import { useToolJob } from '../jobs'
 import JobPanel from '../components/JobPanel'
 import CodeBox from '../components/CodeBox'
 import Button from '../components/Button'
+import ToolHeader from '../components/ToolHeader'
+import EmptyState from '../components/EmptyState'
+import Icon from '../components/Icon'
 import type { DedupeResult, MagnetConfig, MagnetResult } from '../types/api'
 
 const MODES = [
   { key: 'auto', label: 'Automatic' },
   { key: 'manual', label: 'Manual' },
-  { key: 'cleanup', label: 'Remove duplicated' },
+  { key: 'cleanup', label: 'Deduplicate' },
 ] as const
 
 type MagnetMode = (typeof MODES)[number]['key']
@@ -36,7 +39,7 @@ function ScrapeResult({ result }: { result: MagnetResult | null }) {
   }
 
   if (!result.urls || result.urls.length === 0) {
-    return <div className="note info">No new unwatched video found.</div>
+    return <EmptyState icon="check" title="You're up to date">No new unwatched videos were found.</EmptyState>
   }
 
   const successful = result.successful || []
@@ -44,10 +47,10 @@ function ScrapeResult({ result }: { result: MagnetResult | null }) {
   const duplicates = result.duplicate_count || 0
   return (
     <>
-      <div className="note ok">🧲 {successful.length} magnet(s) found.</div>
+      <div className="note ok">{successful.length} magnet link(s) found.</div>
       {duplicates > 0 && (
         <div className="note info">
-          🧹 {duplicates} duplicate(s) removed — the grabbed list is unique.
+          {duplicates} duplicate(s) removed. Every link below is unique.
         </div>
       )}
       <div className="metrics">
@@ -57,22 +60,22 @@ function ScrapeResult({ result }: { result: MagnetResult | null }) {
         </div>
         <div className="metric ok">
           <div className="v">{successful.length}</div>
-          <div className="k">Successful ✅</div>
+          <div className="k">Successful</div>
         </div>
         <div className={failed.length ? 'metric bad' : 'metric'}>
           <div className="v">{failed.length}</div>
-          <div className="k">Failed ❌</div>
+          <div className="k">Failed</div>
         </div>
       </div>
       {successful.length > 0 && (
         <div className="field">
-          <span className="label">🚀 Grabbed magnets</span>
+          <span className="label">Magnet links</span>
           <CodeBox text={successful.map((s) => s.result).join('\n')} />
         </div>
       )}
       {failed.length > 0 && (
         <div className="field">
-          <span className="label">⚠️ Failed URLs</span>
+          <span className="label">Failed URLs</span>
           <CodeBox text={failed.map((f) => f.url).join('\n')} />
         </div>
       )}
@@ -134,18 +137,16 @@ export default function MagnetScraper() {
 
   return (
     <div>
-      <div className="page-head">
-        <h1>🧲 Magnet Scraper</h1>
-      </div>
+      <ToolHeader slug="magnet-scraper" />
       <p className="page-sub">
-        Scrape your unwatched video links automatically or manually — or paste a magnet
-        list and strip the duplicates.
+        Collect magnet links from video pages, or clean up an existing list.
+        Choose automatic discovery or supply your own URLs.
       </p>
 
       <div className="station">
         <div className="panel">
           <div className="step">
-            <span>Mode &amp; input</span>
+            <span className="n">01</span><span>Source &amp; mode</span>
           </div>
 
           <div className="field">
@@ -169,10 +170,10 @@ export default function MagnetScraper() {
 
           {mode === 'auto' && (
             <>
-              <div className="note info">
-                Walks the site's pages from the start page until CUTOFF_VIDEO turns up
-                (100-page cap), advances the cutoff in backend/.env, then grabs every
-                newer magnet.
+              <div className="workflow-summary">
+                <Icon name="magnet" size={18} />
+                <span>Finds new videos from your configured site, stopping at the last
+                watched video. Searches up to 100 pages and safely updates your cutoff.</span>
               </div>
               <div className="field">
                 <label htmlFor="magnet-start-page">Start page</label>
@@ -187,7 +188,7 @@ export default function MagnetScraper() {
                 />
               </div>
               <div className="field">
-                <span className="label">Config — backend/.env</span>
+                <span className="label">Source configuration · backend/.env</span>
                 {configError ? (
                   <div className="note warn" style={{ margin: 0 }}>
                     Could not read config: {configError}
@@ -219,9 +220,10 @@ export default function MagnetScraper() {
                 variant="primary"
                 style={BIG_TAP}
                 disabled={running}
+                loading={running}
                 onClick={startAuto}
               >
-                🚀 Start automatic scrape
+                <Icon name="search" size={16} /> Find new magnet links
               </Button>
             </>
           )}
@@ -230,7 +232,7 @@ export default function MagnetScraper() {
             <>
               <div className="field">
                 <label htmlFor="magnet-manual-urls">
-                  Paste your non-fetched video URLs here (one per line)
+                  Video page URLs · one per line
                 </label>
                 <textarea
                   id="magnet-manual-urls"
@@ -245,9 +247,10 @@ export default function MagnetScraper() {
                 variant="primary"
                 style={BIG_TAP}
                 disabled={running}
+                loading={running}
                 onClick={startManual}
               >
-                Process manual links
+                <Icon name="magnet" size={16} /> Collect magnet links
               </Button>
             </>
           )}
@@ -256,7 +259,7 @@ export default function MagnetScraper() {
             <>
               <div className="field">
                 <label htmlFor="magnet-dedupe-links">
-                  Paste all your magnet links here (one per line)
+                  Magnet links · one per line
                 </label>
                 <textarea
                   id="magnet-dedupe-links"
@@ -273,15 +276,15 @@ export default function MagnetScraper() {
                 loading={dedupeBusy}
                 onClick={runDedupe}
               >
-                Remove duplicated
+                <Icon name="check" size={16} /> Remove duplicates
               </Button>
             </>
           )}
         </div>
 
-        <div className="panel">
+        <div className="panel result-panel">
           <div className="step">
-            <span>Results</span>
+            <span className="n">02</span><span>Results</span>
           </div>
 
           {mode === 'cleanup' ? (
@@ -294,9 +297,9 @@ export default function MagnetScraper() {
                 </>
               ) : (
                 !dedupeError && (
-                  <div className="note info">
-                    Unique links land here — duplicates dropped, first-seen order kept.
-                  </div>
+                  <EmptyState icon="magnet" title="A cleaner list, ready to copy">
+                    Paste your magnet links and remove duplicates. The first-seen order is preserved.
+                  </EmptyState>
                 )
               )}
             </>
@@ -310,7 +313,9 @@ export default function MagnetScraper() {
                   )}
                 </JobPanel>
               ) : (
-                !error && <div className="note info">No scrape yet — magnets land here.</div>
+                !error && <EmptyState icon="magnet" title="Your magnet links appear here">
+                  Choose a source and start collecting. You can copy the results and review any failed URLs.
+                </EmptyState>
               )}
             </>
           )}

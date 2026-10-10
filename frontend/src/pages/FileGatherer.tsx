@@ -5,6 +5,9 @@ import FolderField from '../components/FolderField'
 import JobPanel from '../components/JobPanel'
 import CodeBox from '../components/CodeBox'
 import Button from '../components/Button'
+import ToolHeader from '../components/ToolHeader'
+import EmptyState from '../components/EmptyState'
+import Icon from '../components/Icon'
 import type { GatherResult as GatherResultData } from '../types/api'
 
 // Mirrors the backend's presets; keep them in sync.
@@ -27,7 +30,7 @@ function normalizePattern(token: string): string | null {
 }
 
 const captionStyle: CSSProperties = {
-  font: '12px var(--mono)',
+  fontSize: 12,
   color: 'var(--muted)',
   overflowWrap: 'anywhere',
   margin: '4px 0 0',
@@ -42,7 +45,7 @@ function GatherResult({ result }: { result: GatherResultData }) {
     <div>
       {scanErrors.length > 0 && (
         <details className="expander">
-          <summary>⚠️ {scanErrors.length} scan warning(s)</summary>
+          <summary>{scanErrors.length} scan warning(s)</summary>
           <div className="body">
             {scanErrors.map((err: string, i: number) => (
               <div key={i} style={{ ...captionStyle, padding: '2px 0' }}>{err}</div>
@@ -52,23 +55,23 @@ function GatherResult({ result }: { result: GatherResultData }) {
       )}
 
       {nothingFound ? (
-        <div className="note info">No matching files found.</div>
+        <EmptyState icon="search" title="No matching files">Try another category or adjust your custom patterns.</EmptyState>
       ) : (
         <>
           <div className="metrics">
             <div className="metric ok">
               <span className="v">{moved.length}</span>
-              <span className="k">Moved ✅</span>
+              <span className="k">Files moved</span>
             </div>
             <div className={failed.length > 0 ? 'metric bad' : 'metric'}>
               <span className="v">{failed.length}</span>
-              <span className="k">Failed ❌</span>
+              <span className="k">Failed</span>
             </div>
           </div>
 
           {failed.length > 0 && (
             <details className="expander">
-              <summary>❌ {failed.length} failed</summary>
+              <summary>{failed.length} failed</summary>
               <div className="body">
                 <CodeBox text={shownFailed.map((f) => `${f.name}: ${f.error}`).join('\n')} />
                 {failed.length > shownFailed.length && (
@@ -83,7 +86,7 @@ function GatherResult({ result }: { result: GatherResultData }) {
           {warning ? (
             <div className="note warn">{warning}</div>
           ) : (
-            <div className="note ok">Done! Moved to: {target}</div>
+            <div className="note ok">Moved to <code>{target}</code>.</div>
           )}
         </>
       )}
@@ -113,19 +116,20 @@ export default function FileGatherer() {
   const toggle = (name: string) => setSelected((prev) => ({ ...prev, [name]: !prev[name] }))
 
   const run = () => start(() => api.gatherStart({ source, target, categories, custom }))
+  const ready = source.trim() !== '' && target.trim() !== '' && patterns.length > 0
 
   return (
     <div>
-      <div className="page-head"><h1>📦 File Gatherer</h1></div>
+      <ToolHeader slug="file-gatherer" />
       <p className="page-sub">
-        Recursively gather files by type from a source folder and move them into
-        a single target folder — duplicate names are auto-numbered.
+        Bring matching files from nested folders into one destination. Duplicate
+        filenames are numbered automatically.
       </p>
 
       <div className="station">
         <div>
           <div className="panel">
-            <div className="step"><span className="n">01</span><span>FOLDERS</span></div>
+            <div className="step"><span className="n">01</span><span>Choose folders</span></div>
             <FolderField
               label="Source folder"
               value={source}
@@ -143,7 +147,7 @@ export default function FileGatherer() {
           </div>
 
           <div className="panel">
-            <div className="step"><span className="n">02</span><span>FILE TYPES</span></div>
+            <div className="step"><span className="n">02</span><span>Select file types</span></div>
             <div className="field">
               <span className="label" id="gather-cats-label">Categories</span>
               <div className="row" role="group" aria-labelledby="gather-cats-label">
@@ -171,33 +175,35 @@ export default function FileGatherer() {
                 spellCheck={false}
               />
               <p style={captionStyle}>
-                Comma- or space-separated, e.g. srt, *.nfo, report*.pdf — bare
-                extensions become *.ext; tokens with * or ? are kept as globs.
+                Separate with commas or spaces. Use an extension such as srt or
+                a pattern such as report*.pdf.
               </p>
             </div>
             {patterns.length > 0 ? (
-              <p style={captionStyle}>Matching: {patterns.join(', ')}</p>
+              <details className="expander"><summary>{patterns.length} matching patterns</summary><div className="body"><CodeBox text={patterns.join(', ')} /></div></details>
             ) : (
               <p style={captionStyle}>Nothing selected — toggle a category or add a pattern.</p>
             )}
           </div>
         </div>
 
-        <div className="panel">
-          <div className="step"><span className="n">03</span><span>SCAN &amp; MOVE</span></div>
-          <p style={{ ...captionStyle, margin: '0 0 12px' }}>
-            Scans the source tree for matching files, then moves every match
-            into the target folder. You can cancel mid-run.
-          </p>
+        <div className="panel result-panel">
+          <div className="step"><span className="n">03</span><span>Gather files</span></div>
+          <div className="action-summary">
+            <strong>{patterns.length} patterns selected</strong>
+            <p>Matching files will be moved from the source into the target. You can cancel while the job runs.</p>
+          </div>
           <Button
             variant="primary"
             onClick={run}
-            disabled={running}
+            disabled={running || !ready}
             style={{ minHeight: 44 }}
           >
-            🚚 Scan &amp; move
+            <Icon name="folder" size={17} /> Scan &amp; move
           </Button>
+          {!ready && <p className="hint">Choose both folders and at least one file type to continue.</p>}
           {error && <div className="note error">{error}</div>}
+          {!snapshot && <EmptyState icon="folder" title="Ready to gather">Start the job to see moved files, scan warnings, and any files that need attention.</EmptyState>}
           <JobPanel snapshot={snapshot}>
             {snapshot &&
               (snapshot.state === 'done' || snapshot.state === 'cancelled') &&

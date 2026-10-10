@@ -1,13 +1,14 @@
 import { useState, type ReactNode } from 'react'
 import { api } from '../api'
 import Button from './Button'
+import Icon from './Icon'
 import type { Job, JobItemState } from '../types/api'
 
 export function LedBar({ pct, state }: { pct: number; state: JobItemState }) {
   const cls = state === 'done' ? 'done' : state === 'failed' ? 'failed' : ''
-  const width = state === 'done' ? 100 : pct
+  const width = state === 'done' ? 100 : Math.max(0, Math.min(100, pct))
   return (
-    <div className="led-track">
+    <div className="led-track" role="progressbar" aria-label="Task progress" aria-valuenow={width} aria-valuemin={0} aria-valuemax={100}>
       <div className={`led-fill ${cls}`} style={{ width: `${width}%` }} />
     </div>
   )
@@ -20,16 +21,24 @@ interface JobPanelProps {
 
 export default function JobPanel({ snapshot, children }: JobPanelProps) {
   const [cancelError, setCancelError] = useState<string | null>(null)
+  const [cancelling, setCancelling] = useState(false)
   if (!snapshot) return null
   const { state, message, items = [], error, id } = snapshot
-  const cancel = () =>
-    api.cancelJob(id).catch((err: Error) => setCancelError(err.message || 'Cancel failed.'))
+  const cancel = async () => {
+    setCancelling(true)
+    setCancelError(null)
+    try { await api.cancelJob(id) } catch (err) { setCancelError((err as Error).message || 'Cancel failed.') }
+    finally { setCancelling(false) }
+  }
+  const completed = items.filter(item => item.state === 'done').length
+  const labels = { running: 'In progress', done: 'Completed', failed: 'Failed', cancelled: 'Cancelled' }
   return (
-    <div>
+    <div className="job-report">
+      <div className={`job-status state-${state}`} role="status"><Icon name={state === 'done' ? 'check' : state === 'running' ? 'activity' : 'close'} size={17} /><strong>{labels[state]}</strong>{items.length > 0 && <span>{completed} of {items.length} completed</span>}</div>
       {state === 'running' && (
         <div className="row" style={{ justifyContent: 'space-between' }}>
           <div className="job-message">{message || 'Working…'}</div>
-          <Button variant="ghost" size="sm" onClick={cancel}>
+          <Button variant="ghost" size="sm" onClick={cancel} loading={cancelling}>
             Cancel
           </Button>
         </div>

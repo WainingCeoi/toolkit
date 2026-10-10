@@ -4,6 +4,9 @@ import { useToolJob } from '../jobs'
 import Button from '../components/Button'
 import FolderField from '../components/FolderField'
 import JobPanel from '../components/JobPanel'
+import ToolHeader from '../components/ToolHeader'
+import EmptyState from '../components/EmptyState'
+import Icon from '../components/Icon'
 import type {
   RemuxResult,
   RemuxStartPayload,
@@ -13,7 +16,7 @@ import type {
 
 const baseName = (p: string): string => p.split('/').pop() ?? p
 
-const hintStyle: CSSProperties = { fontSize: 11.5, color: 'var(--faint)', marginTop: 4 }
+const hintStyle: CSSProperties = { fontSize: 12.5, color: 'var(--muted)', marginTop: 6, lineHeight: 1.5 }
 
 // Module-level so `matches` keeps a stable identity while external subtitles are off.
 const EMPTY_MATCHES: SubtitleMatch[] = []
@@ -44,6 +47,15 @@ export default function Remux() {
 
   const [outFolder, setOutFolder] = useState('~/Desktop/🎬')
   const [workers, setWorkers] = useState(4)
+  const [ffmpegReady, setFfmpegReady] = useState<boolean | null>(null)
+
+  useEffect(() => {
+    let alive = true
+    api.health().then((health) => {
+      if (alive) setFfmpegReady(health.ffmpeg)
+    }).catch(() => {})
+    return () => { alive = false }
+  }, [])
 
   const { start, snapshot, running, error } = useToolJob<RemuxResult>('/tools/remux')
 
@@ -148,11 +160,10 @@ export default function Remux() {
 
   return (
     <div>
-      <div className="page-head">
-        <h1>🎬 Remux Processor</h1>
-      </div>
+      <ToolHeader slug="remux" />
       <p className="page-sub">
-        Parallel, lossless remuxing (re-multiplexing) of videos with FFmpeg.
+        Repackage videos without re-encoding. Select the tracks you want to keep,
+        attach subtitles, and process your files in parallel with FFmpeg.
       </p>
 
       <div className="station">
@@ -170,8 +181,8 @@ export default function Remux() {
               startDir="~/Desktop"
             />
             <div className="row">
-              <Button onClick={scan} loading={scanning}>
-                🔍 Scan
+              <Button onClick={scan} loading={scanning} disabled={!folder.trim()}>
+                <Icon name="search" size={16} /> Scan videos
               </Button>
               {videos.length > 0 && (
                 <>
@@ -182,9 +193,9 @@ export default function Remux() {
                     Select all
                   </Button>
                   <Button variant="ghost" onClick={() => setSelected([])}>
-                    None
+                    Clear
                   </Button>
-                  <span style={{ font: '11px var(--mono)', color: 'var(--muted)' }}>
+                  <span className="hint">
                     {selected.length}/{videos.length} selected
                   </span>
                 </>
@@ -383,8 +394,8 @@ export default function Remux() {
                 )}
                 {!subError && selectedPaths.length > 0 && (
                   <>
-                    <div style={{ font: '11px var(--mono)', color: 'var(--muted)', margin: '2px 0 6px' }}>
-                      Matched by filename (external takes priority over embedded):
+                    <div className="hint" style={{ margin: '2px 0 8px' }}>
+                      Matched by filename. External subtitles take priority over embedded tracks.
                     </div>
                     <div style={{ overflowX: 'auto' }}>
                       <table className="table">
@@ -437,24 +448,34 @@ export default function Remux() {
           </div>
         </div>
 
-        <div className="panel">
+        <div className="panel result-panel">
+          <div className="step"><span className="n">05</span><span>Run &amp; results</span></div>
+          <div className="action-summary">
+            <span><strong>{selectedPaths.length}</strong> video{selectedPaths.length === 1 ? '' : 's'} selected</span>
+            <span>{workers} parallel worker{workers === 1 ? '' : 's'}</span>
+          </div>
+          {ffmpegReady === false && (
+            <div className="note warn">
+              FFmpeg is required. Install it with <code>brew install ffmpeg</code>, then reload.
+            </div>
+          )}
           <Button
             variant="primary"
             onClick={startRemux}
-            disabled={running || (useExternalSub && (!matchesReady || subError !== null))}
-            loading={useExternalSub && !matchesReady}
+            disabled={running || selectedPaths.length === 0 || !outFolder.trim() || ffmpegReady === false || (useExternalSub && (!matchesReady || subError !== null))}
+            loading={running || (useExternalSub && !matchesReady)}
             style={{ width: '100%' }}
           >
-            {useExternalSub && !matchesReady ? 'Matching subtitles…' : '🚀 Start remuxing'}
+            {useExternalSub && !matchesReady ? 'Matching subtitles…' : <><Icon name="film" size={16} /> Start remuxing</>}
           </Button>
           <div style={{ ...hintStyle, marginTop: 8 }}>
-            Lossless stream copy — one LED bar per file below.
+            Lossless stream copy. Progress is tracked for every file.
           </div>
           {error && <div className="note error">{error}</div>}
           {!snapshot && !error && (
-            <div className="note info">
-              Scan a folder, tick the videos, tune the tracks, then start.
-            </div>
+            <EmptyState icon="film" title="Ready when your videos are">
+              Scan a folder, select your videos, and choose an output folder. Your progress and results appear here.
+            </EmptyState>
           )}
           <JobPanel snapshot={snapshot}>
             {result && (
@@ -466,26 +487,26 @@ export default function Remux() {
                   </div>
                   <div className="metric ok">
                     <div className="v">{result.successful}</div>
-                    <div className="k">Success ✅</div>
+                    <div className="k">Successful</div>
                   </div>
                   <div className={result.failed.length ? 'metric bad' : 'metric'}>
                     <div className="v">{result.failed.length}</div>
-                    <div className="k">Failed ❌</div>
+                    <div className="k">Failed</div>
                   </div>
                 </div>
                 {result.failed.length > 0 && (
                   <div>
                     <div className="step" style={{ margin: '12px 0 6px' }}>
-                      <span>⚠️ Failures</span>
+                      <span>Failures</span>
                     </div>
                     {result.failed.map((f, i) => (
                       <div className="note error" key={i}>
-                        🔴 {f.title}: {f.error}
+                        {f.title}: {f.error}
                       </div>
                     ))}
                   </div>
                 )}
-                <div className="note ok">Done! Output saved to: {result.out_folder}</div>
+                <div className="note ok">Output saved to: {result.out_folder}</div>
               </>
             )}
           </JobPanel>

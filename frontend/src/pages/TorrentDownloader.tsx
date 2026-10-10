@@ -5,6 +5,9 @@ import Button from '../components/Button'
 import CodeBox from '../components/CodeBox'
 import FileDrop from '../components/FileDrop'
 import FolderField from '../components/FolderField'
+import ToolHeader from '../components/ToolHeader'
+import EmptyState from '../components/EmptyState'
+import Icon from '../components/Icon'
 import {
   CATEGORIES,
   DEFAULT_SAVE_DIR,
@@ -525,14 +528,11 @@ export default function TorrentDownloader() {
   const copyableFailures = failures.filter((f) => f.magnet !== null)
 
   return (
-    <>
-      <div className="page-head">
-        <h1>🌊 Torrent Downloader</h1>
-      </div>
+    <div>
+      <ToolHeader slug="torrent-downloader" />
       <p className="page-sub">
-        Paste magnets or pick .torrent files, review what is inside them, and send only the files
-        worth keeping to BitComet. From there the download is BitComet's — pause it, watch it and
-        remove it in its own window.
+        Add magnets or torrent files, select what to keep, and hand the download
+        to BitComet on this machine or another device on your network.
       </p>
 
       <div className="tor-device">
@@ -558,14 +558,14 @@ export default function TorrentDownloader() {
             variant="ghost"
             onClick={() => window.open(status.url!, '_blank', 'noopener')}
           >
-            Open ↗
+            <Icon name="monitor" size={15} /> Open
           </Button>
         )}
       </div>
 
       {picking && (
         <div className="panel">
-          <div className="step">Which BitComet gets the download</div>
+          <div className="step"><Icon name="monitor" size={16} /><span>Download device</span></div>
           <p style={{ color: 'var(--muted)', fontSize: 13, margin: '0 0 10px' }}>
             BitComet's Remote Access answers on the network, so a torrent can go to another
             machine on this Wi-Fi — the one with the disk space, or the one that stays awake.
@@ -613,7 +613,7 @@ export default function TorrentDownloader() {
 
           {form === null ? (
             <Button size="sm" onClick={() => setForm({ ...BLANK_DEVICE })}>
-              + Add a device
+              Add a device
             </Button>
           ) : (
             <div className="tor-form">
@@ -628,7 +628,7 @@ export default function TorrentDownloader() {
                   spellCheck={false}
                   onChange={(e) => setForm({ ...form, url: e.target.value })}
                 />
-                <p style={{ font: '12px var(--mono)', color: 'var(--faint)', margin: '4px 0 0' }}>
+                <p className="hint">
                   Host and port, or a full http:// address. Port 19377 is assumed if you leave
                   it off.
                 </p>
@@ -715,7 +715,7 @@ export default function TorrentDownloader() {
 
       <div className="station">
         <div className="panel">
-          <div className="step">1 · Add torrents</div>
+          <div className="step"><span className="n">01</span><span>Add torrents</span></div>
 
           <div className="field">
             <label htmlFor="magnets">Magnet links</label>
@@ -730,7 +730,7 @@ export default function TorrentDownloader() {
           </div>
 
           <div className="field">
-            <label>…or .torrent files</label>
+            <span className="label">Or upload .torrent files</span>
             <FileDrop
               accept=".torrent,application/x-bittorrent"
               files={pendingFiles}
@@ -746,29 +746,32 @@ export default function TorrentDownloader() {
               disabled={nothingToResolve || noDestination || bitcometDown || staging}
               onClick={resolveAll}
             >
-              Resolve
+              <Icon name="search" size={16} /> Resolve
             </Button>
             {resolvingHashes.size > 0 && (
-              <span className="label" style={{ margin: 0 }}>
+              <span className="hint" style={{ margin: 0 }}>
                 fetching metadata for {resolvingHashes.size} magnet
                 {resolvingHashes.size === 1 ? '' : 's'}…
               </span>
             )}
             {heldCount > 0 && (
-              <span className="label" style={{ margin: 0 }}>
-                {heldCount} held on this side — {RESOLVE_WINDOW} fetch at a time, each answer
-                admits the next
+              <span className="hint" style={{ margin: 0 }}>
+                {heldCount} queued · fetching up to {RESOLVE_WINDOW} at a time
               </span>
             )}
           </div>
+          <p className="hint">
+            Magnets are added to BitComet while their metadata loads. Use Discard
+            in the review below to remove a staged task.
+          </p>
         </div>
 
         <div className="panel">
-          <div className="step">2 · Choose what to download</div>
+          <div className="step"><span className="n">02</span><span>Selection &amp; destination</span></div>
 
           <div className="field">
-            <label>File types</label>
-            <div className="row">
+            <span className="label" id="torrent-types-label">File types to keep</span>
+            <div className="row" role="group" aria-labelledby="torrent-types-label">
               {CATEGORIES.map((category) => (
                 <label key={category.key} className="check">
                   <input
@@ -796,7 +799,7 @@ export default function TorrentDownloader() {
               />
               <span style={{ color: 'var(--muted)', fontSize: 13 }}>MB</span>
             </div>
-            <p style={{ font: '12px var(--mono)', color: 'var(--faint)', margin: '4px 0 0' }}>
+            <p className="hint">
               Applies to video and audio only, so subtitles and small extras are never filtered
               out by size.
             </p>
@@ -820,7 +823,7 @@ export default function TorrentDownloader() {
                   <option key={folder} value={folder} />
                 ))}
               </datalist>
-              <p style={{ font: '12px var(--mono)', color: 'var(--faint)', margin: '4px 0 0' }}>
+              <p className="hint">
                 {folders.length > 0
                   ? `A folder on that machine — its own are ${folders.join(', ')}.`
                   : 'A full path on that machine. It has no download folder configured yet.'}
@@ -829,7 +832,7 @@ export default function TorrentDownloader() {
           ) : (
             <FolderField label="Save to" value={saveDir} onChange={changeSaveDir} />
           )}
-          <p style={{ font: '12px var(--mono)', color: 'var(--faint)', margin: '4px 0 0' }}>
+          <p className="hint">
             Applied when you resolve. BitComet fixes a torrent's folder as it is added, so
             changing this afterwards only affects the next one.
           </p>
@@ -837,14 +840,13 @@ export default function TorrentDownloader() {
         </div>
       </div>
 
-      {resolved.length > 0 && (
-        <div className="panel">
+        <div className="panel torrent-review" style={{ marginTop: 22 }}>
           <div className="row" style={{ marginBottom: 8 }}>
             <div className="step grow" style={{ margin: 0 }}>
-              3 · Review ({resolved.length})
+              <span className="n">03</span><span>Review &amp; send{resolved.length > 0 ? ` · ${resolved.length} torrent${resolved.length === 1 ? '' : 's'}` : ''}</span>
             </div>
             {retryNote && (
-              <span style={{ font: '11px var(--mono)', color: 'var(--amber-text)' }}>
+              <span className="hint" style={{ color: 'var(--amber-text)' }}>
                 {retryNote}
               </span>
             )}
@@ -855,9 +857,13 @@ export default function TorrentDownloader() {
               loading={batching}
               onClick={() => void sendBatch(resolved)}
             >
-              Send all to BitComet
+              <Icon name="download" size={16} /> Send all to BitComet
             </Button>
           </div>
+
+          {resolved.length === 0 && <EmptyState icon="download" title="Review before you send">
+            Resolve your torrents to see their contents. Your file filters preselect what to keep; you can adjust every selection here.
+          </EmptyState>}
 
           <div className="tor-list">
             {resolved.map((t) => {
@@ -880,7 +886,7 @@ export default function TorrentDownloader() {
                       onClick={() => toggleExpanded(t.infohash)}
                     >
                       <span className="tor-chev" aria-hidden="true">
-                        {t.ready ? '▶' : '·'}
+                        {t.ready ? <Icon name="chevron" size={14} /> : '·'}
                       </span>
                       <span className="tor-name" title={name}>
                         {truncateMiddle(name, 60)}
@@ -923,8 +929,8 @@ export default function TorrentDownloader() {
                         <Button size="sm" variant="ghost" onClick={() => setAllFiles(t, false)}>
                           None
                         </Button>
-                        <span style={{ font: '11px var(--mono)', color: 'var(--faint)' }}>
-                          ticks override the filter above
+                        <span className="hint" style={{ margin: 0 }}>
+                          Manual selections override the filters above.
                         </span>
                       </div>
                       <FileList torrent={t} selected={selected} onToggle={toggleFile} />
@@ -942,13 +948,12 @@ export default function TorrentDownloader() {
             })}
           </div>
         </div>
-      )}
 
       {failures.length > 0 && (
         <div className="panel">
           <div className="row" style={{ marginBottom: 8 }}>
             <div className="step grow" style={{ margin: 0 }}>
-              ⚠ Failed ({failures.length})
+              Failed · {failures.length}
             </div>
             <Button size="sm" variant="ghost" onClick={() => setFailures([])}>
               Clear
@@ -970,7 +975,7 @@ export default function TorrentDownloader() {
       {sentCount > 0 && (
         <div className="note ok" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <span className="grow">
-            ✓ {sentCount} torrent{sentCount === 1 ? '' : 's'} handed to{' '}
+            {sentCount} torrent{sentCount === 1 ? '' : 's'} handed to{' '}
             {active?.label ?? 'BitComet'} — watch, pause and finish them in BitComet's own
             window.
           </span>
@@ -981,6 +986,6 @@ export default function TorrentDownloader() {
           )}
         </div>
       )}
-    </>
+    </div>
   )
 }

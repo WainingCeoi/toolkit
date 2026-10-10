@@ -2,9 +2,19 @@ import { useCallback, useEffect, useState } from 'react'
 import { api, saveBlob } from '../api'
 import Button from '../components/Button'
 import CodeBox from '../components/CodeBox'
+import ToolHeader from '../components/ToolHeader'
+import EmptyState from '../components/EmptyState'
+import Icon from '../components/Icon'
 import type { Subscription as SubscriptionData, SubsHistoryItem } from '../types/api'
 
 const PREVIEW_COLS = ['name', 'type', 'server', 'port', 'host', 'sni', 'network', 'tls']
+
+function historyDate(value: string): string {
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString(undefined, {
+    year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+  })
+}
 
 export default function Subscription() {
   const [nodeLinks, setNodeLinks] = useState('')
@@ -102,86 +112,92 @@ export default function Subscription() {
 
   const count = (v: number | null | undefined): string | number =>
     v === null || v === undefined ? '—' : v
+  const ready = nodeLinks.trim() !== '' && preferredIps.trim() !== ''
 
   return (
     <div>
-      <div className="page-head">
-        <h1>🛰️ Optimized-IP Subscription Generator</h1>
-      </div>
+      <ToolHeader slug="subscription" />
       <p className="page-sub">
-        Paste your self-built nodes plus optimized IPs to generate Shadowrocket /
-        Clash / Surge subscription links and files. Everything is stored in a
-        local SQLite database.
+        Combine your node links with preferred IPs or domains. Generate links,
+        QR codes, and configuration files for Shadowrocket, Clash, or Surge.
       </p>
 
       <div className="station">
-        <div className="panel">
-          <div className="step"><span className="n">01</span><span>Original node links</span></div>
-          <div className="field">
-            <label htmlFor="sub-nodes">Node links, one per line</label>
-            <textarea
-              id="sub-nodes"
-              className="control"
-              rows={6}
-              placeholder="Paste original node links here"
-              value={nodeLinks}
-              onChange={(e) => setNodeLinks(e.target.value)}
-            />
+        <div>
+          <div className="panel">
+            <div className="step"><span className="n">01</span><span>Original node links</span></div>
+            <div className="field">
+              <label htmlFor="sub-nodes">Node links, one per line</label>
+              <textarea
+                id="sub-nodes"
+                className="control"
+                rows={6}
+                placeholder="Paste original node links here"
+                value={nodeLinks}
+                onChange={(e) => setNodeLinks(e.target.value)}
+              />
+              <p className="hint">Supports vmess://, vless://, and trojan:// links, or a base64 subscription.</p>
+            </div>
+
+            <div className="step"><span className="n">02</span><span>Optimized IPs / domains</span></div>
+            <div className="field">
+              <label htmlFor="sub-ips">Optimized addresses, one per line</label>
+              <textarea
+                id="sub-ips"
+                className="control"
+                rows={6}
+                placeholder="Paste optimized IPs / domains here, one per line"
+                value={preferredIps}
+                onChange={(e) => setPreferredIps(e.target.value)}
+              />
+              <p className="hint">Each node is paired with each address. Add :port to override the original port.</p>
+            </div>
+
           </div>
 
-          <div className="step"><span className="n">02</span><span>Optimized IPs / domains</span></div>
-          <div className="field">
-            <label htmlFor="sub-ips">Optimized addresses, one per line</label>
-            <textarea
-              id="sub-ips"
-              className="control"
-              rows={6}
-              placeholder="Paste optimized IPs / domains here, one per line"
-              value={preferredIps}
-              onChange={(e) => setPreferredIps(e.target.value)}
-            />
-          </div>
+          <div className="panel">
+            <div className="step"><span className="n">03</span><span>Options</span></div>
+            <div className="field">
+              <label htmlFor="sub-prefix">Node name prefix (optional)</label>
+              <input
+                id="sub-prefix"
+                className="control"
+                placeholder="Node name prefix (optional)"
+                value={namePrefix}
+                onChange={(e) => setNamePrefix(e.target.value)}
+              />
+            </div>
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={keepHost}
+                onChange={(e) => setKeepHost(e.target.checked)}
+              />
+              Keep original Host / SNI (recommended)
+            </label>
 
-          <div className="step"><span className="n">03</span><span>Options</span></div>
-          <div className="field">
-            <label htmlFor="sub-prefix">Node name prefix (optional)</label>
-            <input
-              id="sub-prefix"
-              className="control"
-              placeholder="Node name prefix (optional)"
-              value={namePrefix}
-              onChange={(e) => setNamePrefix(e.target.value)}
-            />
+            <Button
+              variant="primary"
+              style={{ width: '100%', marginTop: 14, minHeight: 44 }}
+              onClick={generate}
+              loading={busy}
+              disabled={!ready}
+            >
+              <Icon name="network" size={17} /> Generate subscription
+            </Button>
+            {!ready && <p className="hint">Add node links and at least one preferred address to continue.</p>}
           </div>
-          <label className="check">
-            <input
-              type="checkbox"
-              checked={keepHost}
-              onChange={(e) => setKeepHost(e.target.checked)}
-            />
-            Keep original Host / SNI (recommended)
-          </label>
-
-          <Button
-            variant="primary"
-            style={{ width: '100%', marginTop: 14, minHeight: 44 }}
-            onClick={generate}
-            loading={busy}
-          >
-            Generate subscription
-          </Button>
         </div>
 
-        <div className="panel">
-          <div className="step"><span>Result</span></div>
+        <div className="panel result-panel">
+          <div className="step"><span className="n">04</span><span>Subscription &amp; export</span></div>
 
           {error && <div className="note error">{error}</div>}
 
           {!result && (
-            <div className="note info">
-              After generating, your subscription links, QR code, node preview,
-              and download buttons appear here.
-            </div>
+            <EmptyState icon="network" title="Your subscription will appear here">
+              Generate a subscription to preview its nodes, copy import links, or download configuration files.
+            </EmptyState>
           )}
 
           {result && (
@@ -240,8 +256,9 @@ export default function Subscription() {
               </details>
 
               <details className="expander" open>
-                <summary>Subscription links (import directly from a phone on the same Wi-Fi)</summary>
+                <summary>Import links</summary>
                 <div className="body">
+                  <p className="hint">Open these links on a phone connected to the same Wi-Fi.</p>
                   {Object.entries(result.urls).map(([label, url]) => (
                     <div className="field" key={label}>
                       <span className="label">{label}</span>
@@ -252,12 +269,13 @@ export default function Subscription() {
               </details>
 
               <div className="field">
-                <span className="label">Download subscription files (import without a server)</span>
+                <span className="label">Download configurations</span>
                 <div className="row">
-                  <Button onClick={() => download('raw')}>⬇ raw .txt</Button>
-                  <Button onClick={() => download('clash')}>⬇ clash .yaml</Button>
-                  <Button onClick={() => download('surge')}>⬇ surge .conf</Button>
+                  <Button onClick={() => download('raw')}><Icon name="download" size={16} /> Raw .txt</Button>
+                  <Button onClick={() => download('clash')}><Icon name="download" size={16} /> Clash .yaml</Button>
+                  <Button onClick={() => download('surge')}><Icon name="download" size={16} /> Surge .conf</Button>
                 </div>
+                <p className="hint">Import a downloaded file without keeping this server running.</p>
                 {dlError && <div className="note warn">Unavailable — {dlError}</div>}
               </div>
 
@@ -270,7 +288,7 @@ export default function Subscription() {
                     width={220}
                     alt={`QR code for subscription ${result.sub_id}`}
                   />
-                  <div style={{ font: '11px var(--mono)', color: 'var(--muted)', marginTop: 6 }}>
+                  <div className="hint" style={{ marginTop: 6 }}>
                     Scan to import
                   </div>
                 </div>
@@ -291,7 +309,7 @@ export default function Subscription() {
 
         {historyError && <div className="note error">{historyError}</div>}
         {!historyError && history.length === 0 && (
-          <div className="note info">No subscriptions generated yet.</div>
+          <EmptyState icon="clock" title="No saved subscriptions">Generated subscriptions are saved locally so you can load them again later.</EmptyState>
         )}
 
         {history.map((item) => (
@@ -302,9 +320,10 @@ export default function Subscription() {
           >
             <span
               className="grow"
-              style={{ font: '12px var(--mono)', color: 'var(--muted)', overflowWrap: 'anywhere' }}
+              style={{ color: 'var(--muted)', overflowWrap: 'anywhere' }}
             >
-              <code>{item.id}</code> · {item.node_count} nodes · {item.created_at.slice(0, 19)}
+              <strong>{item.name_prefix || item.id}</strong> · {item.node_count} nodes
+              <span className="hint" style={{ display: 'block', marginTop: 3 }}><time dateTime={item.created_at}>{historyDate(item.created_at)}</time>{item.name_prefix && <> · <code>{item.id}</code></>}</span>
             </span>
             <Button
               onClick={() => loadSub(item.id)}

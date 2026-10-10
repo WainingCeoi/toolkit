@@ -1,8 +1,9 @@
 // Browse opens the native chooser on the server's machine, not the browser's.
 
-import { useState } from 'react'
+import { useId, useState } from 'react'
 import { api } from '../api'
 import Button from './Button'
+import Icon from './Icon'
 
 interface FolderFieldProps {
   label: string
@@ -22,6 +23,7 @@ export default function FolderField({
   startDir,
   packages = false,
 }: FolderFieldProps) {
+  const id = useId()
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -40,17 +42,18 @@ export default function FolderField({
 
   return (
     <div className="field">
-      <span className="label">{label}</span>
-      <div className="row">
+      <label htmlFor={id}>{label}</label>
+      <div className="row folder-row">
         <input
           className="control grow"
+          id={id}
           value={value}
           placeholder={placeholder}
           onChange={(e) => onChange(e.target.value)}
           spellCheck={false}
         />
         <Button onClick={browse} disabled={busy} loading={busy}>
-          📂 Browse…
+          <Icon name="folder" size={16} /> Browse
         </Button>
       </div>
       {error && (

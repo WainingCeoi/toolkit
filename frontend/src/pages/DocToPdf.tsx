@@ -5,6 +5,9 @@ import FileDrop from '../components/FileDrop'
 import JobPanel from '../components/JobPanel'
 import CodeBox from '../components/CodeBox'
 import Button from '../components/Button'
+import ToolHeader from '../components/ToolHeader'
+import EmptyState from '../components/EmptyState'
+import Icon from '../components/Icon'
 import type { DocConvertResult } from '../types/api'
 
 export default function DocToPdf() {
@@ -32,11 +35,10 @@ export default function DocToPdf() {
 
   return (
     <div>
-      <div className="page-head"><h1>📄 Doc to PDF</h1></div>
+      <ToolHeader slug="doc-to-pdf" />
       <p className="page-sub">
-        Clean Word documents — accept all tracked changes and remove comments —
-        then export them to PDF with no revision marks, bundled as a
-        downloadable zip. Powered by LibreOffice.
+        Export clean PDFs from Word documents. Tracked changes are accepted and
+        comments removed; your PDFs download together as a ZIP.
       </p>
 
       {soffice === false && (
@@ -47,45 +49,57 @@ export default function DocToPdf() {
 
       <div className="station">
         <div className="panel">
-          <div className="step"><span className="n">01</span><span>SELECT WORD FILES</span></div>
+          <div className="step"><span className="n">01</span><span>Add Word documents</span></div>
           <FileDrop
             accept=".docx"
             files={files}
             onChange={setFiles}
-            hint="Drop Word (.docx) files here or click to choose"
+            hint="Drop Word documents here or browse files"
           />
+          <p className="hint">DOCX · Multiple files supported</p>
           <div className="note info">
-            Every tracked change is accepted and every comment stripped before
-            LibreOffice renders the PDF — the output carries no revision marks.
+            LibreOffice accepts every tracked change and removes every comment
+            before rendering each PDF. The output contains no revision marks.
           </div>
         </div>
 
-        <div className="panel">
-          <div className="step"><span className="n">02</span><span>CONVERT</span></div>
+        <div className="panel result-panel">
+          <div className="step"><span className="n">02</span><span>Convert &amp; download</span></div>
+          <div className="action-summary">
+            <strong>{files.length > 0 ? `${files.length} document${files.length === 1 ? '' : 's'} selected` : 'Add documents to begin'}</strong>
+            <p>One PDF per document, bundled in a ZIP archive.</p>
+          </div>
           <Button
             variant="primary"
             onClick={convert}
-            disabled={running}
+            loading={running}
+            disabled={files.length === 0 || soffice === false}
           >
             Convert to PDF
           </Button>
           {error && <div className="note error">{error}</div>}
+          <div className="step"><span>Results</span></div>
+          {!snapshot && !error && (
+            <EmptyState icon="file" title="Your PDFs will appear here">
+              Add Word documents and start converting to track progress and download the results.
+            </EmptyState>
+          )}
           <JobPanel snapshot={snapshot}>
             {result && (
               <>
                 {result.done.length > 0 && (
                   <div className="note ok">
-                    ✅ Converted {result.done.length} file(s).
+                    Converted {result.done.length} document{result.done.length === 1 ? '' : 's'}.
                   </div>
                 )}
                 {result.artifact_id && (
                   <Button as="a" href={artifactUrl(result.artifact_id)}>
-                    ⬇ Download PDFs (.zip)
+                    <Icon name="download" size={17} /> Download PDFs (.zip)
                   </Button>
                 )}
                 {failed.length > 0 && (
                   <details className="expander">
-                    <summary>❌ {failed.length} failed</summary>
+                    <summary>{failed.length} document{failed.length === 1 ? '' : 's'} could not be converted</summary>
                     <div className="body">
                       <CodeBox
                         text={failed

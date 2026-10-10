@@ -16,7 +16,8 @@ import ErrorBoundary from './components/ErrorBoundary'
 import ThemeToggle from './components/ThemeToggle'
 import Home from './Home'
 import { PAGES, isToolSlug, type ToolSlug } from './pages'
-import { TOOL_EMOJI } from './tools'
+import { groupTools, TOOL_DETAILS, toolTitle } from './tools'
+import Icon from './components/Icon'
 import { readSession, writeSession } from './sessionStore'
 import { nextTabAfterClose, parseToolSlug, restoreTabs, tabOrder } from './tabs'
 import { ToolActiveContext, ToolBusyContext, ToolSlugContext } from './toolHost'
@@ -63,13 +64,14 @@ function Dock({ openTabs, activeSlug, titles, busySlugs, onCloseTab }: DockProps
   }
 
   return (
-    <div className="dock" ref={dockRef}>
-      {tabs.length === 0 && <span className="dock-empty">NO OPEN TOOLS</span>}
+    <nav className="dock" ref={dockRef} aria-label="Open tools">
+      <span className="dock-caption">
+        <Icon name="grid" size={15} /> Workspace
+      </span>
+      {tabs.length === 0 && <span className="dock-empty">Open a tool to get started</span>}
       {tabs.map((slug) => {
         const path = toolPath(slug)
-        const title = titles[slug]
-        const emoji = title?.split(' ')[0] || TOOL_EMOJI[path] || '⚙️'
-        const label = title ? title.split(' ').slice(1).join(' ') : slug.replace(/-/g, ' ')
+        const label = toolTitle(slug, titles[slug])
 
         const toolJobs = Object.entries(jobs).filter(([, j]) => j.toolPath === path)
         const hasRunning =
@@ -83,7 +85,7 @@ function Dock({ openTabs, activeSlug, titles, busySlugs, onCloseTab }: DockProps
               to={path}
               aria-current={slug === activeSlug ? 'page' : undefined}
             >
-              <span>{emoji}</span>
+              <Icon name={TOOL_DETAILS[slug]?.icon ?? 'toolkit'} size={16} />
               <span className="dock-tab-label">{label}</span>
             </Link>
             {toolJobs.map(([id, { snapshot }]) => {
@@ -118,7 +120,7 @@ function Dock({ openTabs, activeSlug, titles, busySlugs, onCloseTab }: DockProps
                       onClick={() => dismiss(id)}
                       aria-label={`Dismiss ${snapshot.state} ${label} job`}
                     >
-                      ×
+                      <Icon name="close" size={12} />
                     </Button>
                   )}
                 </span>
@@ -133,12 +135,12 @@ function Dock({ openTabs, activeSlug, titles, busySlugs, onCloseTab }: DockProps
               onClick={() => close(slug)}
               aria-label={`Close ${label}`}
             >
-              ×
+              <Icon name="close" size={13} />
             </Button>
           </div>
         )
       })}
-    </div>
+    </nav>
   )
 }
 
@@ -171,11 +173,31 @@ const ToolHost = React.memo(function ToolHost({ slug, active, setToolBusy }: Too
 
 export default function Layout() {
   const location = useLocation()
+  const navigate = useNavigate()
   const [categories, setCategories] = useState<Category[]>([])
   const [toolsError, setToolsError] = useState<string | null>(null)
+  const [toolsLoaded, setToolsLoaded] = useState(false)
   const [filter, setFilter] = useState('')
   const [open, setOpen] = useState(false)
   const searchRef = useRef<HTMLInputElement>(null)
+  const menuRef = useRef<HTMLButtonElement>(null)
+  const railRef = useRef<HTMLElement>(null)
+  const { jobs } = useJobs()
+  const runningJobs = Object.values(jobs).filter((job) => job.snapshot.state === 'running')
+
+  useEffect(() => {
+    const narrow = window.matchMedia('(max-width: 760px)')
+    const syncNavigation = () => {
+      if (railRef.current) railRef.current.inert = narrow.matches && !open
+    }
+    syncNavigation()
+    narrow.addEventListener('change', syncNavigation)
+    return () => narrow.removeEventListener('change', syncNavigation)
+  }, [open])
+
+  useEffect(() => {
+    if (open) searchRef.current?.focus()
+  }, [open])
 
   const rawSlug = parseToolSlug(location.pathname)
   const activeSlug = rawSlug !== null && isToolSlug(rawSlug) ? rawSlug : null
@@ -222,6 +244,7 @@ export default function Layout() {
       () => api.tools(),
       (cats: Category[]) => {
         setCategories(cats)
+        setToolsLoaded(true)
         setToolsError(null)
       },
       (err) => setToolsError(err.message),
@@ -238,110 +261,244 @@ export default function Layout() {
       const target = e.target as HTMLElement | null
       if (e.key === '/' && !/input|textarea|select/i.test(target?.tagName ?? '')) {
         e.preventDefault()
+        if (window.matchMedia('(max-width: 760px)').matches) setOpen(true)
         searchRef.current?.focus()
+      }
+      if (e.key === 'Escape' && open) {
+        setOpen(false)
+        menuRef.current?.focus()
+      }
+      if (e.key === 'Tab' && open && railRef.current) {
+        const focusable = Array.from(
+          railRef.current.querySelectorAll<HTMLElement>('a, button, input'),
+        )
+        const first = focusable[0]
+        const last = focusable[focusable.length - 1]
+        if (e.shiftKey && target === first) {
+          e.preventDefault()
+          last?.focus()
+        }
+        if (!e.shiftKey && target === last) {
+          e.preventDefault()
+          first?.focus()
+        }
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [])
+  }, [open])
 
   const shown = useMemo(() => {
-    if (!filter) return categories
-    const q = filter.toLowerCase()
-    return categories
-      .map((c) => ({ ...c, tools: c.tools.filter((t) => t.title.toLowerCase().includes(q)) }))
+    const groups = groupTools(categories)
+    if (!filter.trim()) return groups
+    const q = filter.trim().toLowerCase()
+    return groups
+      .map((c) => ({
+        ...c,
+        tools: c.tools.filter((t) =>
+          `${toolTitle(t.slug, t.title)} ${t.description} ${c.name}`
+            .toLowerCase()
+            .includes(q),
+        ),
+      }))
       .filter((c) => c.tools.length > 0)
   }, [categories, filter])
 
   const titles = useMemo(() => {
     const map: Record<string, string> = {}
-    for (const cat of categories) for (const tool of cat.tools) map[tool.slug] = tool.title
+    for (const cat of categories) {
+      for (const tool of cat.tools) map[tool.slug] = tool.title
+    }
     return map
   }, [categories])
 
   const rail = (
-    <nav className={`rail ${open ? 'open' : ''}`}>
+    <nav
+      className={`rail ${open ? 'open' : ''}`}
+      id="tool-navigation"
+      aria-label="Tool navigation"
+      ref={railRef}
+    >
       <Link
         to="/"
         className="brand"
         onClick={() => setOpen(false)}
         style={{ textDecoration: 'none' }}
       >
-        <span className="brand-name">🧰 Toolkit</span>
-        <span className="brand-sub">media · files</span>
+        <span className="brand-mark">
+          <Icon name="toolkit" size={23} />
+        </span>
+        <span>
+          <span className="brand-name">
+            Toolkit<span className="brand-dot">.</span>
+          </span>
+          <span className="brand-sub">Your local workspace</span>
+        </span>
       </Link>
+      <button
+        type="button"
+        className="rail-mobile-close"
+        onClick={() => {
+          setOpen(false)
+          menuRef.current?.focus()
+        }}
+        aria-label="Close navigation"
+      >
+        <Icon name="close" />
+      </button>
       <div className="rail-search">
+        <Icon name="search" size={16} />
         <input
           ref={searchRef}
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
-          placeholder="find a tool"
+          placeholder="Find a tool…"
           aria-label="Find a tool"
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && shown[0]?.tools[0]) {
+              navigate(toolPath(shown[0].tools[0].slug))
+              setOpen(false)
+            }
+          }}
         />
         <kbd>/</kbd>
       </div>
-      <NavLink
-        to="/"
-        end
-        className={({ isActive }) => `rail-link ${isActive ? 'active' : ''}`}
-        onClick={() => setOpen(false)}
-      >
-        <span className="emoji">🏠</span> Home
-      </NavLink>
-      {toolsError && categories.length === 0 && (
-        <div className="rail-cat" style={{ color: 'var(--red)' }}>
-          backend unreachable — retrying…
+      <div className="rail-tools">
+        <NavLink
+          to="/"
+          end
+          className={({ isActive }) => `rail-link ${isActive ? 'active' : ''}`}
+          onClick={() => setOpen(false)}
+        >
+          <Icon name="grid" size={18} /> <span>Overview</span>
+          <span className="rail-count">
+            {toolsLoaded
+              ? categories.reduce((total, category) => total + category.tools.length, 0)
+              : '–'}
+          </span>
+        </NavLink>
+        {toolsError && categories.length === 0 && (
+          <div className="rail-cat" style={{ color: 'var(--red)' }}>
+            Unable to connect. Retrying…
+          </div>
+        )}
+        {shown.map((cat) => (
+          <React.Fragment key={cat.name}>
+            <div className="rail-cat">{cat.name}</div>
+            {cat.tools.map((tool) => {
+              return (
+                <NavLink
+                  key={tool.slug}
+                  to={`/tools/${tool.slug}`}
+                  className={({ isActive }) => `rail-link ${isActive ? 'active' : ''}`}
+                  onClick={() => setOpen(false)}
+                >
+                  <Icon name={TOOL_DETAILS[tool.slug]?.icon ?? 'toolkit'} size={18} />
+                  <span>{toolTitle(tool.slug, tool.title)}</span>
+                </NavLink>
+              )
+            })}
+          </React.Fragment>
+        ))}
+        {filter.trim() && shown.length === 0 && (
+          <div className="rail-no-results">No tools match “{filter}”.</div>
+        )}
+      </div>
+      <div className="rail-footer">
+        <div className="rail-local">
+          <Icon name="monitor" size={17} />
+          <div>
+            <strong>Made for your Mac</strong>
+            <span>One workspace. All your tools.</span>
+          </div>
         </div>
-      )}
-      {shown.map((cat) => (
-        <React.Fragment key={cat.name}>
-          <div className="rail-cat">{cat.name}</div>
-          {cat.tools.map((tool) => {
-            const [emoji, ...rest] = tool.title.split(' ')
-            return (
-              <NavLink
-                key={tool.slug}
-                to={`/tools/${tool.slug}`}
-                className={({ isActive }) => `rail-link ${isActive ? 'active' : ''}`}
-                onClick={() => setOpen(false)}
-              >
-                <span className="emoji">{emoji}</span> {rest.join(' ')}
-              </NavLink>
-            )
-          })}
-        </React.Fragment>
-      ))}
-      <ThemeToggle />
+        <ThemeToggle />
+      </div>
     </nav>
   )
 
   return (
     <div className="frame">
-      <div className="topbar">
-        <button type="button" onClick={() => setOpen(true)} aria-label="Open navigation">
-          ☰
+      <a
+        href="#workspace-content"
+        className="skip-link"
+        onClick={(e) => {
+          e.preventDefault()
+          mainRef.current?.focus()
+        }}
+      >
+        Skip to content
+      </a>
+      <header className="topbar">
+        <button
+          type="button"
+          className="menu-button"
+          ref={menuRef}
+          onClick={() => setOpen(true)}
+          aria-label="Open navigation"
+          aria-controls="tool-navigation"
+          aria-expanded={open}
+        >
+          <Icon name="menu" size={19} />
         </button>
-        <span className="brand-name">🧰 Toolkit</span>
-      </div>
+        <div className="breadcrumbs">
+          <Link to="/">Workspace</Link>
+          <Icon name="chevron" size={13} />
+          {activeSlug ? (
+            <>
+              <span className="breadcrumb-group">{TOOL_DETAILS[activeSlug]?.group}</span>
+              <Icon name="chevron" size={13} />
+              <span className="breadcrumb-current">
+                {toolTitle(activeSlug, titles[activeSlug])}
+              </span>
+            </>
+          ) : (
+            <span className="breadcrumb-current">Overview</span>
+          )}
+        </div>
+        <div className="topbar-meta">
+          {runningJobs.length > 0 && (
+            <Link className="activity-pill" to={runningJobs[0].toolPath}>
+              <Icon name="activity" size={15} />
+              {runningJobs.length} running
+            </Link>
+          )}
+          <span className="local-pill">
+            <span />Local workspace
+          </span>
+        </div>
+      </header>
       {rail}
       {open && (
         <button
           type="button"
           className="scrim"
-          onClick={() => setOpen(false)}
+          onClick={() => {
+            setOpen(false)
+            menuRef.current?.focus()
+          }}
           aria-label="Close navigation"
         />
       )}
       <main
         className="main"
+        id="workspace-content"
+        tabIndex={-1}
         ref={mainRef}
         onScroll={(e) => scrollsRef.current.set(location.pathname, e.currentTarget.scrollTop)}
       >
         {/* Home stays mount-on-visit so its health lamps re-check each time. */}
-        {location.pathname === '/' && <Home />}
+        {location.pathname === '/' && (
+          <Home
+            categories={categories}
+            toolsError={toolsError}
+            toolsLoaded={toolsLoaded}
+            openTabs={openTabs}
+          />
+        )}
         {location.pathname !== '/' && activeSlug === null && (
           <div className="note info">
-            Nothing at <code>{location.pathname}</code> — <Link to="/">back to the bench</Link>.
+            This page could not be found. <Link to="/">Return to overview</Link>.
           </div>
         )}
         {openTabs.map((slug) => (

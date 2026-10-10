@@ -5,9 +5,12 @@ import FolderField from '../components/FolderField'
 import JobPanel from '../components/JobPanel'
 import CodeBox from '../components/CodeBox'
 import Button from '../components/Button'
+import ToolHeader from '../components/ToolHeader'
+import EmptyState from '../components/EmptyState'
+import Icon from '../components/Icon'
 import type { PurgeResult, PurgeScanResult } from '../types/api'
 
-type ScanState = PurgeScanResult & { folder: string }
+type ScanState = PurgeScanResult & { folder: string; patterns: string }
 
 const DEFAULT_PATTERNS = '*.dwl *.dwl2 *.bak *.log *.db *.tmp *.err'
 const PREVIEW_LIMIT = 200
@@ -55,7 +58,7 @@ function subfolderOf(path: string, rawRoot: string): string {
   return parent
 }
 
-const caption: CSSProperties = { font: '11px var(--mono)', color: 'var(--faint)', margin: '6px 0 0' }
+const caption: CSSProperties = { fontSize: 12, color: 'var(--muted)', margin: '6px 0 0' }
 
 export default function CachePurge() {
   const [folder, setFolder] = useState('~/Desktop')
@@ -67,9 +70,9 @@ export default function CachePurge() {
 
   const { start, snapshot, running, error, setError } = useToolJob<PurgeResult>('/tools/cache-purge')
 
-  const current = scan !== null && scan.folder === folder
-
   const matching = livePatterns(patternsRaw)
+  const patternKey = JSON.stringify(matching)
+  const current = scan !== null && scan.folder === folder && scan.patterns === patternKey
 
   async function runScan() {
     setScanning(true)
@@ -77,7 +80,7 @@ export default function CachePurge() {
     setConfirm(false)
     try {
       const result = await api.purgeScan(folder, patternsRaw)
-      setScan({ folder, ...result })
+      setScan({ ...result, folder, patterns: patternKey })
     } catch (err) {
       setScan(null)
       setScanError((err as Error).message)
@@ -90,7 +93,7 @@ export default function CachePurge() {
   const deleteJob = useRef<string | null>(null)
 
   async function runDelete() {
-    if (!scan) return
+    if (!scan || !current || !confirm || scanning || running) return
     setError(null)
     let expired = false
     const started = await start(async () => {
@@ -130,20 +133,20 @@ export default function CachePurge() {
 
   return (
     <div>
-      <div className="page-head"><h1>🧹 Cache Purge</h1></div>
+      <ToolHeader slug="cache-purge" />
       <p className="page-sub">
-        Recursively find and delete cache / junk files (logs, backups, temp
-        files) from a folder. Scan to preview first — deletion is permanent.
+        Find logs, backups, and temporary files in a folder. Review the preview
+        before permanently deleting any matches.
       </p>
 
       <div className="station">
         <div className="panel">
-          <div className="step"><span className="n">01</span><span>Folder &amp; patterns</span></div>
+          <div className="step"><span className="n">01</span><span>Choose what to clean</span></div>
 
           <FolderField
             label="Folder to clean"
             value={folder}
-            onChange={setFolder}
+            onChange={(value) => { setFolder(value); setConfirm(false) }}
             placeholder="/Users/you/Library/Caches"
             startDir={folder}
           />
@@ -154,22 +157,23 @@ export default function CachePurge() {
               id="purge-patterns"
               className="control"
               value={patternsRaw}
-              onChange={(e) => setPatternsRaw(e.target.value)}
+              onChange={(e) => { setPatternsRaw(e.target.value); setConfirm(false) }}
               placeholder={DEFAULT_PATTERNS}
               spellCheck={false}
             />
-            <p style={caption}>Space- or comma-separated globs, e.g. *.bak *.log tmp</p>
-            {matching.length > 0 && <p style={caption}>Matching: {matching.join(', ')}</p>}
+            <p style={caption}>Separate with spaces or commas. Extensions such as tmp become *.tmp.</p>
+            {matching.length > 0 && <p className="hint">{matching.length} patterns: <code>{matching.join(', ')}</code></p>}
           </div>
 
           <Button
             variant="primary"
             onClick={runScan}
             loading={scanning}
-            disabled={running}
+            disabled={running || !folder.trim() || matching.length === 0}
           >
-            🔍 Scan folder
+            <Icon name="search" size={17} /> Scan folder
           </Button>
+          {matching.length === 0 && <p className="hint">Add at least one specific file pattern. Patterns that match every file are ignored.</p>}
 
           {scanError && <div className="note error">{scanError}</div>}
 
@@ -181,35 +185,33 @@ export default function CachePurge() {
           )}
         </div>
 
-        <div className="panel">
-          <div className="step"><span className="n">02</span><span>Delete</span></div>
+        <div className="panel result-panel">
+          <div className="step"><span className="n">02</span><span>Review &amp; delete</span></div>
 
           {!current && !snapshot && !scanError && (
-            <div className="note info">
-              Scan a folder to preview what would be deleted.
-            </div>
+            <EmptyState icon="broom" title={scan ? 'Preview needs a refresh' : 'Review comes first'}>
+              {scan ? 'The folder or patterns changed. Scan again to review the current matches.' : 'Scan your folder to see matching files and the space they use.'}
+            </EmptyState>
           )}
+          {scan && !current && snapshot && <div className="note warn">The folder or patterns changed. Scan again to refresh the preview.</div>}
 
           {current && scan.files.length === 0 && (
-            <div className="note info">No matching cache files found. ✨</div>
+            <EmptyState icon="check" title="No matching files">This folder has no files that match your selected patterns.</EmptyState>
+          )}
+
+          {current && scan.errors.length > 0 && (
+            <details className="expander">
+              <summary>Scan warnings ({scan.errors.length})</summary>
+              <div className="body"><CodeBox text={scan.errors.join('\n')} /></div>
+            </details>
           )}
 
           {current && scan.files.length > 0 && (
             <>
-              <div className="note warn">
-                Found {scan.files.length} file(s) ·{' '}
-                ~{(scan.total_bytes / 1048576).toFixed(1)} MB — deletion cannot
-                be undone.
+              <div className="action-summary">
+                <strong>{scan.files.length} files · {(scan.total_bytes / 1048576).toFixed(1)} MB</strong>
+                <p>Review the matches below. Deleting these files cannot be undone.</p>
               </div>
-
-              {scan.errors.length > 0 && (
-                <details className="expander">
-                  <summary>⚠️ Scan warnings ({scan.errors.length})</summary>
-                  <div className="body">
-                    <CodeBox text={scan.errors.join('\n')} />
-                  </div>
-                </details>
-              )}
 
               <div style={{ overflowX: 'auto', maxHeight: 320, overflowY: 'auto' }}>
                 <table className="table">
@@ -247,9 +249,9 @@ export default function CachePurge() {
               <Button
                 variant="danger"
                 onClick={runDelete}
-                disabled={!confirm || running}
+                disabled={!confirm || running || scanning}
               >
-                🗑️ Delete {scan.files.length} file(s)
+                <Icon name="broom" size={17} /> Delete {scan.files.length} file(s)
               </Button>
             </>
           )}
@@ -262,7 +264,7 @@ export default function CachePurge() {
                 <div className="note ok">Deleted {result.deleted.length} file(s).</div>
                 {result.failed.length > 0 && (
                   <details className="expander">
-                    <summary>❌ {result.failed.length} failed</summary>
+                    <summary>{result.failed.length} failed</summary>
                     <div className="body">
                       <CodeBox
                         text={result.failed.map((f) => `${f.name}: ${f.error}`).join('\n')}

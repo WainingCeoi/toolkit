@@ -1,6 +1,7 @@
 import { useTheme, MODES, type ThemeMode } from '../theme'
+import Icon, { type IconName } from './Icon'
 
-const ICON: Record<ThemeMode, string> = { auto: '◐', light: '☀', dark: '☾' }
+const ICON: Record<ThemeMode, IconName> = { auto: 'monitor', light: 'sun', dark: 'moon' }
 const LABEL: Record<ThemeMode, string> = { auto: 'Auto', light: 'Light', dark: 'Dark' }
 
 export default function ThemeToggle() {
@@ -16,7 +17,7 @@ export default function ThemeToggle() {
           title={`${LABEL[m]} mode`}
           onClick={() => setMode(m)}
         >
-          <span aria-hidden="true">{ICON[m]}</span>
+          <Icon name={ICON[m]} size={14} />
           <span className="theme-opt-label">{LABEL[m]}</span>
         </button>
       ))}
