@@ -12,9 +12,12 @@ EXTRA_FLAGS := $(foreach extra,$(strip $(EXTRAS)),--extra $(extra))
 
 help:
 	@echo "Toolkit"
-	@echo "  make start             prepare dependencies, build, and start locally"
-	@echo "  Ctrl-C                 stop Toolkit"
-	@echo "  make help-maintenance  show development and maintenance commands"
+	@echo "  make install  install missing or changed dependencies"
+	@echo "  make start    check dependencies, build, and start locally (Ctrl-C to stop)"
+	@echo "  make dev      check dependencies and start with hot reload"
+	@echo "  make test     run tests, lint, type checks, and build"
+	@echo "  make clean    remove build outputs and caches"
+	@echo "  make help-maintenance  show advanced commands"
 
 # Complete setup before the build, including under parallel make.
 start: install
@@ -25,16 +28,12 @@ start: install
 .PHONY: help-maintenance install dev backend frontend build host test lint clean
 
 help-maintenance:
-	@echo "Maintenance commands (also used by CI and coding agents):"
-	@echo "  make test       run all tests, lint, type checks, and the frontend build"
-	@echo "  make dev        run the API and UI with hot reload"
+	@echo "Advanced commands:"
 	@echo "  make host       build and serve Toolkit to the LAN"
-	@echo "  make install    prepare locked dependencies without starting Toolkit"
 	@echo "  make build      build the frontend"
 	@echo "  make lint       run lint, formatting, and type checks"
 	@echo "  make backend    run the API with hot reload"
 	@echo "  make frontend   run Vite against the API's resolved port"
-	@echo "  make clean      remove project build outputs and caches"
 
 install:
 	@if [ -z "$(strip $(EXTRAS))" ]; then \
@@ -43,8 +42,26 @@ install:
 	  echo "      Hide Doc to Markdown from the UI with"; \
 	  echo "      TOOLKIT_DISABLED_TOOLS=doc-to-markdown in backend/.env"; \
 	fi
-	cd backend && uv sync --locked $(EXTRA_FLAGS)
-	cd frontend && npm ci
+	@cd backend && if uv sync --locked --check $(EXTRA_FLAGS) >/dev/null 2>&1; then \
+	  echo "Backend dependencies are up to date."; \
+	else \
+	  uv sync --locked $(EXTRA_FLAGS); \
+	fi
+	@set -e -o pipefail; cd frontend; \
+	STATE=node_modules/.toolkit-install-state; \
+	KEY=$$({ shasum -a 256 package.json package-lock.json; \
+	  for file in .npmrc ../.npmrc; do if [ -f "$$file" ]; then shasum -a 256 "$$file"; fi; done; \
+	  node -p 'JSON.stringify([process.version, process.platform, process.arch, process.versions.modules])'; \
+	  npm --version; } | shasum -a 256 | cut -d ' ' -f 1); \
+	if [ "$$(cat "$$STATE" 2>/dev/null)" = "$$KEY" ] \
+	  && [ -x node_modules/.bin/vite ] && [ -x node_modules/.bin/tsc ] \
+	  && npm ls --all --silent --include=dev --include=optional >/dev/null 2>&1 \
+	  && node -e 'const fs = require("node:fs"); const lock = JSON.parse(fs.readFileSync("node_modules/.package-lock.json")); process.exit(Object.keys(lock.packages).every(p => !p || fs.existsSync(p + "/package.json")) ? 0 : 1)' >/dev/null 2>&1; then \
+	  echo "Frontend dependencies are up to date."; \
+	else \
+	  npm ci --include=dev --include=optional; \
+	  printf '%s\n' "$$KEY" > "$$STATE"; \
+	fi
 
 # Loopback only; the port is resolved once, up front, since Vite fixes its /api proxy at boot.
 dev: install
