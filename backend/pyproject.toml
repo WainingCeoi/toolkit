@@ -4,39 +4,39 @@ version = "0.1.0"
 description = "FastAPI backend for Toolkit — media & file utilities engine + web API."
 requires-python = ">=3.14"
 dependencies = [
-    "fastapi>=0.141.1",
-    "uvicorn>=0.52.1",
+    "fastapi>=0.143.2",
+    "uvicorn>=0.54.0",
     "python-multipart>=0.0.32",
-    "sse-starlette>=3.4.8",
-    "python-dotenv>=1.2.2",
+    "sse-starlette>=3.5.0",
+    "python-dotenv>=1.2.4",
     "beautifulsoup4>=4.15.0",
     # No macOS x86_64 wheel; Intel Macs skip it and use toolkit_engine/aescbc.py.
-    "cryptography>=50.0.0; sys_platform != 'darwin' or platform_machine != 'x86_64'",
-    "ffmpeg-progress-yield>=1.1.3",
+    "cryptography>=50.0.2; sys_platform != 'darwin' or platform_machine != 'x86_64'",
+    "ffmpeg-progress-yield>=1.1.4",
     "ffmpeg-python>=0.2.0",
-    "lxml>=6.1.1",
+    "lxml>=6.1.3",
     "packaging>=26.3",
     "pillow>=12.3.0",
-    "pillow-heif>=1.5.0",
-    "pymupdf>=1.28.0",
+    "pillow-heif>=1.8.1",
+    "pymupdf>=1.28.2",
     "pyyaml>=6.0.3",
     "requests>=2.34.2",
-    "scandir-rs>=2.9.9",
+    "scandir-rs>=2.10.1",
     "segno>=1.6.6",
-    "selenium>=4.46.0",
+    "selenium>=4.51.0",
     "webdriver-manager>=4.1.2",
 ]
 
-# docmd: MinerU's ~1 GB ML stack; `make install` adds it, a lean `uv sync` skips it.
+# docmd: MinerU's local parsing stack; `make install` adds it, `uv sync` skips it.
 [project.optional-dependencies]
-docmd = ["mineru[core]>=3.4.4"]
+docmd = ["mineru>=4.0.12"]
 
 # ruff is declared, not taken from PATH, so two machines lint identically.
 [dependency-groups]
-dev = ["pytest>=9.1.1", "httpx2>=2.9.1", "ruff>=0.16.1"]
+dev = ["pytest>=9.1.1", "httpx2>=2.13.1", "ruff>=0.17.1"]
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.32.4"]
 build-backend = "hatchling.build"
 
 # `sources = ["src"]` strips the prefix so all three packages land at the wheel root.

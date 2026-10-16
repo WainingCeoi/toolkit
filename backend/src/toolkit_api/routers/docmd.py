@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Form, HTTPException, UploadFile
 from pydantic import BaseModel
@@ -26,10 +26,10 @@ class MarkdownHealthOut(BaseModel):
 
 @router.get("/health", response_model=MarkdownHealthOut)
 def health() -> MarkdownHealthOut:
-    # The base mineru package ships the CLI without torch; the extras add it.
+    # MinerU 4's base package includes ONNX CPU inference; Torch is optional.
     return MarkdownHealthOut(
         mineru=docmd.find_mineru() is not None,
-        backend_ready=importlib.util.find_spec("torch") is not None,
+        backend_ready=importlib.util.find_spec("onnxruntime") is not None,
     )
 
 
@@ -37,12 +37,11 @@ def health() -> MarkdownHealthOut:
 def convert(
     state: StateDep,
     files: list[UploadFile] | None = None,
-    backend: Annotated[str, Form()] = "hybrid-engine",
-    method: Annotated[str, Form()] = "auto",
-    lang: Annotated[str, Form()] = "ch",
-    effort: Annotated[str, Form()] = "medium",
-    formula: Annotated[bool, Form()] = True,
-    table: Annotated[bool, Form()] = True,
+    tier: Annotated[Literal["flash", "basic", "standard", "advanced"], Form()] = (
+        "standard"
+    ),
+    ocr_mode: Annotated[Literal["auto", "txt", "ocr"], Form()] = "auto",
+    image_analysis: Annotated[bool, Form()] = True,
 ) -> JobStartedOut:
     if not files:
         raise HTTPException(
@@ -70,12 +69,9 @@ def convert(
     unique_names = dedupe_filenames([upload.filename for upload in files])
     named = list(zip(unique_names, read_uploads(files), strict=True))
     options = {
-        "backend": backend,
-        "method": method,
-        "lang": lang,
-        "effort": effort,
-        "formula": formula,
-        "table": table,
+        "tier": tier,
+        "ocr_mode": ocr_mode,
+        "image_analysis": image_analysis,
     }
 
     def worker(job):

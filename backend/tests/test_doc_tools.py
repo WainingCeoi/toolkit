@@ -16,6 +16,7 @@ from lxml import etree
 
 from toolkit_api.jobs import FINISHED_STATES
 from toolkit_api.main import create_app
+from toolkit_api.routers import docmd as docmd_router
 from toolkit_engine import docmd, docpdf
 
 
@@ -37,38 +38,46 @@ def wait_for_job(client, job_id, timeout=5.0):
 
 
 # --- Doc to Markdown engine units ---
-def test_build_mineru_cmd_pipeline_includes_method_lang_and_toggles():
-    cmd = docmd.build_mineru_cmd(
-        ["mineru"],
-        "in.pdf",
-        "out",
-        backend="pipeline",
-        method="ocr",
-        lang="ch",
-        formula=True,
-        table=False,
-    )
-    assert cmd[:7] == ["mineru", "-p", "in.pdf", "-o", "out", "-b", "pipeline"]
-    joined = " ".join(cmd)
-    assert "-m ocr" in joined
-    assert "-l ch" in joined
-    assert "-f true" in joined
-    assert "-t false" in joined
-    assert "--effort" not in joined
+def write_mineru_output(cmd, files=None):
+    """Simulate MinerU 4's ZIP export without downloading models."""
+    out_dir = Path(cmd[cmd.index("-o") + 1])
+    with zipfile.ZipFile(out_dir / "document.zip", "w") as document:
+        for name, content in (files or {"full.md": "# hi"}).items():
+            document.writestr(name, content)
 
 
-def test_build_mineru_cmd_hybrid_uses_effort_not_pipeline_flags():
+def test_build_mineru_cmd_exports_whole_document_zip_with_current_options():
     cmd = docmd.build_mineru_cmd(
-        ["mineru"],
+        ["mineru-kit"],
         "in.pdf",
         "out",
-        backend="hybrid-engine",
-        effort="high",
+        tier="advanced",
+        ocr_mode="ocr",
+        image_analysis=False,
     )
-    joined = " ".join(cmd)
-    assert "--effort high" in joined
-    assert "-m " not in joined
-    assert "-l " not in joined
+    assert cmd == [
+        "mineru-kit",
+        "parse",
+        "in.pdf",
+        "-o",
+        "out",
+        "--format",
+        "zip",
+        "--tier",
+        "advanced",
+        "--ocr-mode",
+        "ocr",
+        "--disable-image-analysis",
+    ]
+    # Stateless parsing defaults to all pages, without a document-library server.
+    assert "--pages" not in cmd
+
+
+@pytest.mark.parametrize("suffix", ["docx", "pptx", "xlsx"])
+def test_build_mineru_cmd_uses_native_flash_for_office(suffix):
+    cmd = docmd.build_mineru_cmd(["mineru-kit"], f"in.{suffix}", "out", tier="standard")
+    assert cmd[cmd.index("--tier") + 1] == "flash"
+    assert "--disable-image-analysis" not in cmd
 
 
 def test_find_mineru_is_none_when_only_uv_is_installed(monkeypatch, tmp_path):
@@ -101,12 +110,9 @@ def test_docmd_convert_batch_stops_at_the_cancelled_file(monkeypatch):
     monkeypatch.setattr(docmd, "run_mineru", fake_run)
 
     options = {
-        "backend": "pipeline",
-        "method": "auto",
-        "lang": "ch",
-        "effort": "medium",
-        "formula": True,
-        "table": True,
+        "tier": "standard",
+        "ocr_mode": "auto",
+        "image_analysis": True,
     }
     zip_bytes, done, failed = docmd.convert_batch(
         [("a.pdf", b"one"), ("b.pdf", b"two")],
@@ -123,22 +129,17 @@ def test_docmd_convert_batch_final_message_counts_only_successes(monkeypatch):
     messages = []
 
     def fake_run(cmd, *_args, **_kwargs):
-        in_path = Path(cmd[cmd.index("-p") + 1])
+        in_path = Path(cmd[cmd.index("parse") + 1])
         if in_path.parent.name == "in_0":
-            md_dir = Path(cmd[cmd.index("-o") + 1]) / "a" / "auto"
-            md_dir.mkdir(parents=True)
-            (md_dir / "a.md").write_text("# hi")
+            write_mineru_output(cmd)
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="boom")
 
     monkeypatch.setattr(docmd, "run_mineru", fake_run)
 
     options = {
-        "backend": "pipeline",
-        "method": "auto",
-        "lang": "ch",
-        "effort": "medium",
-        "formula": True,
-        "table": True,
+        "tier": "standard",
+        "ocr_mode": "auto",
+        "image_analysis": True,
     }
     docmd.convert_batch(
         [("a.pdf", b"one"), ("b.pdf", b"two")],
@@ -356,14 +357,71 @@ def test_docmd_health_reports_booleans(tool_client):
     assert all(isinstance(v, bool) for v in body.values())
 
 
+def test_docmd_health_accepts_onnx_without_torch(tool_client, monkeypatch):
+    checked = []
+
+    def find_spec(name):
+        checked.append(name)
+        return object() if name == "onnxruntime" else None
+
+    monkeypatch.setattr(docmd_router.importlib.util, "find_spec", find_spec)
+    body = tool_client.get("/api/doc-to-markdown/health").json()
+    assert body["backend_ready"] is True
+    assert checked == ["onnxruntime"]
+
+
+@pytest.mark.parametrize("options", [{"tier": "pipeline"}, {"ocr_mode": "unsupported"}])
+def test_docmd_rejects_invalid_conversion_options(tool_client, options):
+    resp = tool_client.post(
+        "/api/doc-to-markdown",
+        files={"files": ("notes.pdf", b"stub", "application/pdf")},
+        data=options,
+    )
+    assert resp.status_code == 422
+
+
+def test_docmd_rejects_unsafe_generated_archive(tmp_path):
+    with zipfile.ZipFile(tmp_path / "document.zip", "w") as document:
+        document.writestr("full.md", "# hi")
+        document.writestr("../escaped.png", b"image")
+    with zipfile.ZipFile(io.BytesIO(), "w") as archive:
+        with pytest.raises(ValueError, match="unsafe path"):
+            docmd.append_document_zip(tmp_path, archive, "notes.pdf")
+        assert not archive.namelist()
+
+
+def test_docmd_corrupt_later_asset_leaves_batch_archive_untouched(tmp_path):
+    output = tmp_path / "document.zip"
+    with zipfile.ZipFile(output, "w") as document:
+        document.writestr("full.md", "![figure](images/figure.png)")
+        document.writestr("images/figure.png", b"image content")
+    # Damage a later stored member without changing the ZIP's directory or size.
+    contents = bytearray(output.read_bytes())
+    contents[contents.index(b"image content")] ^= 0xFF
+    output.write_bytes(contents)
+
+    with zipfile.ZipFile(io.BytesIO(), "w") as archive:
+        archive.writestr("successful.pdf/full.md", "# converted")
+        with pytest.raises(zipfile.BadZipFile, match="images/figure.png"):
+            docmd.append_document_zip(tmp_path, archive, "failed.pdf")
+        assert archive.namelist() == ["successful.pdf/full.md"]
+
+
 def test_docmd_job_zips_markdown_artifact(tool_client, monkeypatch):
     monkeypatch.setattr(docmd, "find_mineru", lambda: ["mineru"])
 
     def fake_run(cmd, *_args, **_kwargs):
-        out_dir = Path(cmd[cmd.index("-o") + 1])
-        md_dir = out_dir / "notes" / "auto"
-        md_dir.mkdir(parents=True)
-        (md_dir / "notes.md").write_text("# hi")
+        assert cmd[cmd.index("--tier") + 1] == "basic"
+        assert cmd[cmd.index("--ocr-mode") + 1] == "txt"
+        assert "--disable-image-analysis" in cmd
+        write_mineru_output(
+            cmd,
+            {
+                "full.md": "![figure](images/figure.png)",
+                "images/figure.png": b"image content",
+                "middle.json": "{}",
+            },
+        )
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     monkeypatch.setattr(docmd, "run_mineru", fake_run)
@@ -371,7 +429,7 @@ def test_docmd_job_zips_markdown_artifact(tool_client, monkeypatch):
     resp = tool_client.post(
         "/api/doc-to-markdown",
         files={"files": ("notes.pdf", b"%PDF-1.4 stub", "application/pdf")},
-        data={"backend": "pipeline", "method": "txt", "formula": "false"},
+        data={"tier": "basic", "ocr_mode": "txt", "image_analysis": "false"},
     )
     assert resp.status_code == 200
 
@@ -385,7 +443,12 @@ def test_docmd_job_zips_markdown_artifact(tool_client, monkeypatch):
     download = tool_client.get(f"/api/artifacts/{snap['result']['artifact_id']}")
     assert download.status_code == 200
     with zipfile.ZipFile(io.BytesIO(download.content)) as z:
-        assert "notes.pdf/notes/auto/notes.md" in z.namelist()
+        assert sorted(z.namelist()) == [
+            "notes.pdf/full.md",
+            "notes.pdf/images/figure.png",
+            "notes.pdf/middle.json",
+        ]
+        assert z.read("notes.pdf/images/figure.png") == b"image content"
 
 
 def test_docmd_post_rejects_unsupported_type(tool_client):
@@ -404,23 +467,17 @@ def test_docmd_convert_batch_sanitizes_traversal_filename(monkeypatch):
     captured = {}
 
     def fake_run(cmd, *_args, **_kwargs):
-        in_path = Path(cmd[cmd.index("-p") + 1])
+        in_path = Path(cmd[cmd.index("parse") + 1])
         captured["in_path"] = in_path
-        out_dir = Path(cmd[cmd.index("-o") + 1])
-        md_dir = out_dir / "x" / "auto"
-        md_dir.mkdir(parents=True)
-        (md_dir / "x.md").write_text("# hi")
+        write_mineru_output(cmd)
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     monkeypatch.setattr(docmd, "run_mineru", fake_run)
 
     options = {
-        "backend": "pipeline",
-        "method": "auto",
-        "lang": "ch",
-        "effort": "medium",
-        "formula": True,
-        "table": True,
+        "tier": "standard",
+        "ocr_mode": "auto",
+        "image_analysis": True,
     }
     docmd.convert_batch(
         [("../../pwned.pdf", b"stub")],
@@ -440,10 +497,7 @@ def test_docmd_same_stem_different_extension_keep_separate_trees(
     monkeypatch.setattr(docmd, "find_mineru", lambda: ["mineru"])
 
     def fake_run(cmd, *_args, **_kwargs):
-        # MinerU names its output tree after the input stem, so both are "report".
-        md_dir = Path(cmd[cmd.index("-o") + 1]) / "report" / "auto"
-        md_dir.mkdir(parents=True)
-        (md_dir / "report.md").write_text(Path(cmd[cmd.index("-p") + 1]).suffix)
+        write_mineru_output(cmd, {"full.md": Path(cmd[cmd.index("parse") + 1]).suffix})
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     monkeypatch.setattr(docmd, "run_mineru", fake_run)
@@ -454,7 +508,7 @@ def test_docmd_same_stem_different_extension_keep_separate_trees(
             ("files", ("report.pdf", b"%PDF-1.4 one", "application/pdf")),
             ("files", ("report.docx", b"two", "application/octet-stream")),
         ],
-        data={"backend": "pipeline"},
+        data={"tier": "basic"},
     )
     assert resp.status_code == 200
 
@@ -463,8 +517,8 @@ def test_docmd_same_stem_different_extension_keep_separate_trees(
     download = tool_client.get(f"/api/artifacts/{snap['result']['artifact_id']}")
     with zipfile.ZipFile(io.BytesIO(download.content)) as z:
         assert sorted(z.namelist()) == [
-            "report.docx/report/auto/report.md",
-            "report.pdf/report/auto/report.md",
+            "report.docx/full.md",
+            "report.pdf/full.md",
         ]
 
 
@@ -472,12 +526,9 @@ def test_docmd_duplicate_names_get_index_correct_states(tool_client, monkeypatch
     monkeypatch.setattr(docmd, "find_mineru", lambda: ["mineru"])
 
     def fake_run(cmd, *_args, **_kwargs):
-        in_path = Path(cmd[cmd.index("-p") + 1])
-        out_dir = Path(cmd[cmd.index("-o") + 1])
+        in_path = Path(cmd[cmd.index("parse") + 1])
         if in_path.parent.name == "in_1":  # only the second upload produces md
-            md_dir = out_dir / "a" / "auto"
-            md_dir.mkdir(parents=True)
-            (md_dir / "a.md").write_text("# hi")
+            write_mineru_output(cmd)
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="boom")
 
     monkeypatch.setattr(docmd, "run_mineru", fake_run)
@@ -488,7 +539,7 @@ def test_docmd_duplicate_names_get_index_correct_states(tool_client, monkeypatch
             ("files", ("a.pdf", b"%PDF-1.4 one", "application/pdf")),
             ("files", ("a.pdf", b"%PDF-1.4 two", "application/pdf")),
         ],
-        data={"backend": "pipeline"},
+        data={"tier": "basic"},
     )
     assert resp.status_code == 200
 
@@ -503,14 +554,12 @@ def test_docmd_cancel_publishes_the_files_already_converted(tool_client, monkeyp
     cancel_landed = threading.Event()
 
     def fake_run(cmd, *_args, **_kwargs):
-        in_path = Path(cmd[cmd.index("-p") + 1])
+        in_path = Path(cmd[cmd.index("parse") + 1])
         if in_path.parent.name == "in_1":
             reached_second.set()
             cancel_landed.wait(5)
             return None  # the child was killed mid-file
-        md_dir = Path(cmd[cmd.index("-o") + 1]) / "a" / "auto"
-        md_dir.mkdir(parents=True)
-        (md_dir / "a.md").write_text("# one")
+        write_mineru_output(cmd, {"full.md": "# one"})
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     monkeypatch.setattr(docmd, "run_mineru", fake_run)
@@ -521,7 +570,7 @@ def test_docmd_cancel_publishes_the_files_already_converted(tool_client, monkeyp
             ("files", ("a.pdf", b"%PDF-1.4 one", "application/pdf")),
             ("files", ("b.pdf", b"%PDF-1.4 two", "application/pdf")),
         ],
-        data={"backend": "pipeline"},
+        data={"tier": "basic"},
     )
     assert resp.status_code == 200
     job_id = resp.json()["job_id"]
@@ -538,7 +587,7 @@ def test_docmd_cancel_publishes_the_files_already_converted(tool_client, monkeyp
     download = tool_client.get(f"/api/artifacts/{snap['result']['artifact_id']}")
     assert download.status_code == 200
     with zipfile.ZipFile(io.BytesIO(download.content)) as z:
-        assert z.namelist() == ["a.pdf/a/auto/a.md"]
+        assert z.namelist() == ["a.pdf/full.md"]
 
 
 def test_docpdf_cancel_publishes_the_pdfs_already_rendered(

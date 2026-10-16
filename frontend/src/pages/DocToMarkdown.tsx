@@ -12,11 +12,6 @@ import type { DocConvertResult, MarkdownHealth } from '../types/api'
 
 const ACCEPT = '.pdf,.png,.jpg,.jpeg,.docx,.pptx,.xlsx'
 
-const OCR_LANGS = [
-  'ch', 'ch_server', 'korean', 'ta', 'te', 'ka', 'th', 'el',
-  'arabic', 'east_slavic', 'cyrillic', 'devanagari',
-]
-
 function Hint({ children }: { children: ReactNode }) {
   return (
     <p className="hint">
@@ -27,12 +22,9 @@ function Hint({ children }: { children: ReactNode }) {
 
 export default function DocToMarkdown() {
   const [files, setFiles] = useState<File[]>([])
-  const [backend, setBackend] = useState('hybrid-engine')
-  const [method, setMethod] = useState('auto')
-  const [lang, setLang] = useState('ch')
-  const [effort, setEffort] = useState('medium')
-  const [formula, setFormula] = useState(true)
-  const [table, setTable] = useState(true)
+  const [tier, setTier] = useState('standard')
+  const [ocrMode, setOcrMode] = useState('auto')
+  const [imageAnalysis, setImageAnalysis] = useState(true)
 
   const [health, setHealth] = useState<MarkdownHealth | null>(null)
   useEffect(() => {
@@ -46,12 +38,9 @@ export default function DocToMarkdown() {
   async function convert() {
     const fd = new FormData()
     files.forEach((f) => fd.append('files', f))
-    fd.append('backend', backend)
-    fd.append('method', method)
-    fd.append('lang', lang)
-    fd.append('effort', effort)
-    fd.append('formula', String(formula))
-    fd.append('table', String(table))
+    fd.append('tier', tier)
+    fd.append('ocr_mode', ocrMode)
+    fd.append('image_analysis', String(imageAnalysis))
     const id = await start(() => api.docToMarkdown(fd))
     if (id) setFiles([])
   }
@@ -103,89 +92,49 @@ export default function DocToMarkdown() {
             <summary>Conversion options</summary>
             <div className="body">
               <div className="field">
-                <label htmlFor="docmd-backend">Backend</label>
+                <label htmlFor="docmd-tier">Parsing quality</label>
                 <select
-                  id="docmd-backend"
+                  id="docmd-tier"
                   className="control"
-                  value={backend}
-                  onChange={(e) => setBackend(e.target.value)}
+                  value={tier}
+                  onChange={(e) => setTier(e.target.value)}
                 >
-                  <option value="pipeline">Pipeline · Fastest</option>
-                  <option value="hybrid-engine">Hybrid · Balanced</option>
-                  <option value="vlm-engine">Vision language · Complex layouts</option>
+                  <option value="flash">Flash · Fast previews</option>
+                  <option value="basic">Basic · OCR, formulas, and tables</option>
+                  <option value="standard">Standard · Complex layouts</option>
+                  <option value="advanced">Advanced · Highest detail</option>
                 </select>
                 <Hint>
-                  Pipeline uses lighter models. Hybrid and vision language backends
-                  improve accuracy on complex layouts and take more time.
+                  Standard balances quality and speed. Basic uses smaller models;
+                  Advanced spends more time on difficult layouts. Office files always
+                  use native Flash parsing.
                 </Hint>
               </div>
-
-              {backend === 'pipeline' && (
-                <>
-                  <div className="field">
-                    <label htmlFor="docmd-method">Parse method</label>
-                    <select
-                      id="docmd-method"
-                      className="control"
-                      value={method}
-                      onChange={(e) => setMethod(e.target.value)}
-                    >
-                      <option value="auto">Automatic</option>
-                      <option value="txt">Text · Digital PDFs</option>
-                      <option value="ocr">OCR · Scanned documents</option>
-                    </select>
-                    <Hint>Automatic chooses a method for each file.</Hint>
-                  </div>
-                  <div className="field">
-                    <label htmlFor="docmd-lang">OCR language</label>
-                    <select
-                      id="docmd-lang"
-                      className="control"
-                      value={lang}
-                      onChange={(e) => setLang(e.target.value)}
-                    >
-                      {OCR_LANGS.map((code) => (
-                        <option key={code} value={code}>{code}</option>
-                      ))}
-                    </select>
-                    <Hint><code>ch</code> handles Chinese + English. Only affects OCR accuracy.</Hint>
-                  </div>
-                  <div className="field">
-                    <label className="check">
-                      <input
-                        type="checkbox"
-                        checked={formula}
-                        onChange={(e) => setFormula(e.target.checked)}
-                      />
-                      Parse formulas
-                    </label>
-                    <label className="check">
-                      <input
-                        type="checkbox"
-                        checked={table}
-                        onChange={(e) => setTable(e.target.checked)}
-                      />
-                      Parse tables
-                    </label>
-                  </div>
-                </>
-              )}
-
-              {backend === 'hybrid-engine' && (
-                <div className="field">
-                  <label htmlFor="docmd-effort">Analysis detail</label>
-                  <select
-                    id="docmd-effort"
-                    className="control"
-                    value={effort}
-                    onChange={(e) => setEffort(e.target.value)}
-                  >
-                    <option value="medium">Standard</option>
-                    <option value="high">High · Include image and chart analysis</option>
-                  </select>
-                  <Hint>High adds image and chart analysis for greater accuracy and takes more time.</Hint>
-                </div>
-              )}
+              <div className="field">
+                <label htmlFor="docmd-ocr-mode">Text recognition</label>
+                <select
+                  id="docmd-ocr-mode"
+                  className="control"
+                  value={ocrMode}
+                  onChange={(e) => setOcrMode(e.target.value)}
+                >
+                  <option value="auto">Automatic</option>
+                  <option value="txt">Text · Digital PDFs</option>
+                  <option value="ocr">OCR · Scanned documents</option>
+                </select>
+                <Hint>Automatic chooses text extraction or OCR for each file.</Hint>
+              </div>
+              <div className="field">
+                <label className="check">
+                  <input
+                    type="checkbox"
+                    checked={imageAnalysis}
+                    onChange={(e) => setImageAnalysis(e.target.checked)}
+                  />
+                  Analyze images and charts
+                </label>
+                <Hint>Image analysis can improve detail and takes more time.</Hint>
+              </div>
             </div>
           </details>
         </div>

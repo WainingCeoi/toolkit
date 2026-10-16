@@ -1,7 +1,6 @@
 import js from '@eslint/js'
 import globals from 'globals'
 import babelParser from '@babel/eslint-parser'
-import react from 'eslint-plugin-react'
 import reactHooks from 'eslint-plugin-react-hooks'
 import reactRefresh from 'eslint-plugin-react-refresh'
 
@@ -19,7 +18,6 @@ const tsLanguageOptions = (plugins) => ({
 })
 
 const tsRules = {
-  'react/jsx-uses-vars': 'error',
   ...reactHooks.configs.recommended.rules,
   'react-refresh/only-export-components': ['warn', { allowConstantExport: true }],
   // Off because tsc covers them: Babel has no type info, so both misfire on type-only names.
@@ -27,7 +25,7 @@ const tsRules = {
   'no-undef': 'off',
 }
 
-const tsPlugins = { react, 'react-hooks': reactHooks, 'react-refresh': reactRefresh }
+const tsPlugins = { 'react-hooks': reactHooks, 'react-refresh': reactRefresh }
 
 export default [
   { ignores: ['dist/**'] },

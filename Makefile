@@ -3,7 +3,7 @@ SHELL := /bin/bash
 .DEFAULT_GOAL := help
 PORT ?= 8000
 
-# Backend extras; skipped on Intel Macs (no torch wheel). Override: make install EXTRAS=docmd
+# Backend extras; skipped on Intel Macs (no ONNX wheel). Override: make install EXTRAS=docmd
 EXTRAS ?= $(shell if [ "$$(uname -s)" = "Darwin" ] && [ "$$(uname -m)" = "x86_64" ]; \
                   then echo ""; else echo "docmd"; fi)
 EXTRA_FLAGS := $(foreach extra,$(strip $(EXTRAS)),--extra $(extra))

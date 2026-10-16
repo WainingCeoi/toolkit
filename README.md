@@ -66,6 +66,9 @@ Install these only if you use the corresponding tool:
 Doc to Markdown uses [MinerU](https://github.com/opendatalab/MinerU). Setup includes
 it on Apple silicon Macs; its models download during the first conversion,
 which can take longer. Intel Macs skip it because its dependencies are unsupported.
+The converter uses MinerU 4's local parsing tiers: Standard by default for PDFs
+and images, or native Flash parsing for Office files. Basic uses smaller OCR,
+table, and formula models; Advanced spends more time on difficult layouts.
 To omit this converter on any Mac, run `make start EXTRAS=` and use the same
 option on later starts.
 

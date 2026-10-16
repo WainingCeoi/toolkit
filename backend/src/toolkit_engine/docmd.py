@@ -9,10 +9,10 @@ import time
 import zipfile
 from pathlib import Path
 
-# A stable cwd for the mineru subprocess, whatever the server was launched from.
+# A stable cwd for the MinerU subprocess, whatever the server was launched from.
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-# Files MinerU can parse (mirrors its CLI's accepted inputs).
+# File types exposed by this converter.
 ACCEPTED_TYPES = ["pdf", "png", "jpg", "jpeg", "docx", "pptx", "xlsx"]
 
 # Per-file ceiling; the first run downloads models and CPU parsing takes minutes.
@@ -20,11 +20,11 @@ PER_FILE_TIMEOUT = 1800
 
 
 def find_mineru():
-    """Return the MinerU command prefix as a list, or None if unavailable."""
-    venv_bin = Path(sys.executable).with_name("mineru")
+    """Return the stateless MinerU 4 command, or None if unavailable."""
+    venv_bin = Path(sys.executable).with_name("mineru-kit")
     if venv_bin.exists():
         return [str(venv_bin)]
-    on_path = shutil.which("mineru")
+    on_path = shutil.which("mineru-kit")
     return [on_path] if on_path else None
 
 
@@ -32,36 +32,29 @@ def build_mineru_cmd(
     prefix,
     input_path,
     out_dir,
-    backend="pipeline",
-    method="auto",
-    lang="ch",
-    effort="medium",
-    formula=True,
-    table=True,
+    tier="standard",
+    ocr_mode="auto",
+    image_analysis=True,
 ):
-    """Assemble the `mineru` argv for converting one file to Markdown."""
+    """Build a whole-document export, including Markdown and image assets."""
+    # Native Office documents only support Flash; PDF/images use the chosen tier.
+    if Path(input_path).suffix.lower() in {".docx", ".pptx", ".xlsx"}:
+        tier = "flash"
     cmd = [
         *prefix,
-        "-p",
+        "parse",
         str(input_path),
         "-o",
         str(out_dir),
-        "-b",
-        backend,
+        "--format",
+        "zip",
+        "--tier",
+        tier,
+        "--ocr-mode",
+        ocr_mode,
     ]
-    if backend == "pipeline":
-        cmd += [
-            "-m",
-            method,
-            "-l",
-            lang,
-            "-f",
-            "true" if formula else "false",
-            "-t",
-            "true" if table else "false",
-        ]
-    elif backend.startswith("hybrid"):
-        cmd += ["--effort", effort]
+    if not image_analysis:
+        cmd.append("--disable-image-analysis")
     return cmd
 
 
@@ -102,18 +95,28 @@ def run_mineru(cmd, is_cancelled=None, poll=0.5):
                 raise subprocess.TimeoutExpired(cmd, PER_FILE_TIMEOUT)
 
 
-def find_markdown(out_dir):
-    """Return the first Markdown file MinerU produced under out_dir, or None."""
-    # Not a direct path: MinerU truncates long stems and the method folder varies.
-    md_files = sorted(Path(out_dir).rglob("*.md"))
-    return md_files[0] if md_files else None
-
-
-def zip_tree(out_dir, archive, prefix=""):
-    out_dir = Path(out_dir)
-    for path in sorted(out_dir.rglob("*")):
-        if path.is_file():
-            archive.write(path, Path(prefix) / path.relative_to(out_dir))
+def append_document_zip(out_dir, archive, prefix):
+    """Copy a MinerU ZIP's full Markdown tree into the batch archive."""
+    for output in sorted(Path(out_dir).glob("*.zip")):
+        with zipfile.ZipFile(output) as document:
+            members = [item for item in document.infolist() if not item.is_dir()]
+            if not any(item.filename.endswith(".md") for item in members):
+                continue
+            # Do not propagate unsafe member paths into a downloadable archive.
+            if any(
+                Path(item.filename).is_absolute() or ".." in Path(item.filename).parts
+                for item in members
+            ):
+                raise ValueError("unsafe path in MinerU output")
+            # Validate every CRC before adding anything to the batch archive.
+            # A bad later asset must not leave a failed document's Markdown behind.
+            bad_member = document.testzip()
+            if bad_member is not None:
+                raise zipfile.BadZipFile(f"Bad CRC-32 for file {bad_member!r}")
+            for item in members:
+                archive.writestr(f"{prefix}/{item.filename}", document.read(item))
+            return True
+    return False
 
 
 def convert_batch(named_files, options, on_progress, mineru_cmd, is_cancelled=None):
@@ -135,7 +138,7 @@ def convert_batch(named_files, options, on_progress, mineru_cmd, is_cancelled=No
                 int(idx / total * 100),
                 f"Converting {idx + 1}/{total} — {name}…",
             )
-            # Per-file dirs: MinerU scans the whole input directory.
+            # Separate workspaces also prevent same-stem output collisions.
             src = tmp / f"in_{idx}" / safe
             out_dir = tmp / f"out_{idx}"
             src.parent.mkdir(parents=True, exist_ok=True)
@@ -146,12 +149,9 @@ def convert_batch(named_files, options, on_progress, mineru_cmd, is_cancelled=No
                 mineru_cmd,
                 src,
                 out_dir,
-                options["backend"],
-                options["method"],
-                options["lang"],
-                options["effort"],
-                options["formula"],
-                options["table"],
+                options["tier"],
+                options["ocr_mode"],
+                options["image_analysis"],
             )
             try:
                 result = run_mineru(cmd, is_cancelled)
@@ -161,9 +161,12 @@ def convert_batch(named_files, options, on_progress, mineru_cmd, is_cancelled=No
             if result is None:
                 break
 
-            if find_markdown(out_dir):
-                # Own folder per upload: MinerU names its tree after the stem.
-                zip_tree(out_dir, archive, safe)
+            try:
+                converted = append_document_zip(out_dir, archive, safe)
+            except (zipfile.BadZipFile, ValueError) as exc:
+                failed.append((idx, name, str(exc)))
+                continue
+            if converted:
                 done.append((idx, name))
             else:
                 reason = (result.stderr or result.stdout or "").strip()
