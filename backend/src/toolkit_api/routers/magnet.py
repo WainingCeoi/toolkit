@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 import os
+import stat
+import tempfile
+import threading
 from collections.abc import Callable
+from pathlib import Path
+from urllib.parse import urlsplit
 
 from dotenv import dotenv_values, set_key
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, HttpUrl
 
 from toolkit_engine import magnet
 
@@ -19,17 +24,27 @@ router = APIRouter(prefix="/magnet", tags=["magnet"])
 
 TOOL_SLUG = "magnet-scraper"
 
-ERR_NO_WEBSITE = "❌ WEBSITE_URL is not set in .env."
-ERR_NO_CUTOFF = "❌ CUTOFF_VIDEO is not set in .env (no stopping point)."
+ERR_NO_WEBSITE = "Add a source website in Settings before using Automatic mode."
+ERR_NO_CUTOFF = "Add a last watched video URL in Settings before using Automatic mode."
 WARN_CUTOFF_NOT_FOUND = (
-    "Cutoff video not found — check CUTOFF_VIDEO or raise the page "
-    "limit. Nothing was scraped and the cutoff was left unchanged."
+    "Last watched video not found. Check its URL in Settings and the start page. "
+    "Nothing was scraped and the stopping point was left unchanged."
 )
 WARN_NO_URLS = "Please enter at least one URL"
 WARN_NO_MAGNETS = "Please enter at least one magnet link"
 
+_config_lock = threading.Lock()
+_config_revision = 0
+
+
+class MagnetConfigIn(BaseModel):
+    website_url: str
+    cutoff_video: str
+
 
 class MagnetConfigOut(BaseModel):
+    website_url: str
+    cutoff_video: str
     website_url_set: bool
     cutoff_set: bool
 
@@ -49,6 +64,78 @@ class DedupeIn(BaseModel):
 class DedupeOut(BaseModel):
     unique: list[str]
     count: int
+
+
+def _read_config() -> MagnetConfigOut:
+    """Read fresh values, with explicit empty file values overriding shell defaults."""
+    try:
+        cfg = dotenv_values(magnet.ENV_PATH)
+    except OSError as exc:
+        raise HTTPException(
+            status_code=500, detail="Could not read magnet settings from backend/.env."
+        ) from exc
+    website = (cfg.get("WEBSITE_URL", os.getenv("WEBSITE_URL")) or "").strip()
+    cutoff = (cfg.get("CUTOFF_VIDEO", os.getenv("CUTOFF_VIDEO")) or "").strip()
+    return MagnetConfigOut(
+        website_url=website,
+        cutoff_video=cutoff,
+        website_url_set=bool(website),
+        cutoff_set=bool(cutoff),
+    )
+
+
+def _validate_url(value: str, label: str) -> str:
+    value = value.strip()
+    if not value:
+        return ""
+    try:
+        if not value.lower().startswith(("http://", "https://")) or any(
+            char.isspace() or ord(char) < 32 for char in value
+        ):
+            raise ValueError
+        parsed = urlsplit(value)
+        if not parsed.hostname or "\\" in parsed.netloc:
+            raise ValueError
+        HttpUrl(value)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=f"{label} must be a valid http:// or https:// URL.",
+        ) from exc
+    return value
+
+
+def _write_config(values: dict[str, str]) -> None:
+    """Update only these dotenv keys and replace the file once both writes succeed."""
+    env_path = Path(magnet.ENV_PATH)
+    temp_path: Path | None = None
+    try:
+        try:
+            contents = env_path.read_bytes()
+            file_mode = stat.S_IMODE(env_path.stat().st_mode)
+        except FileNotFoundError:
+            contents = b""
+            file_mode = None
+        with tempfile.NamedTemporaryFile(
+            dir=env_path.parent, prefix=f"{env_path.name}.", delete=False
+        ) as temp:
+            temp_path = Path(temp.name)
+            temp.write(contents)
+        for key, value in values.items():
+            set_key(temp_path, key, value)
+        if file_mode is not None:
+            temp_path.chmod(file_mode)
+        temp_path.replace(env_path)
+    except OSError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Could not save magnet settings. Check that backend/.env is writable."
+            ),
+        ) from exc
+    finally:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
 
 
 def _scrape(
@@ -94,14 +181,19 @@ def _scrape(
 
 @router.get("/config", response_model=MagnetConfigOut)
 def get_config() -> MagnetConfigOut:
-    # Re-read .env so a set_key cutoff advance in this process is seen.
-    cfg = dotenv_values(magnet.ENV_PATH)
-    website = cfg.get("WEBSITE_URL") or os.getenv("WEBSITE_URL")
-    cutoff = cfg.get("CUTOFF_VIDEO") or os.getenv("CUTOFF_VIDEO")
-    return MagnetConfigOut(
-        website_url_set=bool(website),
-        cutoff_set=bool(cutoff),
-    )
+    with _config_lock:
+        return _read_config()
+
+
+@router.put("/config", response_model=MagnetConfigOut)
+def update_config(req: MagnetConfigIn) -> MagnetConfigOut:
+    global _config_revision
+    website = _validate_url(req.website_url, "Source website").rstrip("/")
+    cutoff = _validate_url(req.cutoff_video, "Last watched video URL")
+    with _config_lock:
+        _write_config({"WEBSITE_URL": website, "CUTOFF_VIDEO": cutoff})
+        _config_revision += 1
+        return _read_config()
 
 
 @router.post("/auto", response_model=JobStartedOut)
@@ -109,10 +201,11 @@ def start_auto(req: AutoScrapeIn, state: StateDep) -> JobStartedOut:
     start_page = req.start_page
 
     def worker(job: Job) -> dict | None:
-        # Re-read .env so a set_key cutoff advance in this process is seen.
-        cfg = dotenv_values(magnet.ENV_PATH)
-        cutoff_video_url = cfg.get("CUTOFF_VIDEO") or os.getenv("CUTOFF_VIDEO")
-        source_website = cfg.get("WEBSITE_URL") or os.getenv("WEBSITE_URL")
+        with _config_lock:
+            config = _read_config()
+            config_revision = _config_revision
+        cutoff_video_url = config.cutoff_video
+        source_website = config.website_url
 
         if not source_website:
             raise RuntimeError(ERR_NO_WEBSITE)
@@ -155,7 +248,10 @@ def start_auto(req: AutoScrapeIn, state: StateDep) -> JobStartedOut:
                 (i for i, url in enumerate(urls) if url in failed_urls), default=-1
             )
             if oldest_failed + 1 < len(urls):
-                set_key(magnet.ENV_PATH, "CUTOFF_VIDEO", urls[oldest_failed + 1])
+                with _config_lock:
+                    # Keep settings saved during this run, including website changes.
+                    if _config_revision == config_revision and _read_config() == config:
+                        _write_config({"CUTOFF_VIDEO": urls[oldest_failed + 1]})
         return result
 
     job = state.jobs.submit(TOOL_SLUG, [], worker)

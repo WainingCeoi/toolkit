@@ -207,6 +207,13 @@ code { font: .9em var(--mono); overflow-wrap: anywhere; }
 .step { display: flex; align-items: center; gap: 9px; color: var(--text); font-size: 12px; font-weight: 600; margin-bottom: 19px; line-height: 1.4; text-transform: none; }
 .step .n { min-width: 23px; height: 23px; display: inline-grid; place-items: center; font-size: 10px; font-weight: 550; color: var(--amber-text); border-radius: 6px; background: var(--accent-soft); }
 .step::after { content: ""; border-top: 1px solid var(--edge); flex: 1; margin-left: 4px; }
+.magnet-panel-heading { display: flex; align-items: center; gap: 12px; margin-bottom: 19px; }
+.magnet-panel-heading .step { flex: 1; margin-bottom: 0; }
+.magnet-settings { padding: 18px; margin-bottom: 22px; border: 1px solid var(--edge); border-radius: var(--radius-s); background: var(--bench); }
+.magnet-settings h2 { margin: 0 0 7px; font-size: 14px; font-weight: 600; }
+.magnet-settings > .hint { margin-bottom: 18px; }
+.magnet-settings .control { background: var(--panel); }
+.magnet-settings .row + .hint { margin-bottom: 0; }
 .field + .step, .note + .step { margin-top: 24px; }
 .field { margin-bottom: 18px; }
 .field label:not(.check), .field .label { display: block; font-size: 12px; color: var(--muted); font-weight: 500; margin-bottom: 7px; }

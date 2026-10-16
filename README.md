@@ -90,10 +90,14 @@ To choose a different starting port, use `make start PORT=9000`.
 
 ## Settings and saved data
 
-All settings are optional. To customize them, copy
+Configure automatic magnet scraping in **Magnet Scraper → Settings**. Set the
+source website and last watched video URL, then save. Changes apply immediately
+and are saved to `backend/.env`; automatic runs keep the stopping point updated.
+
+For other settings, copy
 [backend/.env.example](backend/.env.example) to `backend/.env`, edit it, and restart
-Toolkit. The example explains settings for automatic magnet scraping, subscription
-links, and hiding tools you do not use.
+Toolkit. The example explains settings for subscription links, hiding tools you
+do not use, and other optional customizations.
 
 Saved subscriptions and BitComet connections are stored locally in `backend/data/`
 by default. This folder can contain connection credentials; keep it private.

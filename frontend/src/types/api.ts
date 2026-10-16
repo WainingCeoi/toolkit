@@ -163,6 +163,8 @@ export interface PickFolderResult {
 }
 
 export interface MagnetConfig {
+  website_url: string
+  cutoff_video: string
   website_url_set: boolean
   cutoff_set: boolean
 }

@@ -254,6 +254,8 @@ export const api = {
   cancelJob: (id: string) => request<JobCancel>(`/jobs/${id}/cancel`, { method: 'POST' }),
 
   magnetConfig: () => request<MagnetConfig>('/magnet/config'),
+  magnetSaveConfig: (config: Pick<MagnetConfig, 'website_url' | 'cutoff_video'>) =>
+    request<MagnetConfig>('/magnet/config', { method: 'PUT', body: config }),
   magnetAuto: (startPage: number) =>
     request<JobStarted>('/magnet/auto', { method: 'POST', body: { start_page: startPage } }),
   magnetManual: (urls: string[]) =>

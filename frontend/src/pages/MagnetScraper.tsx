@@ -1,4 +1,4 @@
-import { useEffect, useState, type CSSProperties } from 'react'
+import { useEffect, useRef, useState, type CSSProperties, type FormEvent } from 'react'
 import { api } from '../api'
 import { useToolJob } from '../jobs'
 import JobPanel from '../components/JobPanel'
@@ -18,6 +18,20 @@ const MODES = [
 type MagnetMode = (typeof MODES)[number]['key']
 
 const BIG_TAP: CSSProperties = { minHeight: 44 }
+
+interface MagnetDraft {
+  website_url: string
+  cutoff_video: string
+  dirty: boolean
+}
+
+function configDraft(config: MagnetConfig | null): MagnetDraft {
+  return {
+    website_url: config?.website_url ?? '',
+    cutoff_video: config?.cutoff_video ?? '',
+    dirty: false,
+  }
+}
 
 function splitLines(raw: string): string[] {
   return raw
@@ -89,6 +103,14 @@ export default function MagnetScraper() {
   const [startPage, setStartPage] = useState('1')
   const [config, setConfig] = useState<MagnetConfig | null>(null)
   const [configError, setConfigError] = useState<string | null>(null)
+  const [configLoading, setConfigLoading] = useState(true)
+  const [configReload, setConfigReload] = useState(0)
+  const configRequest = useRef(0)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [draft, setDraft] = useState<MagnetDraft>(() => configDraft(null))
+  const [saving, setSaving] = useState(false)
+  const [settingsError, setSettingsError] = useState<string | null>(null)
+  const [settingsSaved, setSettingsSaved] = useState(false)
 
   const [manualRaw, setManualRaw] = useState('')
 
@@ -98,13 +120,85 @@ export default function MagnetScraper() {
   const [dedupeBusy, setDedupeBusy] = useState(false)
 
   const { start, snapshot, running, error, setError } = useToolJob<MagnetResult>('/tools/magnet-scraper')
+  const finishedJobId = snapshot && snapshot.state !== 'running' ? snapshot.id : null
 
   useEffect(() => {
+    let active = true
+    const requestId = ++configRequest.current
     api
       .magnetConfig()
-      .then(setConfig)
-      .catch((e: Error) => setConfigError(e.message))
-  }, [])
+      .then((next) => {
+        if (!active || requestId !== configRequest.current) return
+        setConfig(next)
+        setConfigError(null)
+        // Automatic runs advance the cutoff; leave any unsaved edits intact.
+        setDraft((current) => current.dirty ? current : configDraft(next))
+      })
+      .catch((e: Error) => {
+        if (active && requestId === configRequest.current) setConfigError(e.message)
+      })
+      .finally(() => {
+        if (active && requestId === configRequest.current) setConfigLoading(false)
+      })
+    return () => { active = false }
+  }, [finishedJobId, configReload])
+
+  function closeSettings() {
+    setSettingsOpen(false)
+    setDraft(configDraft(config))
+    setSettingsError(null)
+    setSettingsSaved(false)
+  }
+
+  function toggleSettings() {
+    if (settingsOpen) {
+      closeSettings()
+      return
+    }
+    setDraft(configDraft(config))
+    setSettingsError(null)
+    setSettingsSaved(false)
+    setSettingsOpen(true)
+  }
+
+  function editSetting(key: 'website_url' | 'cutoff_video', value: string) {
+    setDraft((current) => ({ ...current, [key]: value, dirty: true }))
+    setSettingsError(null)
+    setSettingsSaved(false)
+  }
+
+  async function saveSettings(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    // A delayed GET must not replace the settings returned by this save.
+    ++configRequest.current
+    setConfigLoading(false)
+    setSaving(true)
+    setSettingsError(null)
+    setSettingsSaved(false)
+    try {
+      const next = await api.magnetSaveConfig({
+        website_url: draft.website_url.trim(),
+        cutoff_video: draft.cutoff_video.trim(),
+      })
+      // A run may finish and start another GET while the PUT is in flight.
+      ++configRequest.current
+      setConfigLoading(false)
+      setConfig(next)
+      setConfigError(null)
+      setDraft(configDraft(next))
+      setSettingsSaved(true)
+    } catch (e) {
+      setSettingsError((e as Error).message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  function retryConfig() {
+    setConfigError(null)
+    setConfigLoading(true)
+    setConfigReload((value) => value + 1)
+  }
 
   function startAuto() {
     const page = Number(startPage)
@@ -134,6 +228,7 @@ export default function MagnetScraper() {
   }
 
   const missingConfig = config && (!config.website_url_set || !config.cutoff_set)
+  const autoReady = config && !missingConfig && !configError && !configLoading
 
   return (
     <div>
@@ -145,8 +240,77 @@ export default function MagnetScraper() {
 
       <div className="station">
         <div className="panel">
-          <div className="step">
-            <span className="n">01</span><span>Source &amp; mode</span>
+          <div className="magnet-panel-heading">
+            <div className="step">
+              <span className="n">01</span><span>Source &amp; mode</span>
+            </div>
+            <Button
+              aria-expanded={settingsOpen}
+              aria-controls="magnet-settings"
+              disabled={saving}
+              onClick={toggleSettings}
+            >
+              <Icon name="settings" size={16} /> Settings
+            </Button>
+          </div>
+
+          {configError && (
+            <div className="note warn" role="alert">
+              Could not load settings: {configError}
+              <div className="row" style={{ marginTop: 8 }}>
+                <Button onClick={retryConfig} loading={configLoading}>Retry</Button>
+              </div>
+            </div>
+          )}
+
+          <div id="magnet-settings" hidden={!settingsOpen}>
+            {settingsOpen && (config ? (
+              <form className="magnet-settings" aria-label="Magnet settings" onSubmit={saveSettings}>
+                <h2>Automatic discovery</h2>
+                <p className="hint">Choose where to look and the video to stop at. Settings are saved on this Mac.</p>
+                <div className="field">
+                  <label htmlFor="magnet-website">Source website</label>
+                  <input
+                    id="magnet-website"
+                    type="url"
+                    className="control"
+                    placeholder="https://example.com"
+                    value={draft.website_url}
+                    onChange={(e) => editSetting('website_url', e.target.value)}
+                    disabled={saving}
+                    spellCheck={false}
+                    autoComplete="off"
+                    aria-describedby="magnet-website-hint"
+                  />
+                  <p id="magnet-website-hint" className="hint">The site's base URL, without /page/1/.</p>
+                </div>
+                <div className="field">
+                  <label htmlFor="magnet-cutoff">Last watched video URL</label>
+                  <input
+                    id="magnet-cutoff"
+                    type="url"
+                    className="control"
+                    placeholder="https://example.com/last-watched-video"
+                    value={draft.cutoff_video}
+                    onChange={(e) => editSetting('cutoff_video', e.target.value)}
+                    disabled={saving}
+                    spellCheck={false}
+                    autoComplete="off"
+                    aria-describedby="magnet-cutoff-hint"
+                  />
+                  <p id="magnet-cutoff-hint" className="hint">Discovery stops before this video. The stopping point advances after a successful run.</p>
+                </div>
+                {settingsError && <div className="note error" role="alert">{settingsError}</div>}
+                {settingsSaved && <div className="note ok" role="status">Settings saved. Changes apply to your next automatic run.</div>}
+                <div className="row">
+                  <Button type="submit" variant="primary" loading={saving} disabled={!draft.dirty}>Save settings</Button>
+                  <Button onClick={closeSettings} disabled={saving}>Cancel</Button>
+                </div>
+                {draft.dirty && <p className="hint">Save your changes before starting automatic discovery.</p>}
+              </form>
+            ) : (
+              <div className="note info" role="status">{configLoading ? 'Loading settings…' : 'Retry loading settings to edit your source.'}</div>
+            ))}
           </div>
 
           <div className="field">
@@ -188,38 +352,33 @@ export default function MagnetScraper() {
                 />
               </div>
               <div className="field">
-                <span className="label">Source configuration · backend/.env</span>
-                {configError ? (
-                  <div className="note warn" style={{ margin: 0 }}>
-                    Could not read config: {configError}
-                  </div>
-                ) : config ? (
+                <span className="label">Source configuration</span>
+                {config ? (
                   <div className="healthline" style={{ margin: 0 }}>
                     <span className={config.website_url_set ? 'lamp' : 'lamp off'}>
                       <i />
-                      WEBSITE_URL {config.website_url_set ? 'set' : 'missing'}
+                      Website {config.website_url_set ? 'ready' : 'missing'}
                     </span>
                     <span className={config.cutoff_set ? 'lamp' : 'lamp off'}>
                       <i />
-                      CUTOFF_VIDEO {config.cutoff_set ? 'set' : 'missing'}
+                      Stopping point {config.cutoff_set ? 'ready' : 'missing'}
                     </span>
                   </div>
                 ) : (
                   <div className="healthline" style={{ margin: 0 }}>
-                    checking…
+                    {configLoading ? 'Checking settings…' : 'Settings unavailable'}
                   </div>
                 )}
               </div>
               {missingConfig && (
                 <div className="note warn">
-                  Automatic mode needs both keys — set the missing one(s) in
-                  backend/.env before scraping.
+                  Add a source website and last watched video URL in Settings to use Automatic mode.
                 </div>
               )}
               <Button
                 variant="primary"
                 style={BIG_TAP}
-                disabled={running}
+                disabled={running || saving || !autoReady || (settingsOpen && draft.dirty)}
                 loading={running}
                 onClick={startAuto}
               >

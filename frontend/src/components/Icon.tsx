@@ -25,6 +25,13 @@ const paths = {
   chevron: <path d="m9 5 7 7-7 7" />,
   close: <path d="m6 6 12 12M6 18 18 6" />,
   menu: <path d="M4 6h16M4 12h16M4 18h16" />,
+  settings: (
+    <>
+      <path d="M4 7h16M4 17h16" />
+      <circle cx="9" cy="7" r="3" fill="var(--panel)" />
+      <circle cx="15" cy="17" r="3" fill="var(--panel)" />
+    </>
+  ),
   monitor: (
     <>
       <rect x="3" y="3" width="18" height="13" rx="2" />
