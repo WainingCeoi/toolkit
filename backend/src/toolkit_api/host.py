@@ -2,19 +2,17 @@
 
 from __future__ import annotations
 
-import errno
 import ipaddress
 import os
 import socket
 import subprocess
 import sys
 
+from .ports import free_port
+
 APP = "toolkit_api.main:app"
 BASE_PORT = 8000
-PORT_TRIES = 20
 _LOOPBACK = {"127.0.0.1", "localhost", "::1"}
-# Where to knock when probing a wildcard bind address.
-_WILDCARD = {"0.0.0.0": "127.0.0.1", "": "127.0.0.1", "::": "::1"}
 _BAR = "─" * 64
 
 
@@ -92,44 +90,6 @@ def lan_ip() -> str | None:
     return candidates[0] if candidates else None
 
 
-def _already_serving(family: int, host: str, port: int) -> bool:
-    """True when something already accepts here; SO_REUSEADDR hides it from bind()."""
-    with socket.socket(family, socket.SOCK_STREAM) as sock:
-        sock.settimeout(0.25)
-        try:
-            sock.connect((_WILDCARD.get(host, host), port))
-        except OSError:
-            return False
-    return True
-
-
-def free_port(host: str, base: int, tries: int = PORT_TRIES) -> int:
-    """First port >= ``base`` that binds on ``host`` and has no listener already."""
-    # Resolve the family first; an AF_INET-only probe fails for ::1.
-    try:
-        family = socket.getaddrinfo(host, base, type=socket.SOCK_STREAM)[0][0]
-    except OSError:
-        family = socket.AF_INET
-    last_err: OSError | None = None
-    for port in range(base, base + tries):
-        with socket.socket(family, socket.SOCK_STREAM) as sock:
-            # Kept so a port left in TIME_WAIT is not skipped; uvicorn sets it too.
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            try:
-                sock.bind((host, port))
-            except OSError as err:
-                last_err = err
-                continue
-        if _already_serving(family, host, port):
-            last_err = OSError(errno.EADDRINUSE, os.strerror(errno.EADDRINUSE))
-            continue
-        return port
-    raise SystemExit(
-        f"No free port in {base}..{base + tries - 1} on {host} "
-        f"(last error: {last_err}). Free one up or set PORT=<n>."
-    )
-
-
 def _print_banner(
     host: str,
     port: int,
@@ -160,7 +120,7 @@ def _print_banner(
             "       and its tools move and PERMANENTLY DELETE files on this Mac.",
             "       Run it only on a Wi-Fi you trust.",
             "     • Plain HTTP (no TLS) — appropriate for a trusted LAN only.",
-            "     • Restrict to this machine with:  HOST=127.0.0.1 make host",
+            "     • Set HOST=127.0.0.1 when launching to restrict access to this Mac.",
             _BAR,
         ]
     print("\n".join(lines), flush=True)
@@ -173,11 +133,6 @@ def _base_port() -> int:
         raise SystemExit(
             f"PORT must be an integer, got {os.environ.get('PORT')!r}"
         ) from None
-
-
-def _print_free_port() -> None:
-    """Print the port for ``make dev``; Vite fixes its proxy target at boot."""
-    print(free_port("127.0.0.1", _base_port()))
 
 
 def main() -> None:
@@ -198,7 +153,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    if "--free-port" in sys.argv:
-        _print_free_port()
-    else:
-        main()
+    main()

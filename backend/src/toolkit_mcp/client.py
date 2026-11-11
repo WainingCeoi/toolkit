@@ -132,8 +132,8 @@ class ToolkitClient:
         except httpx.RequestError as exc:
             raise ToolError(
                 f"Cannot connect to Toolkit API at {self.settings.api_base_url} "
-                f"({type(exc).__name__}). Start the existing backend with make start, "
-                "Set TOOLKIT_API_BASE_URL to its printed address (port may change). "
+                f"({type(exc).__name__}). Start Toolkit with make dev. "
+                "Set TOOLKIT_API_BASE_URL to the printed backend address. "
                 "No retry was made; inspect state before repeating a sent request."
             ) from exc
 

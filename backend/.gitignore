@@ -17,8 +17,10 @@ htmlcov/
 # Secrets / local config (.env.example is the committed template)
 .env
 
-# Runtime data (subscription SQLite store) and the port `make backend` resolved
+# Runtime data (SQLite stores and BitComet pairing identity)
 data/
+
+# Port file left by older launchers
 .port
 
 # Build output
