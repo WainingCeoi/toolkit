@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import re
+import time
 import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from io import BytesIO
@@ -151,6 +152,24 @@ class BrowserSession:
 
     def page_source(self) -> str:
         return self._driver.page_source
+
+    def scroll(self, steps: int, wait_ms: int) -> dict:
+        """Move down by viewports to trigger lazy images; report the current page."""
+        for _ in range(steps):
+            self._driver.execute_script(
+                "window.scrollBy(0, Math.max(1, window.innerHeight * 0.8));"
+            )
+            time.sleep(wait_ms / 1000)
+        metrics = self._driver.execute_script(
+            "const images = [...document.querySelectorAll('img[class*=bi]')];"
+            "return {matched_images: images.length,"
+            "loaded_images: images.filter(i => "
+            "i.complete && i.naturalWidth > 0).length,"
+            "at_bottom: window.scrollY + window.innerHeight >= "
+            "Math.max(document.body.scrollHeight, "
+            "document.documentElement.scrollHeight) - 2};"
+        )
+        return {"steps": steps, **metrics, "url": self.current_url}
 
     def quit(self) -> None:
         try:

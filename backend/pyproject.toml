@@ -4,13 +4,15 @@ version = "0.1.0"
 description = "FastAPI backend for Toolkit — media & file utilities engine + web API."
 requires-python = ">=3.14"
 dependencies = [
+    "mcp>=2.3.0,<3",
+    "httpx2>=2.13.1,<3",
     "fastapi>=0.143.2",
     "uvicorn>=0.54.0",
     "python-multipart>=0.0.32",
     "sse-starlette>=3.5.0",
     "python-dotenv>=1.2.4",
     "beautifulsoup4>=4.15.0",
-    # No macOS x86_64 wheel; Intel Macs skip it and use toolkit_engine/aescbc.py.
+    # Engine uses aescbc.py on Intel; MCP also requires crypto transitively via JWT.
     "cryptography>=50.0.2; sys_platform != 'darwin' or platform_machine != 'x86_64'",
     "ffmpeg-progress-yield>=1.1.4",
     "ffmpeg-python>=0.2.0",
@@ -27,6 +29,9 @@ dependencies = [
     "webdriver-manager>=4.1.2",
 ]
 
+[project.scripts]
+toolkit-mcp = "toolkit_mcp.__main__:main"
+
 # docmd: MinerU's local parsing stack; `make install` adds it, `uv sync` skips it.
 [project.optional-dependencies]
 docmd = ["mineru>=4.0.12"]
@@ -39,10 +44,10 @@ dev = ["pytest>=9.1.1", "httpx2>=2.13.1", "ruff>=0.17.1"]
 requires = ["hatchling>=1.32.4"]
 build-backend = "hatchling.build"
 
-# `sources = ["src"]` strips the prefix so all three packages land at the wheel root.
+# `sources = ["src"]` strips the prefix so all packages land at the wheel root.
 [tool.hatch.build.targets.wheel]
 sources = ["src"]
-only-include = ["src/subgen", "src/toolkit_engine", "src/toolkit_api"]
+only-include = ["src/subgen", "src/toolkit_engine", "src/toolkit_api", "src/toolkit_mcp"]
 
 [tool.uv]
 package = true
