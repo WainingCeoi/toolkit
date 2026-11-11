@@ -7,6 +7,7 @@ import hashlib
 import http.client
 import json
 import os
+import re
 import shutil
 import signal
 import sqlite3
@@ -27,6 +28,16 @@ TEMPLATE = BACKEND / ".env.example"
 PYTHON = BACKEND / ".venv/bin/python"
 DEFAULT_DB = BACKEND / "data/sub.db"
 LOOPBACK = "127.0.0.1"
+APP_COMMAND = re.compile(
+    r"python[\d.]*|node(?:js)?|npm(?: .*)?|uv|uvicorn|vite",
+    re.IGNORECASE,
+)
+JEDI_SERVER = re.compile(
+    r"/\S*/python[\d.]* /\S*/run-jedi-language-server\.py"
+    r"|/\S*/python[\d.]* /\S*/jedilsp/jedi/inference/compiled/subprocess/__main__\.py"
+    r" /\S*/jedilsp [\d.]+",
+    re.IGNORECASE,
+)
 
 # ports.free_port only uses the standard library. Check ports before uv sync.
 sys.path.insert(0, str(BACKEND / "src"))
@@ -243,6 +254,19 @@ def check_port(name, port):
         ) from exc
 
 
+def external_jedi_server(pid):
+    ps = shutil.which("ps")
+    if not ps:
+        return False
+    result = run([ps, "-ww", "-p", pid, "-o", "command="], capture=True, check=False)
+    command = result.stdout.strip()
+    return (
+        result.returncode == 0
+        and f"{ROOT}/" not in command
+        and JEDI_SERVER.fullmatch(command) is not None
+    )
+
+
 def check_idle():
     """Find manually launched Toolkit processes, including custom-port hosts."""
     lsof = shutil.which("lsof")
@@ -269,9 +293,23 @@ def check_idle():
             path = Path(item[1:])
             if path != ROOT and ROOT not in path.parents:
                 continue
-            app = command.lower().startswith(("python", "node", "npm", "uv", "vite"))
+            # A checkout executable is stronger evidence than a name prefix
+            # on a process which merely inherited the checkout's cwd.
+            local_executable = descriptor == "txt" and command.lower().startswith(
+                ("python", "node", "npm", "uv", "vite")
+            )
+            app_cwd = descriptor == "cwd" and APP_COMMAND.fullmatch(command)
             database = path.name.endswith((".db", ".db-wal", ".db-shm", ".db-journal"))
-            if (app and descriptor in {"cwd", "txt"}) or database:
+            if local_executable or app_cwd or database:
+                # A passive editor server can inherit the checkout cwd.
+                # An open SQLite file or checkout executable still blocks reset.
+                if (
+                    descriptor == "cwd"
+                    and not database
+                    and command.lower().startswith("python")
+                    and external_jedi_server(pid)
+                ):
+                    continue
                 raise RuntimeError(
                     f"Stop {command} (PID {pid}) before resetting this checkout."
                 )
