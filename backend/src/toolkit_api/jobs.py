@@ -221,6 +221,24 @@ class JobRegistry:
         with self._lock:
             return self._jobs.get(job_id)
 
+    def snapshots(
+        self, *, tool: str | None = None, state: str | None = None, limit: int = 50
+    ) -> list[dict]:
+        """List retained jobs newest first, without creating another job registry."""
+        with self._lock:
+            jobs = list(reversed(self._jobs.values()))
+        snapshots = []
+        for job in jobs:
+            snapshot = job.snapshot()
+            if tool is not None and snapshot["tool"] != tool:
+                continue
+            if state is not None and snapshot["state"] != state:
+                continue
+            snapshots.append(snapshot)
+            if len(snapshots) >= limit:
+                break
+        return snapshots
+
     def cancel(self, job_id: str) -> bool:
         """Best-effort: sets the cancel flag the worker checks between items."""
         job = self.get(job_id)

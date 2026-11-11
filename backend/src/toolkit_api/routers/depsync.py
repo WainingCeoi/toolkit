@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from toolkit_engine import depsync
 
 from ..deps import JobsDep
+from ..jobs import Job
 from ..schemas import JobStartedOut
 
 router = APIRouter(prefix="/deps", tags=["deps"])
@@ -141,6 +142,34 @@ def scan(req: ScanIn, jobs: JobsDep) -> JobStartedOut:
 
 @router.post("/apply", response_model=ApplyOut)
 def apply(req: ApplyIn) -> ApplyOut:
+    manifests = _apply_targets(req)
+    try:
+        with _exclusive_root(_root_key(req.folder)):
+            return _apply_manifests(manifests, req)
+    except _BusyError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+
+
+@router.post("/apply/start", response_model=JobStartedOut)
+def start_apply(req: ApplyIn, jobs: JobsDep) -> JobStartedOut:
+    """Apply in the existing job pool; cancellation does not undo completed work."""
+    manifests = _apply_targets(req)
+
+    def worker(job: Job) -> dict:
+        with _exclusive_root(_root_key(req.folder)):
+            result = _apply_manifests(manifests, req, job=job)
+        if job.cancelled:
+            job.set_message(
+                "Cancelled between operations. Completed writes and commits remain."
+            )
+        return result.model_dump()
+
+    job = jobs.submit("dep-upgrade", [], worker)
+    return JobStartedOut(job_id=job.id)
+
+
+def _apply_targets(req: ApplyIn) -> list:
+    """Shared preflight for synchronous and job-based apply."""
     manifests, err = depsync.find_manifests(req.folder)
     if err:
         raise HTTPException(status_code=400, detail=err)
@@ -153,18 +182,24 @@ def apply(req: ApplyIn) -> ApplyOut:
             if depsync.git_root(str(manifest.path.parent)) is None:
                 raise HTTPException(status_code=400, detail=_NOT_A_REPO)
 
-    try:
-        with _exclusive_root(_root_key(req.folder)):
-            return _apply_manifests(manifests, req)
-    except _BusyError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from None
+    return manifests
 
 
-def _apply_manifests(manifests: list, req: ApplyIn) -> ApplyOut:
-    results = [depsync.write_manifest(manifest) for manifest in manifests]
+def _apply_manifests(
+    manifests: list, req: ApplyIn, *, job: Job | None = None
+) -> ApplyOut:
+    # A manifest write/relock and each commit are indivisible cancellation units.
+    # Never interrupt one halfway through or claim that cancellation rolls it back.
+    results = []
+    for manifest in manifests:
+        if job is not None:
+            if job.cancelled:
+                break
+            job.set_message(f"Applying {manifest.rel} …")
+        results.append(depsync.write_manifest(manifest))
     commits: list[dict] = []
 
-    if req.commit:
+    if req.commit and not (job is not None and job.cancelled):
         subject = (req.message or "").strip() or depsync.COMMIT_SUBJECT
         groups: dict[str, dict[Path, None]] = {}
         for result in results:
@@ -177,6 +212,10 @@ def _apply_manifests(manifests: list, req: ApplyIn) -> ApplyOut:
         commit_error = None
         committed_paths: set[Path] = set()
         for root, paths in groups.items():
+            if job is not None:
+                if job.cancelled:
+                    break
+                job.set_message(f"Committing changes in {root} …")
             sha, rels, git_err = depsync.commit_paths(root, subject, list(paths))
             if git_err:
                 commit_error = git_err

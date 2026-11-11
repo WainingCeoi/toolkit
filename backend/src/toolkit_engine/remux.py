@@ -3,6 +3,7 @@
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from pathlib import Path
 
 import ffmpeg
@@ -60,13 +61,20 @@ def run_remux_task(task, progress_state, lock, ff_registry=None):
             task["sub_lang"],
         )
         ff = FfmpegProgress(cmd)
-        if ff_registry is not None:
+        updates = ff.run_command_with_progress()
+        initial_progress = next(updates)
+        # The progress library drops its Popen reference without closing pipes.
+        # Retain it before publishing ff to the cancellation thread; close the
+        # generator before the Popen context closes pipes and reaps the process.
+        with ff.process, closing(updates):
             with lock:
-                ff_registry[task_id] = ff
+                progress_state[task_id] = initial_progress
+                if ff_registry is not None:
+                    ff_registry[task_id] = ff
 
-        for progress in ff.run_command_with_progress():
-            with lock:
-                progress_state[task_id] = progress
+            for progress in updates:
+                with lock:
+                    progress_state[task_id] = progress
         with lock:
             progress_state[task_id] = 100.0
 

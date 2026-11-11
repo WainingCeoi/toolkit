@@ -6,7 +6,7 @@ import tempfile
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from toolkit_engine.webpdf import (
     BrowserSession,
@@ -27,6 +27,19 @@ class OpenIn(BaseModel):
 
 class StatusOut(BaseModel):
     open: bool
+
+
+class ScrollIn(BaseModel):
+    steps: int = Field(default=5, ge=1, le=20)
+    wait_ms: int = Field(default=500, ge=0, le=2000)
+
+
+class ScrollOut(BaseModel):
+    steps: int
+    matched_images: int
+    loaded_images: int
+    at_bottom: bool
+    url: str | None = None
 
 
 class CaptureOut(BaseModel):
@@ -65,6 +78,22 @@ def status(state: StateDep) -> StatusOut:
     return StatusOut(open=_session_open(state))
 
 
+@router.post("/scroll", response_model=ScrollOut)
+def scroll(req: ScrollIn, state: StateDep) -> ScrollOut:
+    """Scroll the shared browser, with bounded waits and no arbitrary script input."""
+    # Serialize against close/open and capture's snapshot: never scroll a replacement
+    # session or let Chrome quit midway through this bounded operation.
+    with state.browser_lock:
+        if not _session_open(state):
+            raise HTTPException(status_code=409, detail="No browser session is open.")
+        try:
+            return ScrollOut(**state.browser.scroll(req.steps, req.wait_ms))
+        except Exception as exc:
+            raise HTTPException(
+                status_code=502, detail=f"Scroll failed: {exc}"
+            ) from exc
+
+
 @router.post("/close", response_model=StatusOut)
 def close_browser(state: StateDep) -> StatusOut:
     # Swap the slot out under the lock, then quit outside it (quit is slow).
@@ -77,15 +106,16 @@ def close_browser(state: StateDep) -> StatusOut:
 
 @router.post("/capture", response_model=CaptureOut)
 def capture(state: StateDep, artifacts: ArtifactsDep) -> CaptureOut:
-    with state.browser_lock:
-        if not _session_open(state):
-            raise HTTPException(status_code=409, detail="No browser session is open.")
-        session = state.browser
     try:
-        soup = parse_page(session.page_source())
-        pdf_name, images, skipped = scrape_images_from_source(
-            soup, session.current_url or ""
-        )
+        with state.browser_lock:
+            if not _session_open(state):
+                raise HTTPException(
+                    status_code=409, detail="No browser session is open."
+                )
+            session = state.browser
+            page_source, current_url = session.page_source(), session.current_url
+        soup = parse_page(page_source)
+        pdf_name, images, skipped = scrape_images_from_source(soup, current_url or "")
         if not images:
             # Leave the browser open for a retry.
             raise HTTPException(
@@ -108,8 +138,8 @@ def capture(state: StateDep, artifacts: ArtifactsDep) -> CaptureOut:
         raise HTTPException(status_code=502, detail=f"Capture failed: {e}") from e
 
     # Clear the slot only if it still holds this session; a newer one must survive.
-    session.quit()
     with state.browser_lock:
+        session.quit()
         if state.browser is session:
             state.browser = None
 

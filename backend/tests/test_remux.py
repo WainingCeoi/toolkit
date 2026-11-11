@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -79,6 +81,56 @@ def test_build_ffmpeg_cmd_omits_subtitle_metadata_when_absent():
     joined = " ".join(cmd)
     assert "language=" not in joined
     assert "disposition" not in joined
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_remux_closes_process_pipes_after_progress_drops_reference(monkeypatch, fail):
+    processes = []
+
+    class Progress:
+        def __init__(self, _cmd):
+            self.process = None
+
+        def run_command_with_progress(self):
+            self.process = subprocess.Popen(
+                [sys.executable, "-c", "pass"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+            )
+            processes.append(self.process)
+            try:
+                yield 0
+                self.process.wait(timeout=5)
+                if fail:
+                    raise RuntimeError("Synthetic conversion failure")
+                yield 100
+            finally:
+                self.process = None
+
+    monkeypatch.setattr(remux, "FfmpegProgress", Progress)
+    task = {
+        "task_id": 0,
+        "input_video": "/input.mkv",
+        "input_subtitle": None,
+        "output_video": "/output.mkv",
+        "track_configs": {"video": 0, "audio": [], "subtitle": None},
+        "sub_lang": "chi",
+    }
+    registry = {}
+    result = remux.run_remux_task(task, {}, threading.Lock(), registry)
+    try:
+        assert result["success"] is not fail
+        assert registry == {}
+        assert len(processes) == 1
+        process = processes[0]
+        assert process.returncode == 0
+        assert process.stdin.closed
+        assert process.stdout.closed
+    finally:
+        for process in processes:
+            process.stdin.close()
+            process.stdout.close()
 
 
 # --- /api/remux/scan ---

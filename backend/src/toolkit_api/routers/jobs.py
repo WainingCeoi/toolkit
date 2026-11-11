@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+from typing import Annotated, Literal
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse
 from sse_starlette.sse import EventSourceResponse
 
@@ -14,6 +15,17 @@ from ..jobs import FINISHED_STATES
 from ..schemas import JobOut
 
 router = APIRouter(tags=["jobs"])
+
+
+@router.get("/jobs", response_model=list[JobOut])
+def list_jobs(
+    jobs: JobsDep,
+    tool: str | None = None,
+    state: Literal["running", "done", "failed", "cancelled"] | None = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+) -> list[dict]:
+    """Discover retained jobs started by any client; newest submitted first."""
+    return jobs.snapshots(tool=tool, state=state, limit=limit)
 
 
 @router.get("/jobs/{job_id}", response_model=JobOut)
