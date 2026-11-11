@@ -8,25 +8,27 @@ on your Mac.
 
 ## Get started
 
-Install these once:
+Install the prerequisites before the first run.
 
+- macOS Command Line Tools (`xcode-select --install`) for Git, Make, and `python3`.
 - [uv](https://docs.astral.sh/uv/getting-started/installation/), which installs and manages Python for Toolkit.
-- [Node.js](https://nodejs.org/): 22.22.2+ within 22.x, 24.15.0+ within 24.x, or 26+.
+- [Node.js](https://nodejs.org/) 22.22.2+ within 22.x, 24.15.0+ within 24.x, or 26+.
 
-Toolkit uses Python 3.14. You do not need to install Python separately.
-From the `toolkit` project folder in Terminal, run:
+uv manages Toolkit's pinned Python 3.14.7 runtime.
+Run this command from the `toolkit` project folder in Terminal.
 
 ```bash
-make start
+make dev
 ```
 
-The first start installs the required packages. Later starts install only
-missing or changed dependencies, then build the app and start Toolkit.
-Doc to Markdown's optional converter is included on Apple silicon Macs.
+The first start installs dependencies from the lockfiles and creates
+`backend/.env` from the example if needed. Later starts reuse current
+dependencies. The FastAPI backend and Vite frontend reload on source changes.
 
-Open the address printed in Terminal, normally [http://127.0.0.1:8000](http://127.0.0.1:8000).
-If port 8000 is busy, Toolkit uses the next available port. Keep Terminal open
-while using the app, and press **Ctrl-C** there to stop it.
+Open the frontend address printed in Terminal, normally
+[http://127.0.0.1:5173](http://127.0.0.1:5173). The backend normally listens on
+port 8000. Keep Terminal open while using the app and press **Ctrl-C** to stop
+both services.
 
 Choose a tool from the sidebar, or press **/** to search. Open tools appear as
 tabs along the bottom, so you can switch tools while a task is running.
@@ -55,9 +57,9 @@ to preview changes before creating or updating the destination library.
 ## AI / MCP access
 
 Toolkit also provides a local stdio MCP server covering all twelve tools. Start
-this same FastAPI backend first, then point MCP at the address printed in Terminal
-(the port can change). The adapter shares backend jobs, browser sessions, devices,
-and scan records with the web app.
+Toolkit with `make dev`, then point MCP at the backend address printed in
+Terminal. The adapter shares backend jobs, browser sessions, devices, and scan
+records with the web app.
 
 ```bash
 backend/.venv/bin/python -m toolkit_mcp --api-base-url http://127.0.0.1:8000
@@ -98,8 +100,7 @@ which can take longer. Intel Macs skip it because its dependencies are unsupport
 The converter uses MinerU 4's local parsing tiers: Standard by default for PDFs
 and images, or native Flash parsing for Office files. Basic uses smaller OCR,
 table, and formula models; Advanced spends more time on difficult layouts.
-To omit this converter on any Mac, run `make start EXTRAS=` and use the same
-option on later starts.
+To omit this converter on any Mac, use `EXTRAS=` with `make dev` or `make init`.
 
 ## Commands
 
@@ -107,15 +108,37 @@ One `Makefile` in the project folder provides the main commands:
 
 | Command | When to use it |
 | --- | --- |
-| `make install` | Set up missing or changed dependencies without starting the app. |
-| `make start` | Start Toolkit for everyday use. |
-| `make dev` | Work on the code with automatic reloads. |
-| `make test` | Run tests, code checks, and a build. |
-| `make clean` | Remove build outputs and caches; keep installed dependencies and saved data. |
+| `make` or `make help` | Show the commands and options. |
+| `make dev` | Prepare dependencies and start both services with automatic reload. |
+| `make init` | Preview and confirm a destructive local reset, rebuild the environment, and exit. |
+| `make test` | Run both test suites, code checks, and the frontend build. |
 
-Run `make install` before testing a fresh checkout. Run `make` to see help,
-or `make help-maintenance` for additional commands.
-To choose a different starting port, use `make start PORT=9000`.
+Use `make dev PORT=9000 FRONTEND_PORT=5174` to change either port. Both services
+bind to loopback. If a requested port is occupied, choose another port or stop
+the process using it. Vite's API proxy and the backend's development CORS origins
+follow these settings.
+
+Run `make init` only when you want to reset this checkout. The preview uses
+Git's ignore rules, including local and global exclusions. It can include
+`backend/.env`, SQLite data and saved device settings, dependencies, build output,
+caches, ignored local notes, and editor settings. Make a choice for any nested
+repository in the preview, then type `reset` to approve the listed deletions.
+The command rebuilds the dependencies, backend configuration, and local SQLite
+stores.
+
+Run `make dev` and stop it with **Ctrl-C** to prepare a fresh checkout for testing.
+For setup without launching services, run `(cd backend && uv sync --locked --dev)`
+and `(cd frontend && npm ci)` from the project root. `make test` prints its
+temporary run directory, which contains `backend.log` and `frontend.log` for
+the selected suites, including the results of the frontend build.
+Use `TEST_SUITE=backend` or `TEST_SUITE=frontend` for one suite and its checks.
+`TEST_WORKERS=auto` sizes the Vitest pool using available CPU and memory. A
+positive integer sets the worker limit, and `TEST_WORKERS=0` runs serially.
+Pytest always runs serially.
+
+To opt into the tests for installed external converters, run
+`TOOLKIT_TEST_EXTERNAL=1 uv run --no-sync pytest -q tests/test_mcp_e2e.py` from
+`backend/`.
 
 ## Settings and saved data
 
@@ -129,13 +152,23 @@ Toolkit. The example explains settings for subscription links, hiding tools you
 do not use, and other optional customizations.
 
 Saved subscriptions and BitComet connections are stored locally in `backend/data/`
-by default. This folder can contain connection credentials; keep it private.
+by default. This folder can contain connection credentials, so keep it private.
+For `make dev`, set a custom `SUB_DB_PATH` within this checkout in `backend/.env`.
+Use the native launcher below for a data path outside the checkout.
 Running tasks continue when you switch tools or reload the browser, but stopping
 Toolkit ends them. Restarting does not resume unfinished tasks.
 
-To use Toolkit from another device on your network, run `make host` and open the
-printed address. Use this only on a trusted network: the app has no login, and
-other devices can run its tools, including those that move or delete files.
+Prepare the dependencies, then run these commands from the project root to
+serve the built frontend and API on your network.
+
+```bash
+(cd frontend && npm run build)
+(cd backend && uv run --no-sync python -m toolkit_api.host)
+```
+
+Open the printed address. Set `HOST=127.0.0.1` on the launcher to serve only on
+this Mac. Use LAN hosting only on a trusted network because the app has no login
+and other devices can run its tools, including those that move or delete files.
 
 [GitHub Actions](.github/workflows/ci.yml) runs `make test` on pull requests,
 pushes to `main`, and manual runs from the repository's Actions tab.

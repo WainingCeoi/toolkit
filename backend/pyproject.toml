@@ -32,7 +32,7 @@ dependencies = [
 [project.scripts]
 toolkit-mcp = "toolkit_mcp.__main__:main"
 
-# docmd: MinerU's local parsing stack; `make install` adds it, `uv sync` skips it.
+# docmd: MinerU's local parsing stack; `make dev` and `make init` honor EXTRAS.
 [project.optional-dependencies]
 docmd = ["mineru>=4.0.12"]
 

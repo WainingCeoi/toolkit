@@ -1,4 +1,4 @@
-// navigator.clipboard is undefined off a secure context; make host serves plain HTTP on the LAN.
+// The native LAN launcher serves plain HTTP, where navigator.clipboard is unavailable.
 
 export async function copyText(text: string): Promise<void> {
   if (navigator.clipboard?.writeText) {

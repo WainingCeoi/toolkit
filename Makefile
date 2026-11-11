@@ -1,114 +1,37 @@
-# Everyday use: make start. Stop with Ctrl-C.
-SHELL := /bin/bash
 .DEFAULT_GOAL := help
+
 PORT ?= 8000
+FRONTEND_PORT ?= 5173
+# Intel Macs lack the ONNX wheel required by MinerU.
+EXTRAS ?= $(shell if [ "$$(uname -sm)" != 'Darwin x86_64' ]; then echo docmd; fi)
+TEST_SUITE ?= all
+TEST_WORKERS ?= auto
 
-# Backend extras; skipped on Intel Macs (no ONNX wheel). Override: make install EXTRAS=docmd
-EXTRAS ?= $(shell if [ "$$(uname -s)" = "Darwin" ] && [ "$$(uname -m)" = "x86_64" ]; \
-                  then echo ""; else echo "docmd"; fi)
-EXTRA_FLAGS := $(foreach extra,$(strip $(EXTRAS)),--extra $(extra))
-
-.PHONY: help start
+.PHONY: help dev init test
 
 help:
-	@echo "Toolkit"
-	@echo "  make install  install missing or changed dependencies"
-	@echo "  make start    check dependencies, build, and start locally (Ctrl-C to stop)"
-	@echo "  make dev      check dependencies and start with hot reload"
-	@echo "  make test     run tests, lint, type checks, and build"
-	@echo "  make clean    remove build outputs and caches"
-	@echo "  make help-maintenance  show advanced commands"
+	@printf '%s\n' \
+	  'Toolkit' \
+	  '  make help  Show commands and options (the default).' \
+	  '  make dev   Prepare dependencies and start the API and frontend with hot reload.' \
+	  '             PORT=8000 and FRONTEND_PORT=5173 select the ports.' \
+	  '             EXTRAS= omits MinerU.' \
+	  '  make init  Destructive local reset of Git-ignored configuration, data and files.' \
+	  '             Previews changes, requires confirmation, and rebuilds without starting the app.' \
+	  '             EXTRAS= omits MinerU.' \
+	  '  make test  Run tests, lint, type checks and build with prepared dependencies.' \
+	  '             TEST_SUITE=all|backend|frontend selects suites.' \
+	  '             TEST_WORKERS=auto|N|0 controls Vitest workers.' \
+	  '  See README.md for setup, reset scope and native LAN hosting.'
 
-# Complete setup before the build, including under parallel make.
-start: install
-	@$(MAKE) --no-print-directory build
-	cd backend && HOST=127.0.0.1 PORT=$(PORT) uv run --no-sync python -m toolkit_api.host
+dev init: export EXTRAS := $(EXTRAS)
+dev: export PORT := $(PORT)
+dev: export FRONTEND_PORT := $(FRONTEND_PORT)
 
-# Maintenance commands
-.PHONY: help-maintenance install dev backend frontend build host test lint clean
+dev init:
+	@python3 -B scripts/dev.py $@
 
-help-maintenance:
-	@echo "Advanced commands:"
-	@echo "  make host       build and serve Toolkit to the LAN"
-	@echo "  make build      build the frontend"
-	@echo "  make lint       run lint, formatting, and type checks"
-	@echo "  make backend    run the API with hot reload"
-	@echo "  make frontend   run Vite against the API's resolved port"
-
-install:
-	@if [ -z "$(strip $(EXTRAS))" ]; then \
-	  echo "note: the MinerU extra is disabled for this install."; \
-	  echo "      Doc to Markdown will be unavailable; every other tool works."; \
-	  echo "      Hide Doc to Markdown from the UI with"; \
-	  echo "      TOOLKIT_DISABLED_TOOLS=doc-to-markdown in backend/.env"; \
-	fi
-	@cd backend && if uv sync --locked --check $(EXTRA_FLAGS) >/dev/null 2>&1; then \
-	  echo "Backend dependencies are up to date."; \
-	else \
-	  uv sync --locked $(EXTRA_FLAGS); \
-	fi
-	@set -e -o pipefail; cd frontend; \
-	STATE=node_modules/.toolkit-install-state; \
-	KEY=$$({ shasum -a 256 package.json package-lock.json; \
-	  for file in .npmrc ../.npmrc; do if [ -f "$$file" ]; then shasum -a 256 "$$file"; fi; done; \
-	  node -p 'JSON.stringify([process.version, process.platform, process.arch, process.versions.modules])'; \
-	  npm --version; } | shasum -a 256 | cut -d ' ' -f 1); \
-	if [ "$$(cat "$$STATE" 2>/dev/null)" = "$$KEY" ] \
-	  && [ -x node_modules/.bin/vite ] && [ -x node_modules/.bin/tsc ] \
-	  && npm ls --all --silent --include=dev --include=optional >/dev/null 2>&1 \
-	  && node -e 'const fs = require("node:fs"); const lock = JSON.parse(fs.readFileSync("node_modules/.package-lock.json")); process.exit(Object.keys(lock.packages).every(p => !p || fs.existsSync(p + "/package.json")) ? 0 : 1)' >/dev/null 2>&1; then \
-	  echo "Frontend dependencies are up to date."; \
-	else \
-	  npm ci --include=dev --include=optional; \
-	  printf '%s\n' "$$KEY" > "$$STATE"; \
-	fi
-
-# Loopback only; the port is resolved once, up front, since Vite fixes its /api proxy at boot.
-dev: install
-	@cd backend; \
-	FREE=$$(PORT=$(PORT) uv run --frozen python -m toolkit_api.host --free-port) || exit $$?; \
-	cd ..; \
-	if [ "$$FREE" != "$(PORT)" ]; then echo "⚠  port $(PORT) was busy → backend on $$FREE"; fi; \
-	echo "backend  -> http://127.0.0.1:$$FREE"; \
-	echo "frontend -> http://localhost:5173"; \
-	trap 'kill 0' EXIT INT TERM; \
-	( cd backend && uv run --frozen uvicorn toolkit_api.main:app --reload --port $$FREE ) & \
-	( cd frontend && API_PORT=$$FREE npm run dev ) & \
-	wait
-
-# Prepare dependencies before building, including under parallel make.
-# HOST=127.0.0.1 keeps this optional LAN command local.
-host: install
-	@$(MAKE) --no-print-directory build
-	cd backend && PORT=$(PORT) uv run --no-sync python -m toolkit_api.host
-
-build:
-	cd frontend && npm run build
-
-# The resolved port is left in backend/.port so `make frontend` can aim its proxy at it.
-backend:
-	@cd backend; \
-	FREE=$$(PORT=$(PORT) uv run --frozen python -m toolkit_api.host --free-port) || exit $$?; \
-	if [ "$$FREE" != "$(PORT)" ]; then echo "⚠  port $(PORT) was busy → backend on $$FREE"; fi; \
-	echo $$FREE > .port; \
-	echo "backend -> http://127.0.0.1:$$FREE"; \
-	uv run --frozen uvicorn toolkit_api.main:app --reload --port $$FREE
-
-frontend:
-	@PROXY=$$(cat backend/.port 2>/dev/null || echo $(PORT)); \
-	echo "frontend -> http://localhost:5173 (/api proxied to 127.0.0.1:$$PROXY)"; \
-	cd frontend && API_PORT=$$PROXY npm run dev
-
-# npm run build alone does not typecheck (Vite strips types); explicit ruff paths override exclude.
+test: export TEST_SUITE := $(TEST_SUITE)
+test: export TEST_WORKERS := $(TEST_WORKERS)
 test:
-	cd backend && uv run --frozen pytest -q && uv run --frozen ruff check src tests && uv run --frozen ruff format --check src tests
-	cd frontend && npm run typecheck && npm run lint && npm run test && npm run build
-
-lint:
-	cd backend && uv run --frozen ruff check src tests && uv run --frozen ruff format --check src tests
-	cd frontend && npm run typecheck && npm run lint
-
-clean:
-	rm -rf frontend/dist frontend/dist-ssr frontend/coverage backend/.port
-	rm -rf .pytest_cache .ruff_cache backend/.pytest_cache backend/.ruff_cache backend/.mypy_cache backend/htmlcov backend/.coverage
-	find backend/src backend/tests -name __pycache__ -type d -prune -exec rm -rf {} + 2>/dev/null || true
+	@python3 -B scripts/run_tests.py

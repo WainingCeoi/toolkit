@@ -1,7 +1,7 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
-// API_PORT lets make dev move the backend off a busy :8000.
+// make dev sets API_PORT to the selected backend port.
 const apiPort = process.env.API_PORT || '8000'
 
 export default defineConfig({
