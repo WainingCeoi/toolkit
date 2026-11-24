@@ -52,6 +52,10 @@ Groups with proposed updates or scan errors open by default. Expand an
 up-to-date project to see the checked files grouped by directory. **Apply**
 uses the proposed updates from the whole scan.
 
+After applying, the result shows actual version changes by project and file.
+Open the notices to see any updates that failed or were skipped, and the
+commit list to see the commit hashes and files.
+
 Scanning previews uv dependency upgrades. The project’s `uv.lock` is written
 only when you select **Apply** and there are uv dependency upgrades to apply.
 Scanning refreshes npm and pnpm lockfiles.
