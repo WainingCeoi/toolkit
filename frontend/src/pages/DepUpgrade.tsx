@@ -124,7 +124,7 @@ export default function DepUpgrade() {
 
             <div className="action-summary">
               <strong>Scanning updates lockfiles</strong>
-              <p>The scan runs uv lock -U or npm install --package-lock-only, including in subfolders. Manifest version changes are applied after review.</p>
+              <p>The scan refreshes uv, npm, and pnpm lockfiles, including in subfolders. Apply manifest version changes after review.</p>
             </div>
 
             <Button
@@ -186,7 +186,7 @@ export default function DepUpgrade() {
             </div>}
             {result && targets.length === 0 && (
               <div className="note info">
-                No uv or npm manifests found under that folder.
+                No uv, npm, or pnpm manifests found under that folder.
               </div>
             )}
 

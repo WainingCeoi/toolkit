@@ -1,9 +1,9 @@
-"""Dependency Upgrader: upgrade every uv/npm manifest under a folder, then commit."""
+"""Dependency Upgrader: scan and apply updates for uv, npm, and pnpm projects."""
 
 from __future__ import annotations
 
 import threading
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -33,21 +33,29 @@ def _root_key(folder: str) -> str:
 
 
 @contextmanager
-def _exclusive_root(root: str) -> Iterator[None]:
-    here = Path(root)
+def _exclusive_root(
+    root: str, manifests: Iterable[depsync.Manifest] = ()
+) -> Iterator[None]:
+    roots = {root}
+    for manifest in manifests:
+        if manifest.workspace is not None:
+            roots.add(str(manifest.workspace))
+        if manifest.pnpm_lock is not None:
+            roots.add(str(manifest.pnpm_lock.parent))
     with _busy_lock:
-        # Nested roots clash too: /repo and /repo/backend share the same manifests.
+        # Nested scans and workspace siblings may write the same lockfile.
         if any(
-            here.is_relative_to(other) or Path(other).is_relative_to(here)
+            Path(here).is_relative_to(other) or Path(other).is_relative_to(here)
+            for here in roots
             for other in _busy_roots
         ):
             raise _BusyError(_BUSY)
-        _busy_roots.add(root)
+        _busy_roots.update(roots)
     try:
         yield
     finally:
         with _busy_lock:
-            _busy_roots.discard(root)
+            _busy_roots.difference_update(roots)
 
 
 _NO_MANIFESTS = (
@@ -113,7 +121,7 @@ def scan(req: ScanIn, jobs: JobsDep) -> JobStartedOut:
     root = str(Path(req.folder).expanduser())
 
     def worker(job):
-        with _exclusive_root(_root_key(req.folder)):
+        with _exclusive_root(_root_key(req.folder), manifests):
             targets = []
             for manifest in manifests:
                 if job.cancelled:
@@ -144,7 +152,7 @@ def scan(req: ScanIn, jobs: JobsDep) -> JobStartedOut:
 def apply(req: ApplyIn) -> ApplyOut:
     manifests = _apply_targets(req)
     try:
-        with _exclusive_root(_root_key(req.folder)):
+        with _exclusive_root(_root_key(req.folder), manifests):
             return _apply_manifests(manifests, req)
     except _BusyError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from None
@@ -156,7 +164,7 @@ def start_apply(req: ApplyIn, jobs: JobsDep) -> JobStartedOut:
     manifests = _apply_targets(req)
 
     def worker(job: Job) -> dict:
-        with _exclusive_root(_root_key(req.folder)):
+        with _exclusive_root(_root_key(req.folder), manifests):
             result = _apply_manifests(manifests, req, job=job)
         if job.cancelled:
             job.set_message(

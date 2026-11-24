@@ -1,4 +1,4 @@
-"""Dependency upgrader for uv (pyproject.toml) and npm (package.json) projects."""
+"""Dependency upgrader for uv, npm, and pnpm projects."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
+import yaml
 from packaging.requirements import InvalidRequirement, Requirement
 from packaging.utils import canonicalize_name
 from packaging.version import InvalidVersion, Version
@@ -62,8 +63,10 @@ class Manifest:
     """A dependency manifest found under the scanned root."""
 
     path: Path
-    kind: str  # "uv" | "npm"
+    kind: str  # "uv" | "npm" | "pnpm"
     rel: str  # display path relative to the root, e.g. "backend/pyproject.toml"
+    workspace: Path | None = None
+    pnpm_lock: Path | None = None
 
 
 # --- Discovery ---
@@ -96,22 +99,94 @@ def _is_uv_project(path: Path) -> bool:
     return "project" in data or "dependency-groups" in data or "uv" in tool
 
 
-def _has_npm_deps(path: Path) -> bool:
-    """True if a package.json declares any bump-able dependency table."""
+def _workspace_match(folder: Path, pattern: str) -> bool:
+    alternatives = re.search(r"\{([^{}]*,[^{}]*)\}", pattern)
+    if alternatives:
+        return any(
+            _workspace_match(
+                folder,
+                pattern[: alternatives.start()] + part + pattern[alternatives.end() :],
+            )
+            for part in alternatives[1].split(",")
+        )
+    return bool(pattern) and (
+        folder.full_match(pattern)
+        or (pattern.endswith("/**") and folder.full_match(pattern[:-3]))
+    )
+
+
+def _pnpm_workspace(folder: Path) -> tuple[Path | None, dict]:
+    """Find the nearest pnpm workspace and check its package patterns."""
+    for root in (folder, *folder.parents):
+        config = root / "pnpm-workspace.yaml"
+        if not config.is_file():
+            continue
+        try:
+            data = yaml.safe_load(config.read_text(encoding="utf-8"))
+        except OSError, ValueError, yaml.YAMLError:
+            data = None  # Let pnpm report invalid workspace configuration.
+        if not isinstance(data, dict):
+            data = {}
+        if root == folder:
+            return root, data
+        packages = data.get("packages")
+        if isinstance(packages, list):
+            relative = folder.relative_to(root)
+            matches = [
+                pattern
+                for pattern in packages
+                if isinstance(pattern, str)
+                and _workspace_match(relative, pattern.removeprefix("!"))
+            ]
+            if any(not p.startswith("!") for p in matches) and not any(
+                p.startswith("!") for p in matches
+            ):
+                return root, data
+        break
+    return None, {}
+
+
+def _js_manifest(path: Path, base: Path) -> Manifest | None:
+    """Use the declared manager first, then the project or workspace lockfile."""
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except OSError, json.JSONDecodeError:
-        return False
-    if not any(isinstance(data.get(t), dict) and data.get(t) for t in _NPM_TABLES):
-        return False
-    # pnpm/yarn/bun resolve their own lockfile; npm would write a second one beside it.
-    if any((path.parent / name).is_file() for name in _NPM_ALT_LOCKS):
-        return (path.parent / "package-lock.json").is_file()
-    return True
+    except OSError, ValueError:
+        return None
+    if not isinstance(data, dict) or not any(
+        isinstance(data.get(t), dict) and data[t] for t in _NPM_TABLES
+    ):
+        return None
+
+    folder = path.parent
+    rel = str(path.relative_to(base))
+    declared = data.get("packageManager")
+    manager = declared.partition("@")[0] if isinstance(declared, str) else ""
+    npm_lock = (folder / "package-lock.json").is_file()
+    if manager in {"yarn", "bun"}:
+        return None
+    if manager == "npm":
+        return Manifest(path, "npm", rel)
+
+    workspace, settings = _pnpm_workspace(folder)
+    if (
+        manager == "pnpm"
+        or workspace
+        or (not npm_lock and (folder / _PNPM_LOCKFILE).is_file())
+    ):
+        lock_dir = workspace or folder
+        if settings.get("sharedWorkspaceLockfile") is False:
+            lock_dir = folder
+        custom_dir = settings.get("lockfileDir")
+        if isinstance(custom_dir, str) and custom_dir:
+            lock_dir = ((workspace or folder) / custom_dir).resolve()
+        return Manifest(path, "pnpm", rel, workspace, lock_dir / _PNPM_LOCKFILE)
+    if not npm_lock and any((folder / name).is_file() for name in _NPM_ALT_LOCKS):
+        return None
+    return Manifest(path, "npm", rel)
 
 
 def find_manifests(folder: str) -> tuple[list[Manifest], str | None]:
-    """Every uv/npm manifest under ``folder`` (heavy/hidden dirs pruned)."""
+    """Every supported manifest under ``folder`` (heavy/hidden dirs pruned)."""
     base, err = _validate_folder(folder)
     if err:
         return [], err
@@ -125,9 +200,10 @@ def find_manifests(folder: str) -> tuple[list[Manifest], str | None]:
         if "pyproject.toml" in filenames and _is_uv_project(here / "pyproject.toml"):
             p = here / "pyproject.toml"
             found.append(Manifest(p, "uv", str(p.relative_to(base))))
-        if "package.json" in filenames and _has_npm_deps(here / "package.json"):
-            p = here / "package.json"
-            found.append(Manifest(p, "npm", str(p.relative_to(base))))
+        if "package.json" in filenames:
+            manifest = _js_manifest(here / "package.json", base)
+            if manifest is not None:
+                found.append(manifest)
     found.sort(key=lambda m: m.rel)
     return found[:_MAX_MANIFESTS], None
 
@@ -393,9 +469,12 @@ def apply_uv_bumps(pyproject_path: Path, bumps: list[Bump]) -> None:
 # --- npm (package.json + package-lock.json) ---
 
 _NPM_TABLES = ("dependencies", "devDependencies", "optionalDependencies")
-_NPM_ALT_LOCKS = ("pnpm-lock.yaml", "yarn.lock", "bun.lock", "bun.lockb")
+_NPM_ALT_LOCKS = ("yarn.lock", "bun.lock", "bun.lockb")
+_PNPM_LOCKFILE = "pnpm-lock.yaml"
 # Bumpable ranges: optional ^, ~ or >= before x.y.z; anything fancier is left alone.
-_NPM_RANGE = re.compile(r"^([~^]|>=)?\s*(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.+-]+)?)$")
+_JS_VERSION = r"\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.+-]+)?"
+_NPM_RANGE = re.compile(rf"^([~^]|>=)?\s*({_JS_VERSION})$")
+_PNPM_VERSION = re.compile(_JS_VERSION)
 
 
 def npm_available() -> bool:
@@ -488,6 +567,127 @@ def npm_latest(folder: str) -> tuple[dict[str, str], str | None]:
 def npm_lock_refresh(folder: str) -> tuple[bool, str]:
     """Resolve package-lock.json without installing node_modules."""
     return _lock_refresh(["npm", "install", "--package-lock-only"], folder, "npm")
+
+
+# --- pnpm (package.json + pnpm-lock.yaml) ---
+
+
+def _pnpm_install_command(manifest: Manifest) -> list[str]:
+    cmd = [
+        "pnpm",
+        "install",
+        "--lockfile-only",
+        "--no-frozen-lockfile",
+        "--ignore-scripts",
+    ]
+    if manifest.workspace is None:
+        cmd.append("--ignore-workspace")
+    else:
+        # Limit installs to the selected project when each member has its own lock.
+        cmd.extend(["--filter", "{.}"])
+    return cmd
+
+
+def _pnpm_lock_path(manifest: Manifest) -> Path:
+    return manifest.pnpm_lock or manifest.path.with_name(_PNPM_LOCKFILE)
+
+
+def run_pnpm_upgrade(
+    manifest: Manifest, on_message=None, is_cancelled=None
+) -> tuple[bool, str]:
+    """Refresh pnpm's lockfile without installing node_modules or running scripts."""
+    pnpm = shutil.which("pnpm")
+    if pnpm is None:
+        return False, "❌ pnpm is not installed or not on PATH."
+    cmd = _pnpm_install_command(manifest)
+    return _stream(
+        [pnpm, *cmd[1:]], str(manifest.path.parent), on_message, is_cancelled
+    )
+
+
+def _pnpm_locked_versions(manifest: Manifest) -> dict[str, str]:
+    """Direct registry versions from this project's importer, without node_modules."""
+    lock = _pnpm_lock_path(manifest)
+    if not lock.is_file():
+        return {}
+    importer_id = Path(os.path.relpath(manifest.path.parent, lock.parent)).as_posix()
+    versions: dict[str, str] = {}
+    with lock.open(encoding="utf-8") as file:
+        for data in yaml.safe_load_all(file):
+            if not isinstance(data, dict):
+                continue
+            importers = data.get("importers")
+            if isinstance(importers, dict):
+                importer = importers.get(importer_id)
+            else:  # Older single-project locks keep dependency tables at the top level.
+                importer = data if importer_id == "." else None
+            if not isinstance(importer, dict):
+                continue
+            for table in _NPM_TABLES:
+                entries = importer.get(table)
+                if not isinstance(entries, dict):
+                    continue
+                for name, info in entries.items():
+                    version = info.get("version") if isinstance(info, dict) else info
+                    if isinstance(version, str):
+                        release = version.split("(", 1)[0]
+                        if _PNPM_VERSION.fullmatch(release):
+                            versions[name] = release
+    return versions
+
+
+def pnpm_latest(manifest: Manifest) -> tuple[dict[str, str], str | None]:
+    """Merge registry updates over the versions already resolved in the lockfile."""
+    pnpm = shutil.which("pnpm")
+    if pnpm is None:
+        return {}, "❌ pnpm is not installed or not on PATH."
+    cmd = [pnpm, "outdated", "--json", "--loglevel", "error"]
+    if manifest.workspace is None:
+        cmd.append("--ignore-workspace")
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=manifest.path.parent,
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=_LOCK_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        return {}, f"❌ pnpm outdated timed out after {_LOCK_TIMEOUT}s."
+    try:
+        outdated = json.loads(proc.stdout.strip() or "{}")
+    except json.JSONDecodeError:
+        return {}, f"❌ pnpm outdated failed:\n{_tail(proc.stderr or proc.stdout)}"
+    if not isinstance(outdated, dict):
+        return {}, "❌ Unexpected JSON from pnpm outdated."
+    failure = outdated.get("error")
+    if isinstance(failure, dict) and "latest" not in failure:
+        detail = failure.get("message") or failure.get("code") or "unknown error"
+        return {}, f"❌ pnpm outdated failed: {detail}"
+    updates = {}
+    for name, info in outdated.items():
+        version = info.get("latest") if isinstance(info, dict) else None
+        if isinstance(version, str) and _PNPM_VERSION.fullmatch(version):
+            updates[name] = version
+    if proc.returncode not in (0, 1) or (proc.returncode == 1 and not outdated):
+        detail = _tail(proc.stderr) or f"exit status {proc.returncode}"
+        return {}, f"❌ pnpm outdated failed: {detail}"
+    try:
+        latest = _pnpm_locked_versions(manifest)
+    except (OSError, ValueError, yaml.YAMLError) as exc:
+        return {}, f"❌ Could not read {_PNPM_LOCKFILE}: {exc}"
+    latest.update(updates)
+    return latest, None
+
+
+def pnpm_lock_refresh(manifest: Manifest) -> tuple[bool, str]:
+    return _lock_refresh(
+        _pnpm_install_command(manifest), str(manifest.path.parent), "pnpm"
+    )
+
+
+# --- Shared package.json bump rules ---
 
 
 def _semver_release(version: str) -> tuple[int, int, int]:
@@ -696,19 +896,30 @@ def scan_manifest(manifest: Manifest, on_message=None, is_cancelled=None) -> dic
             return out
         bumps = compute_uv_bumps(manifest.path, resolved)
     else:
-        ok, log = run_npm_upgrade(folder, on_message, is_cancelled)
+        if manifest.kind == "pnpm":
+            ok, log = run_pnpm_upgrade(manifest, on_message, is_cancelled)
+            install = "pnpm install --lockfile-only"
+        else:
+            ok, log = run_npm_upgrade(folder, on_message, is_cancelled)
+            install = "npm install --package-lock-only"
         if is_cancelled is not None and is_cancelled():
             return out
         if not ok:
-            out["error"] = f"npm install --package-lock-only failed:\n{_tail(log)}"
+            out["error"] = f"{install} failed:\n{_tail(log)}"
             return out
-        latest, err = npm_latest(folder)
+        latest, err = _js_latest(manifest)
         if err:
             out["error"] = err
             return out
         bumps = compute_npm_bumps(manifest.path, latest)
     out["bumps"] = [bump_dict(b) for b in bumps]
     return out
+
+
+def _js_latest(manifest: Manifest) -> tuple[dict[str, str], str | None]:
+    if manifest.kind == "pnpm":
+        return pnpm_latest(manifest)
+    return npm_latest(str(manifest.path.parent))
 
 
 def _eresolve_culprits(log: str, candidates: set[str]) -> set[str]:
@@ -778,7 +989,7 @@ def _write_manifest(manifest: Manifest, result: dict, originals: dict) -> dict:
             return result
         bumps = compute_uv_bumps(manifest.path, resolved)
     else:
-        latest, err = npm_latest(folder)
+        latest, err = _js_latest(manifest)
         if err:
             result["error"] = err
             return result
@@ -786,7 +997,11 @@ def _write_manifest(manifest: Manifest, result: dict, originals: dict) -> dict:
     if not bumps:
         return result
 
-    lock = _lock_path(folder, _LOCKS[manifest.kind])
+    lock = (
+        _pnpm_lock_path(manifest)
+        if manifest.kind == "pnpm"
+        else _lock_path(folder, _LOCKS[manifest.kind])
+    )
     originals.update(
         {
             str(manifest.path): manifest.path.read_text(encoding="utf-8"),
@@ -799,6 +1014,14 @@ def _write_manifest(manifest: Manifest, result: dict, originals: dict) -> dict:
         ok, log = uv_lock_refresh(folder)
         applied, skipped, err = (
             (bumps, [], None) if ok else ([], [], f"uv lock failed:\n{_tail(log)}")
+        )
+    elif manifest.kind == "pnpm":
+        apply_npm_bumps(manifest.path, bumps)
+        ok, log = pnpm_lock_refresh(manifest)
+        applied, skipped, err = (
+            (bumps, [], None)
+            if ok
+            else ([], [], f"pnpm lock refresh failed:\n{_tail(log)}")
         )
     else:
         applied, skipped, err = _npm_write_with_retry(

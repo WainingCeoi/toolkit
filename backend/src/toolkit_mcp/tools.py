@@ -503,12 +503,12 @@ def register_tools(mcp: MCPServer, api: ToolkitClient) -> None:
 
     @mcp.tool(annotations=annotations(destructive=True, open_world=True))
     async def dependencies_scan(folder: str) -> dict[str, Any]:
-        """Scan uv/npm manifests for upgrades in a backend folder; return job_id.
+        """Scan uv, npm, and pnpm projects in a backend folder and return job_id.
 
         This scan refreshes/writes lockfiles and contacts package registries; it
         is not read-only. Poll job_status to review bumps before applying.
         job_cancel is cooperative and does not roll back lockfile updates.
-        Requires backend uv/npm and registry access for corresponding projects.
+        Requires the corresponding package manager and registry access on the backend.
         """
         return await api.request("POST", "/deps/scan", json={"folder": folder})
 

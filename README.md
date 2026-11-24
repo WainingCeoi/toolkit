@@ -50,7 +50,7 @@ tabs along the bottom, so you can switch tools while a task is running.
 | Doc to Markdown | Convert PDFs, Office documents, and images into Markdown text. |
 | Cache Purge | Find cache and junk files, review the results, then delete them. |
 | Photos Library Filter | Create a copy of a Photos library without its caches, preserving originals and edits. |
-| Dependency Upgrader | Update packages in uv and npm projects and commit the changes. |
+| Dependency Upgrader | Review and apply package updates in uv, npm, and pnpm projects, with an optional commit. |
 | WhatsApp Chat Exporter | Export selected WhatsApp chats as one ZIP with JSON, CSV, replies, reactions, and local attachments. |
 | Optimized-IP Subscription | Replace server addresses in proxy configurations and generate subscription links. |
 
