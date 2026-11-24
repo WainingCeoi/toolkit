@@ -1,4 +1,4 @@
-"""Dependency upgrader for uv, npm, and pnpm projects."""
+"""Upgrade dependencies and runtime pins in uv, npm, and pnpm projects."""
 
 from __future__ import annotations
 
@@ -16,8 +16,11 @@ from pathlib import Path
 
 import yaml
 from packaging.requirements import InvalidRequirement, Requirement
+from packaging.specifiers import SpecifierSet
 from packaging.utils import canonicalize_name
 from packaging.version import InvalidVersion, Version
+
+from .runtime_releases import RuntimeReleases
 
 _SKIP_DIRS = {
     "node_modules",
@@ -32,6 +35,12 @@ _SKIP_DIRS = {
     "htmlcov",
 }
 _MAX_MANIFESTS = 40
+_RUNTIME_FILES = {
+    ".python-version": "python",
+    ".node-version": "node",
+    ".nvmrc": "node",
+}
+_PATCH_VERSION = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
 
 
 @dataclass(frozen=True)
@@ -60,13 +69,17 @@ def bump_dict(bump: Bump) -> dict:
 
 @dataclass(frozen=True)
 class Manifest:
-    """A dependency manifest found under the scanned root."""
+    """A dependency manifest or runtime pin found under the scanned root."""
 
     path: Path
-    kind: str  # "uv" | "npm" | "pnpm"
+    kind: str  # "uv" | "npm" | "pnpm" | "python" | "node"
     rel: str  # display path relative to the root, e.g. "backend/pyproject.toml"
     workspace: Path | None = None
     pnpm_lock: Path | None = None
+
+    @property
+    def is_runtime(self) -> bool:
+        return self.kind in {"python", "node"}
 
 
 # --- Discovery ---
@@ -185,6 +198,23 @@ def _js_manifest(path: Path, base: Path) -> Manifest | None:
     return Manifest(path, "npm", rel)
 
 
+def _pin_span(text: str, kind: str) -> tuple[int, int] | None:
+    """Locate a single exact version while preserving comments and line endings."""
+    span = None
+    offset = 0
+    for line in text.splitlines(keepends=True):
+        code = line.partition("#")[0]
+        pin = code.strip()
+        if pin:
+            version = pin.removeprefix("v") if kind == "node" else pin
+            if span is not None or _PATCH_VERSION.fullmatch(version) is None:
+                return None
+            start = offset + len(code) - len(code.lstrip())
+            span = (start, start + len(pin))
+        offset += len(line)
+    return span
+
+
 def find_manifests(folder: str) -> tuple[list[Manifest], str | None]:
     """Every supported manifest under ``folder`` (heavy/hidden dirs pruned)."""
     base, err = _validate_folder(folder)
@@ -204,6 +234,15 @@ def find_manifests(folder: str) -> tuple[list[Manifest], str | None]:
             manifest = _js_manifest(here / "package.json", base)
             if manifest is not None:
                 found.append(manifest)
+        for name, kind in _RUNTIME_FILES.items():
+            if name not in filenames:
+                continue
+            path = here / name
+            if path.is_symlink() or not path.is_file():
+                continue
+            with contextlib.suppress(OSError, UnicodeError):
+                if _pin_span(path.read_text(encoding="utf-8"), kind) is not None:
+                    found.append(Manifest(path, kind, str(path.relative_to(base))))
     found.sort(key=lambda m: m.rel)
     return found[:_MAX_MANIFESTS], None
 
@@ -873,17 +912,131 @@ def commit_paths(
     return sha.stdout.strip() or None, rels, None
 
 
+# --- Runtime pins ---
+
+
+def _requires_python(data: dict) -> str:
+    return data.get("project", {}).get("requires-python", "")
+
+
+def _python_requirement(folder: Path) -> SpecifierSet:
+    nearest: str | None = None
+    for directory in (folder, *folder.parents):
+        pyproject = directory / "pyproject.toml"
+        if not pyproject.is_file():
+            continue
+        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+        if nearest is None:
+            nearest = _requires_python(data)
+        if "workspace" not in data.get("tool", {}).get("uv", {}):
+            continue
+        # uv combines the Python requirements of all workspace members.
+        proc = subprocess.run(
+            [
+                "uv",
+                "workspace",
+                "list",
+                "--paths",
+                "--offline",
+                "--no-cache",
+                "--no-python-downloads",
+            ],
+            cwd=folder,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if proc.returncode:
+            raise ValueError(
+                _tail(proc.stderr) or "Could not list uv workspace members."
+            )
+        requirements = []
+        for member in proc.stdout.splitlines():
+            member_path = folder / member / "pyproject.toml"
+            member_data = tomllib.loads(member_path.read_text(encoding="utf-8"))
+            requirements.append(_requires_python(member_data))
+        return SpecifierSet(",".join(filter(None, requirements)))
+    return SpecifierSet(nearest or "")
+
+
+def _runtime_bump(
+    manifest: Manifest, releases: RuntimeReleases
+) -> tuple[Bump | None, str | None]:
+    path = manifest.path
+    if path.is_symlink():
+        return None, "The runtime pin is a symbolic link."
+    try:
+        original = path.read_text(encoding="utf-8", newline="")
+        requirement = (
+            _python_requirement(path.parent)
+            if manifest.kind == "python"
+            else SpecifierSet()
+        )
+    except (OSError, TypeError, ValueError, subprocess.TimeoutExpired) as exc:
+        return None, f"❌ Could not read runtime settings: {exc}"
+    span = _pin_span(original, manifest.kind)
+    if span is None:
+        return None, None
+    start, end = span
+    old = original[start:end]
+    prefix = "v" if old.startswith("v") else ""
+    current = Version(old.removeprefix(prefix))
+    if manifest.kind == "python":
+        series = f"{current.major}.{current.minor}"
+        versions, error = releases.python(path.parent, series)
+        name = "Python"
+    else:
+        versions, error = releases.node
+        name = "Node.js"
+    if error:
+        return None, error
+
+    stable = (Version(item) for item in versions if _PATCH_VERSION.fullmatch(item))
+    latest = max(
+        (
+            v
+            for v in stable
+            if v.release[:2] == current.release[:2] and v in requirement
+        ),
+        default=current,
+    )
+    if latest <= current:
+        return None, None
+    new = f"{prefix}{latest}"
+    return (
+        Bump(
+            name,
+            path.name,
+            old,
+            new,
+            False,
+            original,
+            original[:start] + new + original[end:],
+        ),
+        None,
+    )
+
+
 # --- Per-manifest orchestration (used by the router) ---
 
 _LOCKS = {"uv": "uv.lock", "npm": "package-lock.json"}
 _NPM_RETRY_ROUNDS = 3
 
 
-def scan_manifest(manifest: Manifest, on_message=None, is_cancelled=None) -> dict:
-    """Re-resolve one manifest's lockfile and compute its bumps as a wire-ready dict."""
+def scan_manifest(
+    manifest: Manifest,
+    on_message=None,
+    is_cancelled=None,
+    *,
+    releases: RuntimeReleases | None = None,
+) -> dict:
+    """Compute version updates and refresh dependency locks where required."""
     folder = str(manifest.path.parent)
     out = {"rel": manifest.rel, "kind": manifest.kind, "bumps": [], "error": None}
-    if manifest.kind == "uv":
+    if manifest.is_runtime:
+        bump, out["error"] = _runtime_bump(manifest, releases or RuntimeReleases())
+        bumps = [bump] if bump else []
+    elif manifest.kind == "uv":
         ok, log = run_uv_upgrade(folder, on_message, is_cancelled)
         if is_cancelled is not None and is_cancelled():
             return out
@@ -958,8 +1111,10 @@ def _npm_write_with_retry(
     return [], skipped, "npm could not resolve these upgrades after several tries."
 
 
-def write_manifest(manifest: Manifest) -> dict:
-    """Recompute and write one manifest, then re-resolve its lockfile; no commit."""
+def write_manifest(
+    manifest: Manifest, *, releases: RuntimeReleases | None = None
+) -> dict:
+    """Write one manifest and refresh its lockfile if needed, without committing."""
     result = {
         "rel": manifest.rel,
         "kind": manifest.kind,
@@ -972,6 +1127,29 @@ def write_manifest(manifest: Manifest) -> dict:
     }
     originals: dict[str, str | None] = {}
     try:
+        if manifest.is_runtime:
+            bump, result["error"] = _runtime_bump(
+                manifest, releases or RuntimeReleases()
+            )
+            if bump is not None:
+                path = manifest.path
+                if (
+                    path.is_symlink()
+                    or path.read_text(encoding="utf-8", newline="") != bump.raw
+                ):
+                    result["error"] = (
+                        "The runtime pin changed during lookup. Scan again."
+                    )
+                    return result
+                originals[str(path)] = bump.raw
+                path.write_text(bump.raw_new, encoding="utf-8", newline="")
+                result.update(
+                    written=1,
+                    bumps=[bump_dict(bump)],
+                    changed=[path],
+                    originals=originals,
+                )
+            return result
         return _write_manifest(manifest, result, originals)
     except Exception as exc:  # noqa: BLE001 — one bad manifest fails on its own
         with contextlib.suppress(OSError):  # a rollback that cannot write is moot here
@@ -1050,7 +1228,7 @@ def restore(originals: dict[str, str | None]) -> None:
         if text is None:
             path.unlink(missing_ok=True)
         else:
-            path.write_text(text, encoding="utf-8")
+            path.write_text(text, encoding="utf-8", newline="")
 
 
 def _tail(log: str, lines: int = 15) -> str:

@@ -503,12 +503,16 @@ def register_tools(mcp: MCPServer, api: ToolkitClient) -> None:
 
     @mcp.tool(annotations=annotations(destructive=True, open_world=True))
     async def dependencies_scan(folder: str) -> dict[str, Any]:
-        """Scan uv, npm, and pnpm projects in a backend folder and return job_id.
+        """Scan a backend folder for package and interpreter updates, and return job_id.
 
-        This scan refreshes/writes lockfiles and contacts package registries; it
-        is not read-only. Poll job_status to review bumps before applying.
+        This scan refreshes package lockfiles and checks release sources.
+        Poll job_status to review bumps before applying.
         job_cancel is cooperative and does not roll back lockfile updates.
-        Requires the corresponding package manager and registry access on the backend.
+        Package updates require the corresponding package manager and registry
+        access on the backend. Python patches come from uv's available Python
+        versions. Node.js patches come from the Node.js release index.
+        Exact interpreter pins in .python-version, .node-version, and .nvmrc
+        stay within their current major and minor version.
         """
         return await api.request("POST", "/deps/scan", json={"folder": folder})
 
@@ -518,14 +522,14 @@ def register_tools(mcp: MCPServer, api: ToolkitClient) -> None:
         commit: bool = False,
         message: str | None = None,
     ) -> dict[str, Any]:
-        """Start applying dependency updates to reviewed manifests; return job_id.
+        """Start applying reviewed package and interpreter updates, and return job_id.
 
-        Writes manifests/locks throughout folder. commit=true additionally makes
-        Git commits; false (MCP default) leaves changes uncommitted. message is
-        the optional Git subject. Uses current backend manifest/lock state, not
-        a scan snapshot or selected subset. Poll job_status for per-manifest
-        changes and commit SHAs. job_cancel only stops between manifest writes
-        and repository commits; completed writes/commits are not rolled back.
+        Writes manifests, locks, and interpreter pins throughout the folder.
+        Set commit=true to create Git commits. message sets the optional Git
+        subject. The backend recomputes updates from current project files.
+        Poll job_status for changed files and commit SHAs. job_cancel stops
+        between file updates and repository commits. Completed changes persist
+        after cancellation.
         """
         return await api.request(
             "POST",

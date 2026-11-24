@@ -102,8 +102,8 @@ CATEGORIES = [
                 slug="dep-upgrade",
                 title="📦 Dependency Upgrader",
                 description=(
-                    "Review dependency updates in uv, npm, and pnpm projects. "
-                    "Apply the updates and optionally commit the changes."
+                    "Review package updates and interpreter patches for Python and "
+                    "Node.js. Apply them with an optional commit."
                 ),
             ),
             ToolOut(
