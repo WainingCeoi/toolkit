@@ -107,6 +107,14 @@ CATEGORIES = [
                     "commit each one."
                 ),
             ),
+            ToolOut(
+                slug="whatsapp",
+                title="💬 WhatsApp Chat Exporter",
+                description=(
+                    "Download WhatsApp chats synced to this Mac in one ZIP with "
+                    "JSON, CSV, reactions, and local attachments."
+                ),
+            ),
         ],
     ),
     CategoryOut(

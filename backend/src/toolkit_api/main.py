@@ -29,6 +29,7 @@ from .routers import (
     subs,
     torrent,
     webpdf,
+    whatsapp,
 )
 from .routers.meta import disabled_slugs
 from .state import AppState, build_state
@@ -109,6 +110,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
         ("subscription", subs.router),
         ("dep-upgrade", depsync.router),
         ("torrent-downloader", torrent.router),
+        ("whatsapp", whatsapp.router),
     ):
         if slug not in disabled:
             app.include_router(api_router, prefix="/api")

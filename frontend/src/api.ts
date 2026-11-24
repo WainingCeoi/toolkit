@@ -30,6 +30,7 @@ import type {
   TorrentStatus,
   WebPdfCapture,
   WebPdfStatus,
+  WhatsAppChat,
 } from './types/api'
 
 const BASE = '/api'
@@ -98,14 +99,8 @@ async function blobError(res: Response): Promise<Error> {
   return new Error(detail)
 }
 
-async function requestBlob(path: string, formData: FormData): Promise<DownloadedBlob> {
-  const res = await fetch(`${BASE}${path}`, { method: 'POST', body: formData })
-  if (!res.ok) throw await blobError(res)
-  return { blob: await res.blob(), filename: filenameFromDisposition(res, 'download') }
-}
-
-async function fetchBlob(path: string, fallbackName: string): Promise<DownloadedBlob> {
-  const res = await fetch(`${BASE}${path}`)
+async function requestBlob(path: string, fallbackName: string, options?: RequestInit): Promise<DownloadedBlob> {
+  const res = await fetch(`${BASE}${path}`, options)
   if (!res.ok) throw await blobError(res)
   return { blob: await res.blob(), filename: filenameFromDisposition(res, fallbackName) }
 }
@@ -289,7 +284,7 @@ export const api = {
   photofilterRun: (payload: PhotoFilterPayload) =>
     request<JobStarted>('/photofilter/run', { method: 'POST', body: payload }),
 
-  imgToPdf: (formData: FormData) => requestBlob('/img-to-pdf', formData),
+  imgToPdf: (formData: FormData) => requestBlob('/img-to-pdf', 'download', { method: 'POST', body: formData }),
 
   webpdfOpen: (url: string) =>
     request<WebPdfStatus>('/webpdf/open', { method: 'POST', body: { url } }),
@@ -302,6 +297,14 @@ export const api = {
   docToMarkdown: (formData: FormData) =>
     request<JobStarted>('/doc-to-markdown', { method: 'POST', body: formData }),
   docmdHealth: () => request<MarkdownHealth>('/doc-to-markdown/health'),
+
+  whatsappChats: () => request<{ chats: WhatsAppChat[] }>('/whatsapp/chats'),
+  whatsappExport: (chatIds: number[]) =>
+    requestBlob('/whatsapp/chats/export', 'WhatsApp_Chats.zip', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_ids: chatIds }),
+    }),
 
   depsScan: (folder: string) =>
     request<JobStarted>('/deps/scan', { method: 'POST', body: { folder } }),
@@ -317,7 +320,7 @@ export const api = {
   subsQrUrl: (id: string) => `${BASE}/subs/${id}/qr.png`,
   subsRenderUrl: (id: string, target: string) => `${BASE}/subs/${id}/render?target=${target}`,
   subsDownload: (id: string, target: string) =>
-    fetchBlob(`/subs/${id}/render?target=${target}`, `subscription-${target}`),
+    requestBlob(`/subs/${id}/render?target=${target}`, `subscription-${target}`),
 
   // /resolve must be multipart (JSON 422s); BitComet fixes a task's folder at creation.
   torrentStatus: () => request<TorrentStatus>('/torrent/status'),

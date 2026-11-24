@@ -9,6 +9,7 @@ export const PAGES = {
   'image-to-pdf': lazy(() => import('./pages/ImageToPdf')),
   'doc-to-pdf': lazy(() => import('./pages/DocToPdf')),
   'doc-to-markdown': lazy(() => import('./pages/DocToMarkdown')),
+  whatsapp: lazy(() => import('./pages/WhatsAppChatExporter')),
   'cache-purge': lazy(() => import('./pages/CachePurge')),
   'photos-library-filter': lazy(() => import('./pages/PhotosLibraryFilter')),
   subscription: lazy(() => import('./pages/Subscription')),
