@@ -17,6 +17,7 @@ Install the prerequisites before the first run.
 
 uv manages Toolkit's Python runtime using the pin in
 [backend/.python-version](backend/.python-version).
+The frontend's Node.js version is pinned in [frontend/.node-version](frontend/.node-version).
 Run this command from the `toolkit` project folder in Terminal.
 
 ```bash
