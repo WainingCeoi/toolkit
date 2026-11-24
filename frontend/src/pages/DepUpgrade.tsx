@@ -67,7 +67,8 @@ export default function DepUpgrade() {
 
   const { start, snapshot, running, error, setError } = useToolJob<DepScanResult>('/tools/dep-upgrade')
 
-  const result = snapshot?.state === 'done' ? snapshot.result : null
+  const completedScan = snapshot?.state === 'done' ? snapshot : null
+  const result = completedScan?.result ?? null
 
   // null until the user edits it: an untouched field follows a scan restored after mount.
   const [typedFolder, setTypedFolder] = useState<string | null>(null)
@@ -77,7 +78,7 @@ export default function DepUpgrade() {
   const targets = result?.targets ?? []
   const totalBumps = result?.total_bumps ?? 0
   const stale = result != null && scannedFolder !== folder
-  const canApply = totalBumps > 0 && !stale && applyResult == null
+  const canApply = totalBumps > 0 && !stale && !running && applyResult == null
 
   async function runScan() {
     setError(null)
@@ -89,11 +90,11 @@ export default function DepUpgrade() {
   }
 
   async function runApply() {
-    if (scannedFolder === null) return
+    if (completedScan === null || scannedFolder === null || !canApply) return
     setApplying(true)
     setApplyError(null)
     try {
-      setApplyResult(await api.depsApply(scannedFolder, commitAfter, commitMessage))
+      setApplyResult(await api.depsApply(scannedFolder, commitAfter, commitMessage, completedScan.id))
     } catch (err) {
       setApplyError((err as Error).message)
     } finally {
@@ -122,8 +123,8 @@ export default function DepUpgrade() {
             />
 
             <div className="action-summary">
-              <strong>Scanning updates lockfiles</strong>
-              <p>The scan refreshes uv, npm, and pnpm lockfiles. For pinned interpreters, it looks for newer patches within the current major and minor version.</p>
+              <strong>uv lockfiles update on Apply</strong>
+              <p>The scan previews uv upgrades, refreshes npm and pnpm lockfiles, and checks pinned interpreters for newer patches.</p>
             </div>
 
             <Button

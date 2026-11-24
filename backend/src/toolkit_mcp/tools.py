@@ -505,9 +505,9 @@ def register_tools(mcp: MCPServer, api: ToolkitClient) -> None:
     async def dependencies_scan(folder: str) -> dict[str, Any]:
         """Scan a backend folder for package and interpreter updates, and return job_id.
 
-        This scan refreshes package lockfiles and checks release sources.
-        Poll job_status to review bumps before applying.
-        job_cancel is cooperative and does not roll back lockfile updates.
+        This scan previews uv updates without writing the project's uv.lock.
+        npm and pnpm scans refresh their lockfiles. Cancellation does not undo
+        those writes. Poll job_status to review bumps before applying.
         Package updates require the corresponding package manager and registry
         access on the backend. Python patches come from uv's available Python
         versions. Node.js patches come from the Node.js release index.
@@ -521,21 +521,23 @@ def register_tools(mcp: MCPServer, api: ToolkitClient) -> None:
         folder: str,
         commit: bool = False,
         message: str | None = None,
+        scan_job_id: str | None = None,
     ) -> dict[str, Any]:
         """Start applying reviewed package and interpreter updates, and return job_id.
 
         Writes manifests, locks, and interpreter pins throughout the folder.
         Set commit=true to create Git commits. message sets the optional Git
-        subject. The backend recomputes updates from current project files.
+        subject. Pass scan_job_id to apply a specific reviewed uv preview, or
+        omit it to use the most recent completed scan for the folder if available.
+        A uv project is written only when it has floor changes to apply.
         Poll job_status for changed files and commit SHAs. job_cancel stops
         between file updates and repository commits. Completed changes persist
         after cancellation.
         """
-        return await api.request(
-            "POST",
-            "/deps/apply/start",
-            json={"folder": folder, "commit": commit, "message": message},
-        )
+        payload = {"folder": folder, "commit": commit, "message": message}
+        if scan_job_id is not None:
+            payload["scan_job_id"] = scan_job_id
+        return await api.request("POST", "/deps/apply/start", json=payload)
 
     @mcp.tool(annotations=annotations())
     async def subscription_generate(

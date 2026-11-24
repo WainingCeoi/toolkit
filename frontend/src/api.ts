@@ -308,8 +308,11 @@ export const api = {
 
   depsScan: (folder: string) =>
     request<JobStarted>('/deps/scan', { method: 'POST', body: { folder } }),
-  depsApply: (folder: string, commit: boolean, message: string | null) =>
-    request<DepApplyResult>('/deps/apply', { method: 'POST', body: { folder, commit, message } }),
+  depsApply: (folder: string, commit: boolean, message: string | null, scanJobId: string) =>
+    request<DepApplyResult>('/deps/apply', {
+      method: 'POST',
+      body: { folder, commit, message, scan_job_id: scanJobId },
+    }),
 
   subsGenerate: (payload: SubsGeneratePayload) =>
     request<Subscription>('/subs/generate', { method: 'POST', body: payload }),

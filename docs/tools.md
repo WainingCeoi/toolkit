@@ -47,6 +47,10 @@ and are saved to `backend/.env`; automatic runs keep the stopping point updated.
 
 ## Dependency Upgrader
 
+Scanning previews uv dependency upgrades. The project’s `uv.lock` is written
+only when you select **Apply** and there are uv dependency upgrades to apply.
+Scanning refreshes npm and pnpm lockfiles.
+
 Dependency Upgrader checks exact interpreter pins in `.python-version`,
 `.node-version`, and `.nvmrc`. It proposes the newest available stable patch
 within each pin's current major and minor version. Python patches come from

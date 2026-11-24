@@ -12,14 +12,15 @@ from pydantic import BaseModel
 
 from toolkit_engine import depsync
 from toolkit_engine.runtime_releases import RuntimeReleases
+from toolkit_engine.uv_workspace import uv_workspace_fingerprint
 
 from ..deps import JobsDep
-from ..jobs import Job
+from ..jobs import Job, JobRegistry
 from ..schemas import JobStartedOut
 
 router = APIRouter(prefix="/deps", tags=["deps"])
 
-# Folders with a scan or an apply in flight: either one rewrites the same lockfiles.
+# Folders with a scan or an apply in flight, including shared workspace roots.
 _busy_roots: set[str] = set()
 _busy_lock = threading.Lock()
 _BUSY = "⏳ An upgrade is already running for this folder."
@@ -27,6 +28,10 @@ _BUSY = "⏳ An upgrade is already running for this folder."
 
 class _BusyError(Exception):
     """Another scan or apply already owns this folder."""
+
+
+class _StalePreviewError(ValueError):
+    """The reviewed uv inputs changed after scanning."""
 
 
 def _root_key(folder: str) -> str:
@@ -77,6 +82,7 @@ class ApplyIn(BaseModel):
     folder: str
     commit: bool = True
     message: str | None = None  # blank falls back to depsync.COMMIT_SUBJECT
+    scan_job_id: str | None = None
 
 
 class BumpOut(BaseModel):
@@ -125,6 +131,7 @@ def scan(req: ScanIn, jobs: JobsDep) -> JobStartedOut:
         with _exclusive_root(_root_key(req.folder), manifests):
             targets = []
             releases = RuntimeReleases()
+            uv_scans: dict[Path, depsync.UvScan] = {}
             for manifest in manifests:
                 if job.cancelled:
                     return None
@@ -137,6 +144,7 @@ def scan(req: ScanIn, jobs: JobsDep) -> JobStartedOut:
                         ),
                         is_cancelled=lambda: job.cancelled,
                         releases=releases,
+                        uv_scans=uv_scans,
                     )
                 )
             if job.cancelled:
@@ -152,12 +160,13 @@ def scan(req: ScanIn, jobs: JobsDep) -> JobStartedOut:
 
 
 @router.post("/apply", response_model=ApplyOut)
-def apply(req: ApplyIn) -> ApplyOut:
+def apply(req: ApplyIn, jobs: JobsDep) -> ApplyOut:
     manifests = _apply_targets(req)
+    preview = _scan_for_apply(req, jobs)
     try:
         with _exclusive_root(_root_key(req.folder), manifests):
-            return _apply_manifests(manifests, req)
-    except _BusyError as exc:
+            return _apply_manifests(manifests, req, preview=preview)
+    except (_BusyError, _StalePreviewError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from None
 
 
@@ -165,10 +174,11 @@ def apply(req: ApplyIn) -> ApplyOut:
 def start_apply(req: ApplyIn, jobs: JobsDep) -> JobStartedOut:
     """Apply in the existing job pool; cancellation does not undo completed work."""
     manifests = _apply_targets(req)
+    preview = _scan_for_apply(req, jobs)
 
     def worker(job: Job) -> dict:
         with _exclusive_root(_root_key(req.folder), manifests):
-            result = _apply_manifests(manifests, req, job=job)
+            result = _apply_manifests(manifests, req, preview=preview, job=job)
         if job.cancelled:
             job.set_message(
                 "Cancelled between operations. Completed writes and commits remain."
@@ -196,20 +206,87 @@ def _apply_targets(req: ApplyIn) -> list[depsync.Manifest]:
     return manifests
 
 
+def _scan_for_apply(req: ApplyIn, jobs: JobRegistry) -> dict | None:
+    def matching_result(snapshot: dict) -> dict | None:
+        result = snapshot["result"]
+        if (
+            snapshot["tool"] == "dep-upgrade"
+            and snapshot["state"] == "done"
+            and result is not None
+            and "targets" in result
+            and _root_key(result["root"]) == _root_key(req.folder)
+        ):
+            return result
+        return None
+
+    if req.scan_job_id is not None:
+        job = jobs.get(req.scan_job_id)
+        result = matching_result(job.snapshot()) if job is not None else None
+        if result is None:
+            raise HTTPException(
+                status_code=409,
+                detail="The preview is no longer available. Scan again.",
+            )
+        return result
+
+    # Older callers leave out the job ID after previewing this folder.
+    for snapshot in jobs.snapshots(tool="dep-upgrade", state="done"):
+        if (result := matching_result(snapshot)) is not None:
+            return result
+    return None
+
+
+def _reviewed_uv_workspaces(
+    manifests: list[depsync.Manifest], preview: dict | None
+) -> dict[Path, list[tuple[depsync.Manifest, dict]]]:
+    if preview is None:
+        return {}
+    reviewed = {t["rel"]: t for t in preview["targets"] if t["kind"] == "uv"}
+    uv_targets = [manifest for manifest in manifests if manifest.kind == "uv"]
+    if reviewed.keys() != {manifest.rel for manifest in uv_targets}:
+        raise _StalePreviewError(depsync.UV_PREVIEW_STALE)
+
+    groups: dict[Path, list[tuple[depsync.Manifest, dict]]] = {}
+    fingerprints: dict[Path, str] = {}
+    for manifest in uv_targets:
+        workspace = manifest.workspace or manifest.path.parent
+        target = reviewed[manifest.rel]
+        groups.setdefault(workspace, []).append((manifest, target))
+        if target["error"]:
+            continue
+        if workspace not in fingerprints:
+            try:
+                fingerprints[workspace] = uv_workspace_fingerprint(workspace)
+            except OSError:
+                raise _StalePreviewError(depsync.UV_PREVIEW_STALE) from None
+        if target.get("uv_fingerprint") != fingerprints[workspace]:
+            raise _StalePreviewError(depsync.UV_PREVIEW_STALE)
+    return groups
+
+
 def _apply_manifests(
-    manifests: list[depsync.Manifest], req: ApplyIn, *, job: Job | None = None
+    manifests: list[depsync.Manifest],
+    req: ApplyIn,
+    *,
+    preview: dict | None = None,
+    job: Job | None = None,
 ) -> ApplyOut:
     # A manifest write/relock and each commit are indivisible cancellation units.
     # Never interrupt one halfway through or claim that cancellation rolls it back.
     results = []
     releases = RuntimeReleases()
+    reviewed_uv = _reviewed_uv_workspaces(manifests, preview)
     # Resolve dependencies with the current pins before switching the project versions.
     for manifest in sorted(manifests, key=lambda target: target.is_runtime):
         if job is not None:
             if job.cancelled:
                 break
             job.set_message(f"Applying {manifest.rel} …")
-        if manifest.is_runtime:
+        if preview is not None and manifest.kind == "uv":
+            workspace = manifest.workspace or manifest.path.parent
+            if targets := reviewed_uv.pop(workspace, None):
+                results.extend(depsync.write_reviewed_uv_workspace(workspace, targets))
+        elif manifest.is_runtime:
             results.append(depsync.write_manifest(manifest, releases=releases))
         else:
             results.append(depsync.write_manifest(manifest))

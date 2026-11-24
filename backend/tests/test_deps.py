@@ -884,6 +884,78 @@ def test_scan_returns_per_manifest_bumps(client, tmp_path, monkeypatch):
     assert snap["result"]["total_bumps"] == 8  # 3 uv + 5 npm
 
 
+def test_uv_scan_preserves_working_lock_until_confirmed_apply(
+    client, tmp_path, monkeypatch
+):
+    pyproject = (
+        '[project]\nname = "sample"\nversion = "0.1.0"\n'
+        'dependencies = ["uvicorn>=0.30.0"]\n'
+    )
+    original = SAMPLE_LOCK + '\n[[package]]\nname = "transitive"\nversion = "1.0.0"\n'
+    root = _uv_project(tmp_path, pyproject, original + "# local edit\n")
+    manifest = root / "pyproject.toml"
+    lock = root / "uv.lock"
+    original_lock = lock.read_bytes()
+    candidate = original.replace('version = "1.0.0"', 'version = "1.1.0"')
+    updated_manifest = pyproject.replace(">=0.30.0", ">=0.31.0")
+    updated_lock = original_lock.replace(b'version = "0.30.0"', b'version = "0.31.0"')
+
+    def resolve(folder, *_args):
+        (Path(folder) / "uv.lock").write_text(candidate, encoding="utf-8")
+        return True, "Resolved"
+
+    def relock(folder):
+        staged = Path(folder)
+        staged_manifest = (staged / "pyproject.toml").read_text(encoding="utf-8")
+        assert staged_manifest == updated_manifest
+        assert (staged / "uv.lock").read_bytes() == original_lock
+        (staged / "uv.lock").write_bytes(updated_lock)
+        return True, "Resolved"
+
+    monkeypatch.setattr(depsync, "run_uv_upgrade", resolve)
+    monkeypatch.setattr(depsync, "uv_lock_refresh", relock)
+
+    def scan(expected):
+        response = client.post("/api/deps/scan", json={"folder": str(root)})
+        assert response.status_code == 200
+        job_id = response.json()["job_id"]
+        snapshot = _wait(client, job_id)
+        assert snapshot["state"] == "done"
+        assert snapshot["result"]["targets"][0]["error"] is None
+        assert snapshot["result"]["total_bumps"] == expected
+        assert lock.read_bytes() == original_lock
+        assert manifest.read_text(encoding="utf-8") == pyproject
+        return job_id
+
+    def apply(job_id):
+        return client.post(
+            "/api/deps/apply",
+            json={"folder": str(root), "commit": False, "scan_job_id": job_id},
+        )
+
+    response = apply(scan(expected=0))
+    assert response.status_code == 200
+    assert response.json()["results"][0]["error"] is None
+    assert response.json()["written_total"] == 0
+    assert lock.read_bytes() == original_lock
+    assert manifest.read_text(encoding="utf-8") == pyproject
+
+    candidate = candidate.replace('version = "0.30.0"', 'version = "0.31.0"')
+    stale_id = scan(expected=1)
+    new_edit = original_lock + b"# edit after scan\n"
+    lock.write_bytes(new_edit)
+    assert apply(stale_id).status_code == 409
+    assert lock.read_bytes() == new_edit
+    assert manifest.read_text(encoding="utf-8") == pyproject
+    lock.write_bytes(original_lock)
+
+    response = apply(scan(expected=1))
+    assert response.status_code == 200
+    assert response.json()["written_total"] == 1
+    assert manifest.read_text(encoding="utf-8") == updated_manifest
+    assert lock.read_bytes() == updated_lock
+
+
 def test_apply_rejects_empty_folder(client):
     r = client.post("/api/deps/apply", json={"folder": "", "commit": True})
     assert r.status_code == 400 and r.json()["detail"].startswith("❌")
