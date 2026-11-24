@@ -216,7 +216,8 @@ def _verify_rebuild_paths(root: Path, plan: dict[str, Deletion]) -> None:
         "backend/src",
         "backend/uv.lock",
         "frontend/package.json",
-        "frontend/package-lock.json",
+        "frontend/pnpm-lock.yaml",
+        "frontend/pnpm-workspace.yaml",
         "scripts",
     ):
         if _will_remove(plan, Path(needed)):

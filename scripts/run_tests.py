@@ -19,14 +19,8 @@ PREPARE = "Run make dev to prepare dependencies, then retry make test."
 
 # Each Vitest worker loads jsdom and the frontend modules. Leave memory for the
 # host and Vitest's main process, and use a small default pool for this suite.
-NODE_PREFLIGHT = """
+VITEST_CAPACITY = """
 const os = require('node:os');
-const { engines } = require('./package.json');
-const semver = require('node:module').createRequire(process.argv[1])('semver');
-if (!semver.satisfies(process.version, engines.node)) {
-  console.error(`Node ${engines.node} is required; found ${process.version}.`);
-  process.exit(1);
-}
 const mib = 1024 ** 2;
 const available = Math.min(os.totalmem(), process.availableMemory());
 const memoryWorkers = Math.max(0, Math.floor((available / mib - 512) / 256));
@@ -172,46 +166,30 @@ def run_backend(work, env, log):
 
 
 def check_frontend_lock(project):
-    locked = json.loads((project / "package-lock.json").read_text())["packages"]
-    node_modules = project / "node_modules"
-    installed = json.loads((node_modules / ".package-lock.json").read_text())[
-        "packages"
-    ]
-    for name in installed:
-        actual = json.loads((project / name / "package.json").read_text())
-        if locked.get(name, {}).get("version") != actual.get("version"):
-            raise ValueError(f"{name} differs from package-lock.json. {PREPARE}")
+    modules = project / "node_modules"
+    locked = (project / "pnpm-lock.yaml").read_bytes()
+    installed = (modules / ".pnpm" / "lock.yaml").read_bytes()
+    if locked != installed:
+        raise ValueError(f"Frontend dependencies differ from pnpm-lock.yaml. {PREPARE}")
+
+    manifest = json.loads((project / "package.json").read_text())
+    dependencies = {*manifest["dependencies"], *manifest["devDependencies"]}
+    for name in sorted(dependencies):
+        if not (modules / name / "package.json").is_file():
+            raise ValueError(f"Frontend dependency {name} is missing. {PREPARE}")
 
 
 def run_frontend(work, env, log, workers):
     project = ROOT / "frontend"
     node = shutil.which("node")
-    npm = shutil.which("npm")
-    if (
-        not node
-        or not npm
-        or not (project / "node_modules" / ".bin" / "vitest").is_file()
-    ):
+    pnpm = shutil.which("pnpm")
+    modules = project / "node_modules"
+    if not node or not pnpm or not (modules / ".bin" / "vitest").is_file():
         raise ValueError(f"Frontend tools or dependencies are missing. {PREPARE}")
     try:
         check_frontend_lock(project)
     except (OSError, KeyError, json.JSONDecodeError) as exc:
         raise ValueError(f"Cannot read frontend dependency state. {PREPARE}") from exc
-
-    env = dict(
-        env,
-        npm_config_cache=str(work / "cache" / "npm"),
-        npm_config_offline="true",
-    )
-    status, _ = run_step(
-        "Check frontend dependencies",
-        [npm, "ls", "--all", "--silent", "--include=dev", "--include=optional"],
-        project,
-        env,
-        log,
-    )
-    if status:
-        raise ValueError(PREPARE)
 
     source = work / "frontend"
     shutil.copytree(
@@ -222,19 +200,44 @@ def run_frontend(work, env, log, workers):
             "dist",
             "dist-ssr",
             "coverage",
+            ".pnpm-store",
             ".env*",
             ".npmrc",
+            ".pnpmfile.*",
             "*.tsbuildinfo",
             "*.log",
             ".DS_Store",
         ),
     )
-    (source / "node_modules").symlink_to(
-        project / "node_modules", target_is_directory=True
+    # The copied project uses the prepared modules without reinstalling them.
+    env = dict(
+        env,
+        PNPM_CONFIG_OFFLINE="true",
+        PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN="false",
     )
+    status, _ = run_step(
+        "Check locked frontend dependencies and Node engine",
+        [
+            pnpm,
+            "install",
+            "--frozen-lockfile",
+            "--lockfile-only",
+            "--offline",
+            "--ignore-scripts",
+        ],
+        source,
+        # The real install checks registry policies. This pass only validates
+        # the copied lockfile and manifest in an empty, offline environment.
+        dict(env, PNPM_CONFIG_TRUST_LOCKFILE="true"),
+        log,
+    )
+    if status:
+        raise ValueError(PREPARE)
+
+    (source / "node_modules").symlink_to(modules, target_is_directory=True)
     status, output = run_step(
-        "Check Node and available workers",
-        [node, "-e", NODE_PREFLIGHT, str(Path(npm).resolve())],
+        "Check available Vitest workers",
+        [node, "-e", VITEST_CAPACITY],
         source,
         env,
         log,
@@ -255,10 +258,9 @@ def run_frontend(work, env, log, workers):
         )
     print(f"  Vitest worker limit is {worker_count}.", flush=True)
     vitest = [
-        npm,
+        pnpm,
         "run",
         "test",
-        "--",
         "--maxWorkers",
         str(worker_count),
         "--no-cache",
@@ -270,16 +272,15 @@ def run_frontend(work, env, log, workers):
         vitest.extend(["--no-file-parallelism", "--maxConcurrency", "1"])
 
     steps = (
-        ("TypeScript", [npm, "run", "typecheck"]),
-        ("ESLint", [npm, "run", "lint"]),
+        ("TypeScript", [pnpm, "run", "typecheck"]),
+        ("ESLint", [pnpm, "run", "lint"]),
         ("Vitest", vitest),
         (
             "Vite build",
             [
-                npm,
+                pnpm,
                 "run",
                 "build",
-                "--",
                 "--configLoader",
                 "native",
                 "--outDir",

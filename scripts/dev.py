@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import fcntl
-import hashlib
 import http.client
 import json
 import os
@@ -29,7 +28,7 @@ PYTHON = BACKEND / ".venv/bin/python"
 DEFAULT_DB = BACKEND / "data/sub.db"
 LOOPBACK = "127.0.0.1"
 APP_COMMAND = re.compile(
-    r"python[\d.]*|node(?:js)?|npm(?: .*)?|uv|uvicorn|vite",
+    r"python[\d.]*|node(?:js)?|pnpm(?: .*)?|uv|uvicorn|vite",
     re.IGNORECASE,
 )
 JEDI_SERVER = re.compile(
@@ -73,7 +72,7 @@ def run(args, *, cwd=ROOT, env=None, capture=False, quiet=False, check=True):
 
 
 def preparation_options():
-    for command in ("uv", "node", "npm"):
+    for command in ("uv", "node", "pnpm"):
         if not shutil.which(command):
             raise RuntimeError(f"{command} is required. See README.md for setup.")
 
@@ -83,37 +82,31 @@ def preparation_options():
         BACKEND / "pyproject.toml",
         BACKEND / "uv.lock",
         FRONTEND / "package.json",
-        FRONTEND / "package-lock.json",
+        FRONTEND / "pnpm-lock.yaml",
+        FRONTEND / "pnpm-workspace.yaml",
     ):
         if not path.is_file():
             raise RuntimeError(f"Missing setup input {path.relative_to(ROOT)}.")
 
-    # npm ships semver. Check the manifest range before sync or reset, even
-    # when frontend/node_modules hasn't been installed yet.
-    npm = Path(shutil.which("npm")).resolve()
-    run(
-        [
-            "node",
-            "-e",
-            """
-const [npm, manifest] = process.argv.slice(1)
-const range = require(manifest).engines.node
-const semver = require('node:module').createRequire(npm)('semver')
-if (!semver.satisfies(process.version, range)) {
-  console.error(`Node ${process.version} does not satisfy ${range}. See README.md.`)
-  process.exit(1)
-}
-""",
-            str(npm),
-            str(FRONTEND / "package.json"),
-        ],
-    )
     pin = (BACKEND / ".python-version").read_text().strip()
     extras = os.environ["EXTRAS"].split()
     if set(extras) - {"docmd"}:
         raise RuntimeError("EXTRAS supports docmd or an empty value.")
     # Read the existing lock and project metadata before allowing a reset.
     run(["uv", "lock", "--check", "--offline"], cwd=BACKEND, env=uv_environment())
+    # This check only compares local inputs and must work with no registry cache.
+    run(
+        [
+            "pnpm",
+            "install",
+            "--frozen-lockfile",
+            "--lockfile-only",
+            "--offline",
+            "--ignore-scripts",
+        ],
+        cwd=FRONTEND,
+        env=dict(os.environ, PNPM_CONFIG_TRUST_LOCKFILE="true"),
+    )
     return pin, extras
 
 
@@ -178,61 +171,14 @@ def prepare(pin, extras):
     else:
         print("Backend dependencies are up to date.")
 
-    fingerprint = hashlib.sha256()
-    for name in ("package.json", "package-lock.json", ".npmrc", "../.npmrc"):
-        path = FRONTEND / name
-        if path.is_file():
-            digest = hashlib.sha256(path.read_bytes()).hexdigest()
-            fingerprint.update(f"{digest}  {name}\n".encode())
-    for command in (
-        [
-            "node",
-            "-p",
-            "JSON.stringify([process.version, process.platform, process.arch, "
-            "process.versions.modules])",
-        ],
-        ["npm", "--version"],
-    ):
-        fingerprint.update(run(command, cwd=FRONTEND, capture=True).stdout.encode())
-
     modules = FRONTEND / "node_modules"
-    marker = modules / ".toolkit-install-state"
-    key = fingerprint.hexdigest()
-    if (
-        marker.is_file()
-        and marker.read_text().strip() == key
-        and all(os.access(modules / ".bin" / tool, os.X_OK) for tool in ("vite", "tsc"))
-        and not run(
-            ["npm", "ls", "--all", "--silent", "--include=dev", "--include=optional"],
-            cwd=FRONTEND,
-            quiet=True,
-            check=False,
-        ).returncode
-        and not run(
-            [
-                "node",
-                "-e",
-                """
-const fs = require('node:fs')
-const lock = JSON.parse(fs.readFileSync('node_modules/.package-lock.json'))
-const complete = Object.keys(lock.packages).every(
-  path => !path || fs.existsSync(path + '/package.json')
-)
-process.exit(complete ? 0 : 1)
-""",
-            ],
-            cwd=FRONTEND,
-            quiet=True,
-            check=False,
-        ).returncode
-    ):
-        print("Frontend dependencies are up to date.")
-    else:
-        run(
-            ["npm", "ci", "--include=dev", "--include=optional", "--engine-strict"],
-            cwd=FRONTEND,
-        )
-        marker.write_text(key + "\n")
+    # pnpm can leave unrelated packages behind in a preexisting install.
+    if modules.is_dir() and not (modules / ".modules.yaml").is_file():
+        shutil.rmtree(modules)
+    run(
+        ["pnpm", "install", "--frozen-lockfile", "--prod=false", "--optional"],
+        cwd=FRONTEND,
+    )
 
 
 def port_from_env(name):
@@ -296,7 +242,7 @@ def check_idle():
             # A checkout executable is stronger evidence than a name prefix
             # on a process which merely inherited the checkout's cwd.
             local_executable = descriptor == "txt" and command.lower().startswith(
-                ("python", "node", "npm", "uv", "vite")
+                ("python", "node", "pnpm", "uv", "vite")
             )
             app_cwd = descriptor == "cwd" and APP_COMMAND.fullmatch(command)
             database = path.name.endswith((".db", ".db-wal", ".db-shm", ".db-journal"))
@@ -473,10 +419,9 @@ def dev():
         start(
             "Vite",
             [
-                "npm",
+                "pnpm",
                 "run",
                 "dev",
-                "--",
                 "--port",
                 str(frontend_port),
                 "--strictPort",

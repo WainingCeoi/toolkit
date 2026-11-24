@@ -1,5 +1,5 @@
 {
-  // Type checking is npm run typecheck; vite build strips types without checking them.
+  // Vite strips types during build. Run pnpm run typecheck to check them.
   "compilerOptions": {
     "target": "ES2022",
     "lib": ["ES2023", "DOM", "DOM.Iterable"],

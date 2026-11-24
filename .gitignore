@@ -13,5 +13,8 @@ Thumbs.db
 .claude/
 .local-docs/
 
+# pnpm store fallback on volumes that cannot hard link to the home store.
+.pnpm-store/
+
 .ruff_cache/
 .pytest_cache/

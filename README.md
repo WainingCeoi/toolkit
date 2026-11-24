@@ -13,6 +13,7 @@ Install the prerequisites before the first run.
 - macOS Command Line Tools (`xcode-select --install`) for Git, Make, and `python3`.
 - [uv](https://docs.astral.sh/uv/getting-started/installation/), which installs and manages Python for Toolkit.
 - [Node.js](https://nodejs.org/) 22.22.2+ within 22.x, 24.15.0+ within 24.x, or 26+.
+- [pnpm](https://pnpm.io/installation), available on `PATH` (for example, `brew install pnpm`).
 
 uv manages Toolkit's pinned Python 3.14.7 runtime.
 Run this command from the `toolkit` project folder in Terminal.
@@ -24,6 +25,8 @@ make dev
 The first start installs dependencies from the lockfiles and creates
 `backend/.env` from the example if needed. Later starts reuse current
 dependencies. The FastAPI backend and Vite frontend reload on source changes.
+After pulling the pnpm migration, `make dev` rebuilds the old frontend dependency
+directory on its first run.
 
 Open the frontend address printed in Terminal, normally
 [http://127.0.0.1:5173](http://127.0.0.1:5173). The backend normally listens on
@@ -47,7 +50,7 @@ tabs along the bottom, so you can switch tools while a task is running.
 | Doc to Markdown | Convert PDFs, Office documents, and images into Markdown text. |
 | Cache Purge | Find cache and junk files, review the results, then delete them. |
 | Photos Library Filter | Create a copy of a Photos library without its caches, preserving originals and edits. |
-| Dependency Upgrader | Update a project's Python and Node packages and commit the changes. |
+| Dependency Upgrader | Update packages in uv and npm projects and commit the changes. |
 | WhatsApp Chat Exporter | Export selected WhatsApp chats as one ZIP with JSON, CSV, replies, reactions, and local attachments. |
 | Optimized-IP Subscription | Replace server addresses in proxy configurations and generate subscription links. |
 
@@ -142,9 +145,9 @@ stores.
 
 Run `make dev` and stop it with **Ctrl-C** to prepare a fresh checkout for testing.
 For setup without launching services, run `(cd backend && uv sync --locked --dev)`
-and `(cd frontend && npm ci)` from the project root. `make test` prints its
-temporary run directory, which contains `backend.log` and `frontend.log` for
-the selected suites, including the results of the frontend build.
+and `(cd frontend && pnpm install --frozen-lockfile)` from the project root.
+`make test` prints its temporary run directory, which contains `backend.log` and
+`frontend.log` for the selected suites, including the frontend build results.
 Use `TEST_SUITE=backend` or `TEST_SUITE=frontend` for one suite and its checks.
 `TEST_WORKERS=auto` sizes the Vitest pool using available CPU and memory. A
 positive integer sets the worker limit, and `TEST_WORKERS=0` runs serially.
@@ -176,7 +179,7 @@ Prepare the dependencies, then run these commands from the project root to
 serve the built frontend and API on your network.
 
 ```bash
-(cd frontend && npm run build)
+(cd frontend && pnpm run build)
 (cd backend && uv run --no-sync python -m toolkit_api.host)
 ```
 
