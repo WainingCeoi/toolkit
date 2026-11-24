@@ -28,30 +28,6 @@ class ArtifactStore:
             self._sweep()
         return artifact_id
 
-    def replace_bytes(self, artifact_id: str, content: bytes) -> None:
-        """Overwrite in place atomically so a racing download never sees a torn file."""
-        with self._lock:
-            item = self._items.get(artifact_id)
-            if item is not None:
-                item["used"] = time.monotonic()  # still being written to
-        if item is None:
-            raise KeyError(f"Unknown artifact: {artifact_id}")
-        staging = item["path"].with_suffix(".staging")
-        staging.write_bytes(content)
-        staging.replace(item["path"])
-
-    def replace_file(self, artifact_id: str, src: Path) -> None:
-        """replace_bytes for a file already on disk; ``src`` is consumed."""
-        with self._lock:
-            item = self._items.get(artifact_id)
-            if item is not None:
-                item["used"] = time.monotonic()  # still being written to
-        if item is None:
-            raise KeyError(f"Unknown artifact: {artifact_id}")
-        staging = item["path"].with_suffix(".staging")
-        shutil.move(str(src), staging)
-        staging.replace(item["path"])
-
     def put_file(self, filename: str, src: Path, media_type: str) -> str:
         artifact_id = uuid.uuid4().hex[:12]
         path = self._dir / f"{artifact_id}_{filename}"

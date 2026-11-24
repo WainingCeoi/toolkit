@@ -13,7 +13,7 @@ def _xtime(a: int) -> int:
     return (a ^ 0x1B) & 0xFF if a & 0x100 else a
 
 
-def _build_sboxes() -> tuple[bytes, bytes]:
+def _build_sbox() -> bytes:
     # inv(a) = 3^(255 - log3(a)) over the cyclic group of order 255.
     exp, log = [0] * 256, [0] * 256
     value = 1
@@ -39,13 +39,10 @@ def _build_sboxes() -> tuple[bytes, bytes]:
             substituted |= bit << i
         sbox[byte] = substituted
 
-    inv_sbox = bytearray(256)
-    for byte, substituted in enumerate(sbox):
-        inv_sbox[substituted] = byte
-    return bytes(sbox), bytes(inv_sbox)
+    return bytes(sbox)
 
 
-_SBOX, _INV_SBOX = _build_sboxes()
+_SBOX = _build_sbox()
 
 
 def _mul(a: int, factor: int) -> int:
@@ -61,22 +58,20 @@ def _mul(a: int, factor: int) -> int:
 
 # State is flat, column-major (byte i: row i%4, column i//4); ShiftRows permutes it.
 _SHIFT_ROWS = [r + 4 * ((c + r) % 4) for c in range(4) for r in range(4)]
-_INV_SHIFT_ROWS = [r + 4 * ((c - r) % 4) for c in range(4) for r in range(4)]
 
-# First row of each circulant matrix; output row r, input row k uses row[(k - r) % 4].
+# First row of the circulant matrix; output row r, input row k uses _MIX[(k - r) % 4].
 _MIX = (2, 3, 1, 1)
-_INV_MIX = (14, 11, 13, 9)
 
 
-def _mix_columns(state: list[int], row: tuple[int, int, int, int]) -> list[int]:
+def _mix_columns(state: list[int]) -> list[int]:
     mixed = [0] * 16
     for col in range(0, 16, 4):
         for r in range(4):
             mixed[col + r] = (
-                _mul(state[col], row[(0 - r) % 4])
-                ^ _mul(state[col + 1], row[(1 - r) % 4])
-                ^ _mul(state[col + 2], row[(2 - r) % 4])
-                ^ _mul(state[col + 3], row[(3 - r) % 4])
+                _mul(state[col], _MIX[(0 - r) % 4])
+                ^ _mul(state[col + 1], _MIX[(1 - r) % 4])
+                ^ _mul(state[col + 2], _MIX[(2 - r) % 4])
+                ^ _mul(state[col + 3], _MIX[(3 - r) % 4])
             )
     return mixed
 
@@ -103,23 +98,11 @@ def _encrypt_block(block: bytes, keys: list[bytes]) -> bytes:
     for key in keys[1:-1]:
         state = [_SBOX[b] for b in state]
         state = [state[i] for i in _SHIFT_ROWS]
-        state = _mix_columns(state, _MIX)
+        state = _mix_columns(state)
         state = [b ^ k for b, k in zip(state, key, strict=True)]
     state = [_SBOX[b] for b in state]
     state = [state[i] for i in _SHIFT_ROWS]
     return bytes(b ^ k for b, k in zip(state, keys[-1], strict=True))
-
-
-def _decrypt_block(block: bytes, keys: list[bytes]) -> bytes:
-    state = [b ^ k for b, k in zip(block, keys[-1], strict=True)]
-    state = [state[i] for i in _INV_SHIFT_ROWS]
-    state = [_INV_SBOX[b] for b in state]
-    for key in reversed(keys[1:-1]):
-        state = [b ^ k for b, k in zip(state, key, strict=True)]
-        state = _mix_columns(state, _INV_MIX)
-        state = [state[i] for i in _INV_SHIFT_ROWS]
-        state = [_INV_SBOX[b] for b in state]
-    return bytes(b ^ k for b, k in zip(state, keys[0], strict=True))
 
 
 def _check(key: bytes, iv: bytes, data: bytes) -> None:
@@ -145,30 +128,12 @@ def _encrypt_cbc_py(key: bytes, iv: bytes, plaintext: bytes) -> bytes:
     return bytes(out)
 
 
-def _decrypt_cbc_py(key: bytes, iv: bytes, ciphertext: bytes) -> bytes:
-    """Inverse of _encrypt_cbc_py; padding is likewise the caller's problem."""
-    _check(key, iv, ciphertext)
-    keys = _round_keys(key)
-    out, previous = bytearray(), iv
-    for i in range(0, len(ciphertext), BLOCK):
-        block = ciphertext[i : i + BLOCK]
-        decrypted = _decrypt_block(block, keys)
-        out += bytes(a ^ b for a, b in zip(decrypted, previous, strict=True))
-        previous = block
-    return bytes(out)
-
-
 try:
     from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 except ImportError:  # Intel Mac: no wheel, sdist needs Rust; pyproject skips it
     encrypt_cbc = _encrypt_cbc_py
-    decrypt_cbc = _decrypt_cbc_py
 else:
 
     def encrypt_cbc(key: bytes, iv: bytes, plaintext: bytes) -> bytes:
         encryptor = Cipher(algorithms.AES(key), modes.CBC(iv)).encryptor()
         return encryptor.update(plaintext) + encryptor.finalize()
-
-    def decrypt_cbc(key: bytes, iv: bytes, ciphertext: bytes) -> bytes:
-        decryptor = Cipher(algorithms.AES(key), modes.CBC(iv)).decryptor()
-        return decryptor.update(ciphertext) + decryptor.finalize()

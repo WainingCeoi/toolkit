@@ -11,6 +11,7 @@ import time
 import weakref
 
 import pytest
+from helpers import wait_for_job
 
 from toolkit_api.artifacts import ArtifactStore
 from toolkit_api.jobs import (
@@ -21,16 +22,6 @@ from toolkit_api.jobs import (
 )
 from toolkit_api.main import create_app
 from toolkit_engine import docmd
-
-
-def wait_for_job(client, job_id, timeout=5.0):
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        snap = client.get(f"/api/jobs/{job_id}").json()
-        if snap["state"] in FINISHED_STATES:
-            return snap
-        time.sleep(0.02)
-    raise AssertionError(f"job {job_id} did not finish within {timeout}s")
 
 
 def test_tools_manifest_has_thirteen_tools_in_three_categories(client):

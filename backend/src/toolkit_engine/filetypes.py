@@ -41,11 +41,6 @@ CATEGORY_EXTENSIONS: dict[str, frozenset[str]] = {
     "archive": ARCHIVE_EXTENSIONS,
 }
 
-# Only these get the minimum-size filter; a floor would drop every subtitle/.nfo.
-SIZED_CATEGORIES = frozenset({"video", "audio"})
-
-CATEGORY_NAMES = (*CATEGORY_EXTENSIONS, "other")
-
 
 def categorize(path: str) -> str:
     """Category name for a path, or "other" when no set claims its suffix."""

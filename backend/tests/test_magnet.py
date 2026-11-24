@@ -3,33 +3,13 @@
 from __future__ import annotations
 
 import threading
-import time
 
 import pytest
 from dotenv import dotenv_values
-from fastapi.testclient import TestClient
+from helpers import wait_for_job
 
-from toolkit_api.jobs import FINISHED_STATES
-from toolkit_api.main import create_app
 from toolkit_api.routers import magnet as magnet_router
 from toolkit_engine import magnet as magnet_engine
-
-
-@pytest.fixture
-def tool_client(app_state):
-    app = create_app(state=app_state)
-    with TestClient(app) as c:
-        yield c
-
-
-def wait_for_job(client, job_id, timeout=5.0):
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        snap = client.get(f"/api/jobs/{job_id}").json()
-        if snap["state"] in FINISHED_STATES:
-            return snap
-        time.sleep(0.02)
-    raise AssertionError(f"job {job_id} did not finish within {timeout}s")
 
 
 @pytest.fixture
@@ -46,7 +26,7 @@ def config_env(monkeypatch, tmp_path):
 
 
 def test_config_reads_only_magnet_settings_and_prefers_file_values(
-    tool_client, config_env, monkeypatch
+    client, config_env, monkeypatch
 ):
     config_env.write_text(
         "WEBSITE_URL='https://site.test'\n"
@@ -56,7 +36,7 @@ def test_config_reads_only_magnet_settings_and_prefers_file_values(
     monkeypatch.setenv("WEBSITE_URL", "https://old.test")
     monkeypatch.setenv("CUTOFF_VIDEO", "https://old.test/old")
 
-    resp = tool_client.get("/api/magnet/config")
+    resp = client.get("/api/magnet/config")
 
     assert resp.status_code == 200
     assert resp.json() == {
@@ -68,12 +48,12 @@ def test_config_reads_only_magnet_settings_and_prefers_file_values(
 
 
 def test_config_falls_back_to_shell_when_file_keys_are_absent(
-    tool_client, config_env, monkeypatch
+    client, config_env, monkeypatch
 ):
     monkeypatch.setenv("WEBSITE_URL", "https://site.test")
     monkeypatch.setenv("CUTOFF_VIDEO", "https://site.test/v3")
 
-    assert tool_client.get("/api/magnet/config").json() == {
+    assert client.get("/api/magnet/config").json() == {
         "website_url": "https://site.test",
         "cutoff_video": "https://site.test/v3",
         "website_url_set": True,
@@ -81,13 +61,11 @@ def test_config_falls_back_to_shell_when_file_keys_are_absent(
     }
 
 
-def test_config_save_trims_and_preserves_unrelated_env_contents(
-    tool_client, config_env
-):
+def test_config_save_trims_and_preserves_unrelated_env_contents(client, config_env):
     unrelated = "# Backend settings\nPRIVATE_TOKEN='do not change # this'\n\n"
     config_env.write_text(unrelated + "WEBSITE_URL='https://old.test'\n")
 
-    resp = tool_client.put(
+    resp = client.put(
         "/api/magnet/config",
         json={
             "website_url": "  https://site.test/  ",
@@ -103,7 +81,7 @@ def test_config_save_trims_and_preserves_unrelated_env_contents(
         "cutoff_set": True,
     }
     assert resp.json() == expected
-    assert tool_client.get("/api/magnet/config").json() == expected
+    assert client.get("/api/magnet/config").json() == expected
     assert "# Backend settings\n" in config_env.read_text()
     assert "PRIVATE_TOKEN='do not change # this'\n" in config_env.read_text()
     assert dotenv_values(config_env) == {
@@ -113,9 +91,9 @@ def test_config_save_trims_and_preserves_unrelated_env_contents(
     }
 
 
-def test_config_save_creates_missing_env_file(tool_client, config_env):
+def test_config_save_creates_missing_env_file(client, config_env):
     config_env.unlink()
-    resp = tool_client.put(
+    resp = client.put(
         "/api/magnet/config",
         json={"website_url": "http://site.test", "cutoff_video": ""},
     )
@@ -139,15 +117,13 @@ def test_config_save_creates_missing_env_file(tool_client, config_env):
         "https://site.test:invalid",
     ],
 )
-def test_config_rejects_invalid_urls_without_writing(
-    tool_client, config_env, field, value
-):
+def test_config_rejects_invalid_urls_without_writing(client, config_env, field, value):
     original = "# Preserve this file\nPRIVATE_TOKEN=secret\n"
     config_env.write_text(original)
     settings = {"website_url": "https://site.test", "cutoff_video": ""}
     settings[field] = value
 
-    resp = tool_client.put("/api/magnet/config", json=settings)
+    resp = client.put("/api/magnet/config", json=settings)
 
     assert resp.status_code == 422
     label = "Source website" if field == "website_url" else "Last watched video URL"
@@ -165,12 +141,12 @@ def test_config_rejects_invalid_urls_without_writing(
     ],
 )
 def test_config_clear_overrides_process_env_and_blocks_auto(
-    tool_client, config_env, monkeypatch, website, cutoff, error
+    client, config_env, monkeypatch, website, cutoff, error
 ):
     monkeypatch.setenv("WEBSITE_URL", "https://old.test")
     monkeypatch.setenv("CUTOFF_VIDEO", "https://old.test/old")
 
-    resp = tool_client.put(
+    resp = client.put(
         "/api/magnet/config", json={"website_url": website, "cutoff_video": cutoff}
     )
 
@@ -182,15 +158,15 @@ def test_config_clear_overrides_process_env_and_blocks_auto(
     }
     assert resp.status_code == 200
     assert resp.json() == expected
-    assert tool_client.get("/api/magnet/config").json() == expected
-    resp = tool_client.post("/api/magnet/auto", json={"start_page": 1})
-    snap = wait_for_job(tool_client, resp.json()["job_id"])
+    assert client.get("/api/magnet/config").json() == expected
+    resp = client.post("/api/magnet/auto", json={"start_page": 1})
+    snap = wait_for_job(client, resp.json()["job_id"])
     assert snap["state"] == "failed"
     assert snap["error"] == error
 
 
 def test_config_save_failure_keeps_original_file_and_removes_temp_file(
-    tool_client, config_env, monkeypatch
+    client, config_env, monkeypatch
 ):
     original = "WEBSITE_URL='https://old.test'\nPRIVATE_TOKEN=secret\n"
     config_env.write_text(original)
@@ -202,7 +178,7 @@ def test_config_save_failure_keeps_original_file_and_removes_temp_file(
         return real_set_key(path, key, value)
 
     monkeypatch.setattr(magnet_router, "set_key", fail_second_write)
-    resp = tool_client.put(
+    resp = client.put(
         "/api/magnet/config",
         json={"website_url": "https://new.test", "cutoff_video": ""},
     )
@@ -213,7 +189,7 @@ def test_config_save_failure_keeps_original_file_and_removes_temp_file(
     assert list(config_env.parent.glob(".env.*")) == []
 
 
-def test_auto_uses_saved_settings_without_restart(tool_client, config_env, monkeypatch):
+def test_auto_uses_saved_settings_without_restart(client, config_env, monkeypatch):
     monkeypatch.setenv("WEBSITE_URL", "https://old.test")
     monkeypatch.setenv("CUTOFF_VIDEO", "https://old.test/old")
     calls = []
@@ -223,7 +199,7 @@ def test_auto_uses_saved_settings_without_restart(tool_client, config_env, monke
         return [], True, None
 
     monkeypatch.setattr(magnet_engine, "find_unwatched_urls", find_urls)
-    tool_client.put(
+    client.put(
         "/api/magnet/config",
         json={
             "website_url": "https://new.test",
@@ -231,8 +207,8 @@ def test_auto_uses_saved_settings_without_restart(tool_client, config_env, monke
         },
     ).raise_for_status()
 
-    resp = tool_client.post("/api/magnet/auto", json={"start_page": 3})
-    snap = wait_for_job(tool_client, resp.json()["job_id"])
+    resp = client.post("/api/magnet/auto", json={"start_page": 3})
+    snap = wait_for_job(client, resp.json()["job_id"])
 
     assert snap["state"] == "done"
     assert calls == [("https://new.test", "https://new.test/video", 3)]
@@ -247,7 +223,7 @@ def test_auto_uses_saved_settings_without_restart(tool_client, config_env, monke
     ],
 )
 def test_auto_does_not_advance_cutoff_over_settings_saved_during_run(
-    tool_client, config_env, monkeypatch, website, cutoff
+    client, config_env, monkeypatch, website, cutoff
 ):
     config_env.write_text(
         "WEBSITE_URL='https://site.test'\nCUTOFF_VIDEO='https://site.test/v3'\n"
@@ -266,36 +242,36 @@ def test_auto_does_not_advance_cutoff_over_settings_saved_during_run(
         "get_magnet_link",
         lambda url: {"success": True, "result": "magnet:?xt=v4"},
     )
-    resp = tool_client.post("/api/magnet/auto", json={"start_page": 1})
+    resp = client.post("/api/magnet/auto", json={"start_page": 1})
     try:
         assert started.wait(timeout=3)
-        saved = tool_client.put(
+        saved = client.put(
             "/api/magnet/config",
             json={"website_url": website, "cutoff_video": cutoff},
         )
         assert saved.status_code == 200
     finally:
         resume.set()
-    snap = wait_for_job(tool_client, resp.json()["job_id"])
+    snap = wait_for_job(client, resp.json()["job_id"])
 
     assert snap["state"] == "done"
-    assert tool_client.get("/api/magnet/config").json()["cutoff_video"] == cutoff
+    assert client.get("/api/magnet/config").json()["cutoff_video"] == cutoff
 
 
 # --- dedupe ---
 
 
-def test_dedupe_removes_duplicates_and_preserves_first_seen_order(tool_client):
+def test_dedupe_removes_duplicates_and_preserves_first_seen_order(client):
     links = ["magnet:?b", "magnet:?a", "magnet:?b", "magnet:?c", "magnet:?a"]
-    resp = tool_client.post("/api/magnet/dedupe", json={"links": links})
+    resp = client.post("/api/magnet/dedupe", json={"links": links})
     assert resp.status_code == 200
     body = resp.json()
     assert body["unique"] == ["magnet:?b", "magnet:?a", "magnet:?c"]
     assert body["count"] == 3
 
 
-def test_dedupe_empty_is_400_with_page_warning(tool_client):
-    resp = tool_client.post("/api/magnet/dedupe", json={"links": []})
+def test_dedupe_empty_is_400_with_page_warning(client):
+    resp = client.post("/api/magnet/dedupe", json={"links": []})
     assert resp.status_code == 400
     assert resp.json()["detail"] == "Please enter at least one magnet link"
 
@@ -303,33 +279,31 @@ def test_dedupe_empty_is_400_with_page_warning(tool_client):
 # --- auto ---
 
 
-def test_auto_missing_website_url_fails_with_page_error(
-    tool_client, monkeypatch, tmp_path
-):
+def test_auto_missing_website_url_fails_with_page_error(client, monkeypatch, tmp_path):
     env_file = tmp_path / ".env"
     env_file.write_text("")
     monkeypatch.setattr(magnet_engine, "ENV_PATH", env_file)
     monkeypatch.delenv("WEBSITE_URL", raising=False)
     monkeypatch.delenv("CUTOFF_VIDEO", raising=False)
 
-    resp = tool_client.post("/api/magnet/auto", json={"start_page": 1})
+    resp = client.post("/api/magnet/auto", json={"start_page": 1})
     assert resp.status_code == 200
-    snap = wait_for_job(tool_client, resp.json()["job_id"])
+    snap = wait_for_job(client, resp.json()["job_id"])
     assert snap["state"] == "failed"
     assert snap["error"] == (
         "Add a source website in Settings before using Automatic mode."
     )
 
 
-def test_auto_missing_cutoff_fails_with_page_error(tool_client, monkeypatch, tmp_path):
+def test_auto_missing_cutoff_fails_with_page_error(client, monkeypatch, tmp_path):
     env_file = tmp_path / ".env"
     env_file.write_text("")
     monkeypatch.setattr(magnet_engine, "ENV_PATH", env_file)
     monkeypatch.setenv("WEBSITE_URL", "https://site.test")
     monkeypatch.delenv("CUTOFF_VIDEO", raising=False)
 
-    resp = tool_client.post("/api/magnet/auto", json={"start_page": 1})
-    snap = wait_for_job(tool_client, resp.json()["job_id"])
+    resp = client.post("/api/magnet/auto", json={"start_page": 1})
+    snap = wait_for_job(client, resp.json()["job_id"])
     assert snap["state"] == "failed"
     assert snap["error"] == (
         "Add a last watched video URL in Settings before using Automatic mode."
@@ -349,9 +323,7 @@ def _page_html(hrefs):
     return f"<html><body>{anchors}</body></html>"
 
 
-def test_auto_happy_path_advances_cutoff_and_scrapes(
-    tool_client, monkeypatch, tmp_path
-):
+def test_auto_happy_path_advances_cutoff_and_scrapes(client, monkeypatch, tmp_path):
     env_file = tmp_path / ".env"
     env_file.write_text('CUTOFF_VIDEO="https://site.test/v3"\n')
     monkeypatch.setattr(magnet_engine, "ENV_PATH", env_file)
@@ -376,8 +348,8 @@ def test_auto_happy_path_advances_cutoff_and_scrapes(
     monkeypatch.setattr(magnet_engine.requests, "get", fake_requests_get)
     monkeypatch.setattr(magnet_engine, "get_magnet_link", fake_get_magnet_link)
 
-    resp = tool_client.post("/api/magnet/auto", json={"start_page": 1})
-    snap = wait_for_job(tool_client, resp.json()["job_id"])
+    resp = client.post("/api/magnet/auto", json={"start_page": 1})
+    snap = wait_for_job(client, resp.json()["job_id"])
     assert snap["state"] == "done"
     result = snap["result"]
     assert result["cutoff_found"] is True
@@ -390,9 +362,7 @@ def test_auto_happy_path_advances_cutoff_and_scrapes(
     assert "https://site.test/v5" in env_file.read_text()
 
 
-def test_auto_holds_the_cutoff_behind_a_failed_fetch(
-    tool_client, monkeypatch, tmp_path
-):
+def test_auto_holds_the_cutoff_behind_a_failed_fetch(client, monkeypatch, tmp_path):
     env_file = tmp_path / ".env"
     env_file.write_text('CUTOFF_VIDEO="https://site.test/v3"\n')
     monkeypatch.setattr(magnet_engine, "ENV_PATH", env_file)
@@ -417,8 +387,8 @@ def test_auto_holds_the_cutoff_behind_a_failed_fetch(
     monkeypatch.setattr(magnet_engine.requests, "get", fake_requests_get)
     monkeypatch.setattr(magnet_engine, "get_magnet_link", fake_get_magnet_link)
 
-    resp = tool_client.post("/api/magnet/auto", json={"start_page": 1})
-    snap = wait_for_job(tool_client, resp.json()["job_id"])
+    resp = client.post("/api/magnet/auto", json={"start_page": 1})
+    snap = wait_for_job(client, resp.json()["job_id"])
     assert snap["state"] == "done"
     assert [r["url"] for r in snap["result"]["failed"]] == ["https://site.test/v5"]
     # v4 is the newest video older than the failure, so a rerun still sees v5.
@@ -426,7 +396,7 @@ def test_auto_holds_the_cutoff_behind_a_failed_fetch(
 
 
 def test_auto_leaves_the_cutoff_alone_when_the_oldest_fetch_failed(
-    tool_client, monkeypatch, tmp_path
+    client, monkeypatch, tmp_path
 ):
     env_file = tmp_path / ".env"
     env_file.write_text('CUTOFF_VIDEO="https://site.test/v3"\n')
@@ -452,14 +422,14 @@ def test_auto_leaves_the_cutoff_alone_when_the_oldest_fetch_failed(
     monkeypatch.setattr(magnet_engine.requests, "get", fake_requests_get)
     monkeypatch.setattr(magnet_engine, "get_magnet_link", fake_get_magnet_link)
 
-    resp = tool_client.post("/api/magnet/auto", json={"start_page": 1})
-    snap = wait_for_job(tool_client, resp.json()["job_id"])
+    resp = client.post("/api/magnet/auto", json={"start_page": 1})
+    snap = wait_for_job(client, resp.json()["job_id"])
     assert snap["state"] == "done"
     assert 'CUTOFF_VIDEO="https://site.test/v3"' in env_file.read_text()
 
 
 def test_auto_cancel_during_scrape_does_not_advance_cutoff(
-    tool_client, monkeypatch, tmp_path
+    client, monkeypatch, tmp_path
 ):
     env_file = tmp_path / ".env"
     env_file.write_text('CUTOFF_VIDEO="https://site.test/v0"\n')
@@ -487,8 +457,8 @@ def test_auto_cancel_during_scrape_does_not_advance_cutoff(
 
     monkeypatch.setattr(magnet_router, "_scrape", fake_scrape)
 
-    resp = tool_client.post("/api/magnet/auto", json={"start_page": 1})
-    snap = wait_for_job(tool_client, resp.json()["job_id"])
+    resp = client.post("/api/magnet/auto", json={"start_page": 1})
+    snap = wait_for_job(client, resp.json()["job_id"])
     assert snap["state"] == "cancelled"
     assert "https://site.test/v0" in env_file.read_text()
     assert "https://site.test/v3" not in env_file.read_text()
@@ -497,7 +467,7 @@ def test_auto_cancel_during_scrape_does_not_advance_cutoff(
 
 
 def test_auto_cutoff_not_found_warns_and_leaves_env_alone(
-    tool_client, monkeypatch, tmp_path
+    client, monkeypatch, tmp_path
 ):
     env_file = tmp_path / ".env"
     env_file.write_text('CUTOFF_VIDEO="https://site.test/gone"\n')
@@ -515,8 +485,8 @@ def test_auto_cutoff_not_found_warns_and_leaves_env_alone(
 
     monkeypatch.setattr(magnet_engine.requests, "get", fake_requests_get)
 
-    resp = tool_client.post("/api/magnet/auto", json={"start_page": 1})
-    snap = wait_for_job(tool_client, resp.json()["job_id"])
+    resp = client.post("/api/magnet/auto", json={"start_page": 1})
+    snap = wait_for_job(client, resp.json()["job_id"])
     assert snap["state"] == "done"
     assert snap["result"] == {
         "cutoff_found": False,
@@ -533,7 +503,7 @@ def test_auto_cutoff_not_found_warns_and_leaves_env_alone(
 # --- manual ---
 
 
-def test_manual_scrape_splits_successful_and_failed(tool_client, monkeypatch):
+def test_manual_scrape_splits_successful_and_failed(client, monkeypatch):
     def fake_get_magnet_link(url):
         if url.endswith("/bad"):
             return {"success": False, "url": url, "reason": "no magnet link on page"}
@@ -546,9 +516,9 @@ def test_manual_scrape_splits_successful_and_failed(tool_client, monkeypatch):
         "https://site.test/bad",
         "https://site.test/b",
     ]
-    resp = tool_client.post("/api/magnet/manual", json={"urls": urls})
+    resp = client.post("/api/magnet/manual", json={"urls": urls})
     assert resp.status_code == 200
-    snap = wait_for_job(tool_client, resp.json()["job_id"])
+    snap = wait_for_job(client, resp.json()["job_id"])
     assert snap["state"] == "done"
     result = snap["result"]
     assert result["urls"] == urls
@@ -568,7 +538,7 @@ def test_manual_scrape_splits_successful_and_failed(tool_client, monkeypatch):
     assert result["failed_count"] == 1
 
 
-def test_manual_scrape_auto_dedupes_successful_magnets(tool_client, monkeypatch):
+def test_manual_scrape_auto_dedupes_successful_magnets(client, monkeypatch):
     magnets = {
         "https://site.test/a": "magnet:?xt=shared",
         "https://site.test/mirror-of-a": "magnet:?xt=shared",
@@ -588,8 +558,8 @@ def test_manual_scrape_auto_dedupes_successful_magnets(tool_client, monkeypatch)
         "https://site.test/bad",
         "https://site.test/b",
     ]
-    resp = tool_client.post("/api/magnet/manual", json={"urls": urls})
-    snap = wait_for_job(tool_client, resp.json()["job_id"])
+    resp = client.post("/api/magnet/manual", json={"urls": urls})
+    snap = wait_for_job(client, resp.json()["job_id"])
     assert snap["state"] == "done"
     result = snap["result"]
     assert result["total"] == 4
@@ -602,8 +572,8 @@ def test_manual_scrape_auto_dedupes_successful_magnets(tool_client, monkeypatch)
     assert result["failed_count"] == 1
 
 
-def test_manual_empty_is_400_with_page_warning(tool_client):
-    resp = tool_client.post("/api/magnet/manual", json={"urls": []})
+def test_manual_empty_is_400_with_page_warning(client):
+    resp = client.post("/api/magnet/manual", json={"urls": []})
     assert resp.status_code == 400
     assert resp.json()["detail"] == "Please enter at least one URL"
 
@@ -696,7 +666,7 @@ def test_find_unwatched_urls_reports_page_error(monkeypatch):
 
 
 def test_auto_rereads_advanced_cutoff_from_env_file_within_process(
-    tool_client, monkeypatch, tmp_path
+    client, monkeypatch, tmp_path
 ):
     env_file = tmp_path / ".env"
     env_file.write_text('CUTOFF_VIDEO="https://site.test/v3"\n')
@@ -722,8 +692,8 @@ def test_auto_rereads_advanced_cutoff_from_env_file_within_process(
     pages["https://site.test/page/2/"] = _page_html(
         ["https://site.test/v3", "https://site.test/v2"]
     )
-    resp = tool_client.post("/api/magnet/auto", json={"start_page": 1})
-    snap = wait_for_job(tool_client, resp.json()["job_id"])
+    resp = client.post("/api/magnet/auto", json={"start_page": 1})
+    snap = wait_for_job(client, resp.json()["job_id"])
     assert snap["state"] == "done"
     assert snap["result"]["urls"] == [
         "https://site.test/v5",
@@ -737,8 +707,8 @@ def test_auto_rereads_advanced_cutoff_from_env_file_within_process(
     pages["https://site.test/page/2/"] = _page_html(
         ["https://site.test/v4", "https://site.test/v3"]
     )
-    resp = tool_client.post("/api/magnet/auto", json={"start_page": 1})
-    snap = wait_for_job(tool_client, resp.json()["job_id"])
+    resp = client.post("/api/magnet/auto", json={"start_page": 1})
+    snap = wait_for_job(client, resp.json()["job_id"])
     assert snap["state"] == "done"
     assert snap["result"]["urls"] == ["https://site.test/v6"]
 

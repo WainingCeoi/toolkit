@@ -13,8 +13,8 @@ from contextlib import closing
 from pathlib import Path
 
 import pytest
+from helpers import wait_for_job
 
-from toolkit_api.jobs import FINISHED_STATES
 from toolkit_engine import photofilter as pf
 
 RULES = [
@@ -85,16 +85,6 @@ def build_src(tmp):
     touch(src, "database/search/leo.sqlite")
     touch(src, ".DS_Store")
     return src
-
-
-def wait_for_job(client, job_id, timeout=5.0):
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        snap = client.get(f"/api/jobs/{job_id}").json()
-        if snap["state"] in FINISHED_STATES:
-            return snap
-        time.sleep(0.02)
-    raise AssertionError(f"job {job_id} did not finish within {timeout}s")
 
 
 # --- rules ---

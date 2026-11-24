@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import pytest
-from fake_bitcomet import SERVER_NAME, FakeBitComet
+from fake_bitcomet import SERVER_NAME, FakeBitComet, bencode
 from fastapi.testclient import TestClient
 
 from toolkit_api.main import create_app
 from toolkit_api.torrents import TorrentManager
 from toolkit_engine.bitcomet import BitCometClient, BitCometError
-from toolkit_engine.torrent import bencode, parse_torrent
+from toolkit_engine.torrent import parse_torrent
 
 HASH = "c9e15763f722f23e98a29decdfae341b98d53056"
 TORRENT_MIME = "application/x-bittorrent"
@@ -85,9 +85,11 @@ def test_status_hands_back_bitcomets_own_url(torrent_client, fake):
     assert torrent_client.get("/api/torrent/status").json()["url"] == fake.url
 
 
-def test_status_reports_an_unreachable_bitcomet_without_failing(app_state, tmp_path):
+def test_status_reports_an_unreachable_bitcomet_without_failing(
+    app_state, tmp_path, refusing_loopback_url
+):
     client = BitCometClient(
-        base_url="http://127.0.0.1:1", username="u", password="p", timeout=0.5
+        base_url=refusing_loopback_url, username="u", password="p", timeout=0.5
     )
     app_state.torrents = TorrentManager(client, download_dir=tmp_path)
     with TestClient(create_app(state=app_state)) as test_client:

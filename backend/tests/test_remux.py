@@ -5,32 +5,12 @@ from __future__ import annotations
 import subprocess
 import sys
 import threading
-import time
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
+from helpers import wait_for_job
 
-from toolkit_api.jobs import FINISHED_STATES
-from toolkit_api.main import create_app
 from toolkit_engine import remux
-
-
-@pytest.fixture
-def tool_client(app_state):
-    app = create_app(state=app_state)
-    with TestClient(app) as c:
-        yield c
-
-
-def wait_for_job(client, job_id, timeout=5.0):
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        snap = client.get(f"/api/jobs/{job_id}").json()
-        if snap["state"] in FINISHED_STATES:
-            return snap
-        time.sleep(0.02)
-    raise AssertionError(f"job {job_id} did not finish within {timeout}s")
 
 
 def start_payload(**overrides):
@@ -136,18 +116,18 @@ def test_remux_closes_process_pipes_after_progress_drops_reference(monkeypatch, 
 # --- /api/remux/scan ---
 
 
-def test_scan_lists_videos_natural_sorted(tool_client, tmp_path):
+def test_scan_lists_videos_natural_sorted(client, tmp_path):
     for name in ["ep10.mkv", "ep2.mkv", "ep1.mp4", "notes.txt"]:
         (tmp_path / name).write_bytes(b"")
-    resp = tool_client.post("/api/remux/scan", json={"folder": str(tmp_path)})
+    resp = client.post("/api/remux/scan", json={"folder": str(tmp_path)})
     assert resp.status_code == 200
     videos = resp.json()["videos"]
     assert [v["name"] for v in videos] == ["ep1.mp4", "ep2.mkv", "ep10.mkv"]
     assert all(v["path"] == str(tmp_path / v["name"]) for v in videos)
 
 
-def test_scan_relative_folder_is_rejected(tool_client):
-    resp = tool_client.post("/api/remux/scan", json={"folder": "Movies"})
+def test_scan_relative_folder_is_rejected(client):
+    resp = client.post("/api/remux/scan", json={"folder": "Movies"})
     assert resp.status_code == 400
     assert resp.json()["detail"] == (
         "❌ Folder not found — use an absolute path (e.g. ~/Movies)."
@@ -157,7 +137,7 @@ def test_scan_relative_folder_is_rejected(tool_client):
 # --- /api/remux/subtitles ---
 
 
-def test_subtitles_match_by_stem_with_none_case(tool_client, tmp_path):
+def test_subtitles_match_by_stem_with_none_case(client, tmp_path):
     vid_dir = tmp_path / "vids"
     sub_dir = tmp_path / "subs"
     vid_dir.mkdir()
@@ -169,7 +149,7 @@ def test_subtitles_match_by_stem_with_none_case(tool_client, tmp_path):
     sub = sub_dir / "show.e01.srt"
     sub.write_text("1")
     (sub_dir / "notes.txt").write_text("not a subtitle")
-    resp = tool_client.post(
+    resp = client.post(
         "/api/remux/subtitles",
         json={"sub_folder": str(sub_dir), "selected": [str(a), str(b)]},
     )
@@ -180,8 +160,8 @@ def test_subtitles_match_by_stem_with_none_case(tool_client, tmp_path):
     ]
 
 
-def test_subtitles_relative_folder_is_rejected(tool_client):
-    resp = tool_client.post(
+def test_subtitles_relative_folder_is_rejected(client):
+    resp = client.post(
         "/api/remux/subtitles", json={"sub_folder": "subs", "selected": []}
     )
     assert resp.status_code == 400
@@ -193,21 +173,21 @@ def test_subtitles_relative_folder_is_rejected(tool_client):
 # --- /api/remux/start validations (never reach ffmpeg) ---
 
 
-def test_start_requires_selection(tool_client):
-    resp = tool_client.post("/api/remux/start", json=start_payload(selected=[]))
+def test_start_requires_selection(client):
+    resp = client.post("/api/remux/start", json=start_payload(selected=[]))
     assert resp.status_code == 400
     assert resp.json()["detail"] == "❌ Please select at least one video."
 
 
-def test_start_requires_absolute_out_folder(tool_client):
-    resp = tool_client.post("/api/remux/start", json=start_payload(out_folder="out"))
+def test_start_requires_absolute_out_folder(client):
+    resp = client.post("/api/remux/start", json=start_payload(out_folder="out"))
     assert resp.status_code == 400
     assert resp.json()["detail"] == "❌ Use an absolute output folder path."
 
 
-def test_start_rejects_bad_audio_indices(tool_client, monkeypatch):
+def test_start_rejects_bad_audio_indices(client, monkeypatch):
     monkeypatch.setattr("shutil.which", lambda cmd: "/opt/fake/ffmpeg")
-    resp = tool_client.post(
+    resp = client.post(
         "/api/remux/start",
         json=start_payload(multi_audio=True, audio_value="0,x"),
     )
@@ -215,9 +195,9 @@ def test_start_rejects_bad_audio_indices(tool_client, monkeypatch):
     assert resp.json()["detail"] == "❌ Audio track indices must be integers, e.g. 0,1"
 
 
-def test_start_refuses_all_empty_stream_map(tool_client, monkeypatch):
+def test_start_refuses_all_empty_stream_map(client, monkeypatch):
     monkeypatch.setattr("shutil.which", lambda cmd: "/opt/fake/ffmpeg")
-    resp = tool_client.post(
+    resp = client.post(
         "/api/remux/start",
         json=start_payload(
             include_video=False,
@@ -232,7 +212,7 @@ def test_start_refuses_all_empty_stream_map(tool_client, monkeypatch):
     )
 
 
-def test_start_rejects_a_case_variant_output_folder(tool_client, tmp_path, monkeypatch):
+def test_start_rejects_a_case_variant_output_folder(client, tmp_path, monkeypatch):
     monkeypatch.setattr("shutil.which", lambda cmd: "/opt/fake/ffmpeg")
     src_dir = tmp_path / "Movies"
     src_dir.mkdir()
@@ -242,7 +222,7 @@ def test_start_rejects_a_case_variant_output_folder(tool_client, tmp_path, monke
     if not alt.is_dir():
         pytest.skip("case-sensitive filesystem")
 
-    resp = tool_client.post(
+    resp = client.post(
         "/api/remux/start",
         json=start_payload(selected=[str(video)], out_folder=str(alt)),
     )
@@ -253,7 +233,7 @@ def test_start_rejects_a_case_variant_output_folder(tool_client, tmp_path, monke
 @pytest.mark.parametrize("link_kind", ["symlink", "hardlink"])
 @pytest.mark.parametrize("other_kind", ["video", "subtitle"])
 def test_start_rejects_output_aliasing_another_input(
-    tool_client, app_state, tmp_path, monkeypatch, link_kind, other_kind
+    client, app_state, tmp_path, monkeypatch, link_kind, other_kind
 ):
     monkeypatch.setattr("shutil.which", lambda cmd: "/opt/fake/ffmpeg")
     video = tmp_path / "a.mkv"
@@ -279,7 +259,7 @@ def test_start_rejects_output_aliasing_another_input(
 
     monkeypatch.setattr(app_state.jobs, "submit", record_submission)
     selected = [str(video), str(other)] if other_kind == "video" else [str(video)]
-    resp = tool_client.post(
+    resp = client.post(
         "/api/remux/start",
         json=start_payload(
             selected=selected,
@@ -299,7 +279,7 @@ def test_start_rejects_output_aliasing_another_input(
 
 
 def test_start_accepts_a_video_without_an_external_subtitle(
-    tool_client, tmp_path, monkeypatch
+    client, tmp_path, monkeypatch
 ):
     monkeypatch.setattr("shutil.which", lambda cmd: "/opt/fake/ffmpeg")
 
@@ -325,7 +305,7 @@ def test_start_accepts_a_video_without_an_external_subtitle(
     for f in (matched, unmatched, sub):
         f.write_bytes(b"")
 
-    resp = tool_client.post(
+    resp = client.post(
         "/api/remux/start",
         json=start_payload(
             selected=[str(matched), str(unmatched)],
@@ -335,7 +315,7 @@ def test_start_accepts_a_video_without_an_external_subtitle(
         ),
     )
     assert resp.status_code == 200
-    snap = wait_for_job(tool_client, resp.json()["job_id"])
+    snap = wait_for_job(client, resp.json()["job_id"])
     assert snap["state"] == "done"
     assert seen == {"a.mkv": str(sub), "b.mkv": None}
 
@@ -343,7 +323,7 @@ def test_start_accepts_a_video_without_an_external_subtitle(
 # --- /api/remux/start happy path (fake per-task worker, no ffmpeg) ---
 
 
-def test_start_runs_batch_and_reports_results(tool_client, tmp_path, monkeypatch):
+def test_start_runs_batch_and_reports_results(client, tmp_path, monkeypatch):
     monkeypatch.setattr("shutil.which", lambda cmd: "/opt/fake/ffmpeg")
 
     def fake_run_remux_task(task, progress_state, lock, ff_registry=None):
@@ -369,7 +349,7 @@ def test_start_runs_batch_and_reports_results(tool_client, tmp_path, monkeypatch
     for name in ("good.mkv", "bad.mkv"):
         (tmp_path / name).write_bytes(b"")  # start only accepts real local files
     out_dir = tmp_path / "out"
-    resp = tool_client.post(
+    resp = client.post(
         "/api/remux/start",
         json=start_payload(
             selected=[str(tmp_path / "good.mkv"), str(tmp_path / "bad.mkv")],
@@ -377,7 +357,7 @@ def test_start_runs_batch_and_reports_results(tool_client, tmp_path, monkeypatch
         ),
     )
     assert resp.status_code == 200
-    snap = wait_for_job(tool_client, resp.json()["job_id"])
+    snap = wait_for_job(client, resp.json()["job_id"])
     assert snap["state"] == "done"
     assert snap["result"]["total"] == 2
     assert snap["result"]["successful"] == 1
@@ -388,9 +368,7 @@ def test_start_runs_batch_and_reports_results(tool_client, tmp_path, monkeypatch
     assert out_dir.is_dir()
 
 
-def test_start_cancel_keeps_partial_report(
-    tool_client, app_state, tmp_path, monkeypatch
-):
+def test_start_cancel_keeps_partial_report(client, app_state, tmp_path, monkeypatch):
     monkeypatch.setattr("shutil.which", lambda cmd: "/opt/fake/ffmpeg")
 
     started = threading.Event()
@@ -413,7 +391,7 @@ def test_start_cancel_keeps_partial_report(
 
     (tmp_path / "a.mkv").write_bytes(b"")  # start only accepts real local files
     out_dir = tmp_path / "out"
-    resp = tool_client.post(
+    resp = client.post(
         "/api/remux/start",
         json=start_payload(
             selected=[str(tmp_path / "a.mkv")],
@@ -426,7 +404,7 @@ def test_start_cancel_keeps_partial_report(
     assert app_state.jobs.cancel(job_id)
     release.set()
 
-    snap = wait_for_job(tool_client, job_id)
+    snap = wait_for_job(client, job_id)
     assert snap["state"] == "cancelled"
     assert snap["result"] is not None
     assert snap["result"]["total"] == 1
@@ -435,7 +413,7 @@ def test_start_cancel_keeps_partial_report(
 
 
 def test_start_cancel_reports_killed_tasks_as_cancelled(
-    tool_client, app_state, tmp_path, monkeypatch
+    client, app_state, tmp_path, monkeypatch
 ):
     monkeypatch.setattr("shutil.which", lambda cmd: "/opt/fake/ffmpeg")
 
@@ -468,7 +446,7 @@ def test_start_cancel_reports_killed_tasks_as_cancelled(
     for name in ("a.mkv", "b.mkv"):
         (tmp_path / name).write_bytes(b"")  # start only accepts real local files
     out_dir = tmp_path / "out"
-    resp = tool_client.post(
+    resp = client.post(
         "/api/remux/start",
         json=start_payload(
             selected=[str(tmp_path / "a.mkv"), str(tmp_path / "b.mkv")],
@@ -481,7 +459,7 @@ def test_start_cancel_reports_killed_tasks_as_cancelled(
     assert started.wait(3.0)
     assert app_state.jobs.cancel(job_id)
 
-    snap = wait_for_job(tool_client, job_id)
+    snap = wait_for_job(client, job_id)
     assert snap["state"] == "cancelled"
     assert snap["result"]["failed"] == []
     assert snap["result"]["total"] == 0

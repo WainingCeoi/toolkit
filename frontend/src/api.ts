@@ -316,9 +316,7 @@ export const api = {
   subsHistory: () => request<SubsHistoryItem[]>('/subs/history'),
   subsGet: (id: string) => request<Subscription>(`/subs/${id}`),
   subsDelete: (id: string) => request<null>(`/subs/${id}`, { method: 'DELETE' }),
-  subsUrls: (id: string) => request<Record<string, string>>(`/subs/${id}/urls`),
   subsQrUrl: (id: string) => `${BASE}/subs/${id}/qr.png`,
-  subsRenderUrl: (id: string, target: string) => `${BASE}/subs/${id}/render?target=${target}`,
   subsDownload: (id: string, target: string) =>
     requestBlob(`/subs/${id}/render?target=${target}`, `subscription-${target}`),
 

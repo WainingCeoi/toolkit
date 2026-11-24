@@ -52,7 +52,6 @@ export default function Button(props: ButtonProps) {
     'btn',
     VARIANT[variant] ?? '',
     size === 'sm' ? 'sm' : '',
-    loading ? 'loading' : '',
     className,
   ]
     .filter(Boolean)

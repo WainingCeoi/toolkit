@@ -74,7 +74,9 @@ def run(args, *, cwd=ROOT, env=None, capture=False, quiet=False, check=True):
 def preparation_options():
     for command in ("uv", "node", "pnpm"):
         if not shutil.which(command):
-            raise RuntimeError(f"{command} is required. See README.md for setup.")
+            raise RuntimeError(
+                f"{command} is required. See docs/getting-started.md for setup."
+            )
 
     for path in (
         TEMPLATE,
@@ -289,7 +291,7 @@ def development_env(frontend_port):
     ):
         raise RuntimeError(
             "backend/.env SUB_DB_PATH must name a SQLite file inside the checkout. "
-            "See README.md for native hosting with an external data path."
+            "See docs/hosting.md for native hosting with an external data path."
         )
     check_databases(database)
     env["SUB_DB_PATH"] = str(database)

@@ -11,8 +11,6 @@ from scandir_rs import Scandir
 
 from .fsutil import natural_sort_key
 
-DEFAULT_CACHE_TYPES = ["*.dwl", "*.dwl2", "*.bak", "*.log", "*.db", "*.tmp", "*.err"]
-
 # Deletes are submitted a chunk at a time; a cancel can only land between chunks.
 _DELETE_CHUNK = 16
 

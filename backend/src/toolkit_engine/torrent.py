@@ -1,4 +1,4 @@
-"""Torrent Downloader engine: pure parsing and selection. No I/O, no network."""
+"""Torrent Downloader engine: parse torrents and format BitComet selections."""
 
 from __future__ import annotations
 
@@ -6,8 +6,6 @@ import base64
 import hashlib
 import urllib.parse
 from dataclasses import dataclass
-
-from toolkit_engine.filetypes import SIZED_CATEGORIES, categorize
 
 
 @dataclass(frozen=True)
@@ -23,21 +21,6 @@ class TorrentInfo:
     infohash: str  # lowercase hex btih
     name: str
     files: list[TorrentFile]
-    total_bytes: int
-
-
-def bencode(value) -> bytes:
-    """Encode dict/list/int/bytes to bencode. Dict keys are sorted, per spec."""
-    if isinstance(value, int):
-        return b"i%de" % value
-    if isinstance(value, bytes):
-        return b"%d:%s" % (len(value), value)
-    if isinstance(value, list):
-        return b"l" + b"".join(bencode(v) for v in value) + b"e"
-    if isinstance(value, dict):
-        items = sorted(value.items())
-        return b"d" + b"".join(bencode(k) + bencode(v) for k, v in items) + b"e"
-    raise TypeError(f"cannot bencode {type(value).__name__}")
 
 
 def _decode(data: bytes, i: int) -> tuple[object, int]:
@@ -67,11 +50,6 @@ def _decode(data: bytes, i: int) -> tuple[object, int]:
         start = colon + 1
         return data[start : start + length], start + length
     raise ValueError(f"invalid bencode at byte {i}")
-
-
-def bdecode(data: bytes):
-    value, _ = _decode(data, 0)
-    return value
 
 
 def _decode_root(data: bytes) -> tuple[dict, dict[bytes, tuple[int, int]]]:
@@ -125,12 +103,7 @@ def parse_torrent(data: bytes) -> TorrentInfo:
     except (AttributeError, KeyError, TypeError) as exc:
         raise ValueError("torrent info dict is malformed") from exc
 
-    return TorrentInfo(
-        infohash=infohash,
-        name=name,
-        files=files,
-        total_bytes=sum(f.size for f in files),
-    )
+    return TorrentInfo(infohash=infohash, name=name, files=files)
 
 
 def parse_magnet(uri: str) -> tuple[str, str | None]:
@@ -153,22 +126,6 @@ def parse_magnet(uri: str) -> tuple[str, str | None]:
         return infohash, display
 
     raise ValueError("magnet link has no btih hash")
-
-
-def select_files(
-    files: list[TorrentFile], categories: set[str], min_bytes: int
-) -> list[int]:
-    """1-based indices to download: in a chosen category, and big enough."""
-    chosen = set(categories)
-    selected = []
-    for entry in files:
-        category = categorize(entry.path)
-        if category not in chosen:
-            continue
-        if category in SIZED_CATEGORIES and entry.size < min_bytes:
-            continue
-        selected.append(entry.index)
-    return selected
 
 
 def format_selection(indices: list[int]) -> str:

@@ -64,11 +64,6 @@ class Job:
             if error is not None:
                 item["error"] = error
 
-    def set_result(self, result: dict | None) -> None:
-        """Publish results so far without finishing the job."""
-        with self._lock:
-            self.result = result
-
     def snapshot(self) -> dict:
         with self._lock:
             return {
