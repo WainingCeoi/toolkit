@@ -12,7 +12,7 @@ from pydantic import BaseModel
 
 from toolkit_engine import depsync
 from toolkit_engine.runtime_releases import RuntimeReleases
-from toolkit_engine.uv_workspace import uv_workspace_fingerprint
+from toolkit_engine.uv_workspace import is_uv_workspace, uv_workspace_fingerprint
 
 from ..deps import JobsDep
 from ..jobs import Job, JobRegistry
@@ -118,6 +118,60 @@ class ApplyOut(BaseModel):
     written_total: int
 
 
+def _project_git_root(folder: Path) -> Path | None:
+    try:
+        git_root = depsync.git_root(str(folder))
+    except OSError:
+        # A checkout can still be grouped if Git is unavailable on the backend.
+        return next(
+            (
+                parent
+                for parent in (folder, *folder.parents)
+                if (parent / ".git").exists()
+            ),
+            None,
+        )
+    root = Path(git_root).resolve() if git_root else None
+    return root if root is not None and folder.is_relative_to(root) else None
+
+
+def _project_roots(root: Path, manifests: list[depsync.Manifest]) -> dict[Path, Path]:
+    """Resolve display groups without changing the paths used by apply."""
+    folders = {manifest.path.parent for manifest in manifests}
+    components = {folder.relative_to(root).parts[0] for folder in folders - {root}}
+    single_project = (
+        root in folders
+        or any((root / name).is_file() for name in ("pyproject.toml", "package.json"))
+        or components <= {"backend", "frontend"}
+    )
+
+    workspaces: dict[Path, Path] = {}
+    for manifest in manifests:
+        folder, workspace = manifest.path.parent, manifest.workspace
+        if workspace is None or (
+            manifest.kind == "uv"
+            and workspace == folder
+            and not is_uv_workspace(folder)
+        ):
+            continue
+        previous = workspaces.get(folder)
+        if previous is None or workspace.is_relative_to(previous):
+            workspaces[folder] = workspace
+    workspace_roots = set(workspaces.values())
+
+    projects = {}
+    for folder in folders:
+        fallback = root if single_project else root / folder.relative_to(root).parts[0]
+        workspace = workspaces.get(
+            folder, folder if folder in workspace_roots else None
+        )
+        # A package-manager workspace can be one component of the larger project.
+        if workspace in (fallback / "backend", fallback / "frontend"):
+            workspace = None
+        projects[folder] = _project_git_root(folder) or workspace or fallback
+    return projects
+
+
 @router.post("/scan", response_model=JobStartedOut)
 def scan(req: ScanIn, jobs: JobsDep) -> JobStartedOut:
     manifests, err = depsync.find_manifests(req.folder)
@@ -126,27 +180,34 @@ def scan(req: ScanIn, jobs: JobsDep) -> JobStartedOut:
     if not manifests:
         raise HTTPException(status_code=400, detail=_NO_MANIFESTS)
     root = str(Path(req.folder).expanduser())
+    canonical_root = _root_key(root)
 
     def worker(job):
-        with _exclusive_root(_root_key(req.folder), manifests):
+        with _exclusive_root(canonical_root, manifests):
             targets = []
             releases = RuntimeReleases()
             uv_scans: dict[Path, depsync.UvScan] = {}
+            projects = _project_roots(Path(canonical_root), manifests)
             for manifest in manifests:
                 if job.cancelled:
                     return None
                 job.set_message(f"Scanning {manifest.rel} …")
-                targets.append(
-                    depsync.scan_manifest(
-                        manifest,
-                        on_message=lambda line, rel=manifest.rel: job.set_message(
-                            f"{rel}: {line}"
-                        ),
-                        is_cancelled=lambda: job.cancelled,
-                        releases=releases,
-                        uv_scans=uv_scans,
-                    )
+                target = depsync.scan_manifest(
+                    manifest,
+                    on_message=lambda line, rel=manifest.rel: job.set_message(
+                        f"{rel}: {line}"
+                    ),
+                    is_cancelled=lambda: job.cancelled,
+                    releases=releases,
+                    uv_scans=uv_scans,
                 )
+                project = projects[manifest.path.parent]
+                target["project"] = {
+                    "root": str(project),
+                    "name": project.name or str(project),
+                }
+                target["project_rel"] = manifest.path.relative_to(project).as_posix()
+                targets.append(target)
             if job.cancelled:
                 return None
             return {

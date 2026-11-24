@@ -38,6 +38,14 @@ def _matches(path: Path, root: Path, patterns: object) -> bool:
     return False
 
 
+def is_uv_workspace(root: Path) -> bool:
+    """Whether the project explicitly declares a uv workspace at its root."""
+    with suppress(OSError, ValueError):
+        settings = _uv_settings(root / "pyproject.toml") or {}
+        return isinstance(settings.get("workspace"), dict)
+    return False
+
+
 def find_uv_workspace(folder: Path) -> Path:
     """Find the explicit workspace that owns this project's lock, if any."""
     folder = folder.resolve()

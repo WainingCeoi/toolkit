@@ -7,7 +7,7 @@ import Button from '../components/Button'
 import ToolHeader from '../components/ToolHeader'
 import EmptyState from '../components/EmptyState'
 import Icon from '../components/Icon'
-import type { Bump, DepApplyResult, DepScanResult } from '../types/api'
+import type { Bump, DepApplyResult, DepScanResult, ScanTarget } from '../types/api'
 
 // Mirrors depsync.COMMIT_SUBJECT; keep them in sync.
 const DEFAULT_COMMIT_MESSAGE = 'chore(deps): update dependencies'
@@ -54,6 +54,91 @@ function BumpTable({ bumps }: { bumps: Bump[] }) {
         </tbody>
       </table>
     </div>
+  )
+}
+
+interface ProjectScan {
+  root: string
+  name: string
+  updates: number
+  errors: number
+  details: ScanTarget[]
+  current: ScanTarget[]
+}
+
+function groupProjects({ root, targets }: DepScanResult): ProjectScan[] {
+  const projects = new Map<string, ProjectScan>()
+  const fallback = { root, name: root.split('/').filter(Boolean).at(-1) ?? root }
+  for (const target of targets) {
+    const { root, name } = target.project ?? fallback
+    let project = projects.get(root)
+    if (!project) {
+      project = { root, name, updates: 0, errors: 0, details: [], current: [] }
+      projects.set(root, project)
+    }
+    project.updates += target.bumps.length
+    if (target.error) project.errors++
+    const files = target.error || target.bumps.length > 0 ? project.details : project.current
+    files.push(target)
+  }
+  return [...projects.values()].sort((a, b) => Number(b.details.length > 0) - Number(a.details.length > 0))
+}
+
+function CurrentTargets({ targets, showStatus }: { targets: ScanTarget[]; showStatus: boolean }) {
+  const directories = new Map<string, { name: string; kind: string }[]>()
+  for (const target of targets) {
+    const relative = target.project_rel ?? target.rel
+    const slash = relative.lastIndexOf('/')
+    const directory = slash < 0 ? '' : relative.slice(0, slash + 1)
+    const file = { name: relative.slice(slash + 1), kind: target.kind }
+    const files = directories.get(directory)
+    if (files) files.push(file)
+    else directories.set(directory, [file])
+  }
+
+  return (
+    <div className="dep-current-targets">
+      {showStatus && <strong>Up to date</strong>}
+      <ul role="list">
+        {[...directories].map(([directory, files]) => (
+          <li key={directory}>
+            <strong>{directory || 'Root'}</strong>
+            {files.map(({ name, kind }) => (
+              <span key={name}>{name} <small>{kind}</small></span>
+            ))}
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
+function ProjectResult({ project }: { project: ProjectScan }) {
+  const files = project.details.length + project.current.length
+  return (
+    <details className="expander dep-project" open={project.details.length > 0}>
+      <summary>
+        <strong className="dep-project-name" title={project.root}>{project.name}</strong>
+        <span className="dep-project-counts">
+          <span>{files} {files === 1 ? 'file' : 'files'}</span>
+          {project.updates > 0 && <span>{project.updates} {project.updates === 1 ? 'update' : 'updates'}</span>}
+          {project.errors > 0 && <span className="dep-project-errors">{project.errors} {project.errors === 1 ? 'error' : 'errors'}</span>}
+          {project.details.length === 0 && <span className="dep-project-current">Up to date</span>}
+        </span>
+      </summary>
+      <div className="body">
+        {project.details.map((target) => (
+          <div className="dep-project-target" key={target.rel}>
+            <strong style={change}>{target.project_rel ?? target.rel}</strong>
+            <span style={badge}>{target.kind}</span>
+            {target.error ? <div className="note error">{target.error}</div> : <BumpTable bumps={target.bumps} />}
+          </div>
+        ))}
+        {project.current.length > 0 && (
+          <CurrentTargets targets={project.current} showStatus={project.details.length > 0} />
+        )}
+      </div>
+    </details>
   )
 }
 
@@ -190,22 +275,9 @@ export default function DepUpgrade() {
               </div>
             )}
 
-            {result &&
-              targets.map((t) => (
-                <div key={t.rel} style={{ marginTop: 14 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', marginBottom: 6 }}>
-                    <strong style={{ font: '12px var(--mono)' }}>{t.rel}</strong>
-                    <span style={badge}>{t.kind}</span>
-                  </div>
-                  {t.error ? (
-                    <div className="note error">{t.error}</div>
-                  ) : t.bumps.length === 0 ? (
-                    <div className="note ok">Up to date.</div>
-                  ) : (
-                    <BumpTable bumps={t.bumps} />
-                  )}
-                </div>
-              ))}
+            {completedScan && result && groupProjects(result).map((project) => (
+              <ProjectResult key={`${completedScan.id}:${project.root}`} project={project} />
+            ))}
 
             {result &&
               totalBumps > 0 &&

@@ -47,6 +47,11 @@ and are saved to `backend/.env`; automatic runs keep the stopping point updated.
 
 ## Dependency Upgrader
 
+Scan results are grouped by project, even when you scan just one project.
+Groups with proposed updates or scan errors open by default. Expand an
+up-to-date project to see the checked files grouped by directory. **Apply**
+uses the proposed updates from the whole scan.
+
 Scanning previews uv dependency upgrades. The project’s `uv.lock` is written
 only when you select **Apply** and there are uv dependency upgrades to apply.
 Scanning refreshes npm and pnpm lockfiles.
