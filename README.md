@@ -1,6 +1,6 @@
 # Toolkit
 
-Toolkit brings twelve media, file, and document utilities into one app.
+Toolkit brings thirteen media, file, and document utilities into one app.
 It runs on your Mac and opens in your browser.
 
 **Requires macOS.** Some tools use macOS folder pickers or control apps installed
@@ -48,15 +48,29 @@ tabs along the bottom, so you can switch tools while a task is running.
 | Cache Purge | Find cache and junk files, review the results, then delete them. |
 | Photos Library Filter | Create a copy of a Photos library without its caches, preserving originals and edits. |
 | Dependency Upgrader | Update a project's Python and Node packages and commit the changes. |
+| WhatsApp Chat Exporter | Export selected WhatsApp chats as one ZIP with JSON, CSV, replies, reactions, and local attachments. |
 | Optimized-IP Subscription | Replace server addresses in proxy configurations and generate subscription links. |
 
 File Gatherer moves files, and Cache Purge permanently deletes them. Review the
 selected folders and results carefully. Photos Library Filter offers a dry run
 to preview changes before creating or updating the destination library.
 
+Open **WhatsApp Chat Exporter** from the home page or sidebar. Search or filter
+the chats synced by the native WhatsApp app on the Mac running Toolkit, check
+the chats you want, then click **Export ZIP** to download `WhatsApp_Chats.zip`.
+Each conversation has a folder under `WhatsApp_Chats/` with `messages.csv` and
+`messages.json`. Reactions are recorded on the message they apply to. Locally
+available attachments, stickers, and thumbnails are saved under `media/`.
+`attachment_name` keeps the original document filename when available, and
+`attachment_path` points to the file relative to the conversation folder.
+Files that are absent locally are marked `missing_local`. Folder names use the
+chat names shown in the app, with underscores for characters such as `/` and a
+chat ID added when names collide.
+WhatsApp can stay open during the export.
+
 ## AI / MCP access
 
-Toolkit also provides a local stdio MCP server covering all twelve tools. Start
+Toolkit also provides a local stdio MCP server covering twelve tools. Start
 Toolkit with `make dev`, then point MCP at the backend address printed in
 Terminal. The adapter shares backend jobs, browser sessions, devices, and scan
 records with the web app.
@@ -169,6 +183,8 @@ serve the built frontend and API on your network.
 Open the printed address. Set `HOST=127.0.0.1` on the launcher to serve only on
 this Mac. Use LAN hosting only on a trusted network because the app has no login
 and other devices can run its tools, including those that move or delete files.
+To hide WhatsApp Chat Exporter on a LAN host, include `whatsapp` in
+`TOOLKIT_DISABLED_TOOLS` and restart Toolkit.
 
 [GitHub Actions](.github/workflows/ci.yml) runs `make test` on pull requests,
 pushes to `main`, and manual runs from the repository's Actions tab.

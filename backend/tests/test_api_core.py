@@ -33,14 +33,15 @@ def wait_for_job(client, job_id, timeout=5.0):
     raise AssertionError(f"job {job_id} did not finish within {timeout}s")
 
 
-def test_tools_manifest_has_twelve_tools_in_three_categories(client):
+def test_tools_manifest_has_thirteen_tools_in_three_categories(client):
     categories = client.get("/api/tools").json()
     assert [c["name"] for c in categories] == [
         "🎬 Media",
         "🗂️ Files & Tools",
         "🌐 Network",
     ]
-    assert sum(len(c["tools"]) for c in categories) == 12
+    assert sum(len(c["tools"]) for c in categories) == 13
+    assert any(t["slug"] == "whatsapp" for c in categories for t in c["tools"])
 
 
 def test_disabled_tools_are_hidden_from_the_manifest(client, monkeypatch):
@@ -50,7 +51,7 @@ def test_disabled_tools_are_hidden_from_the_manifest(client, monkeypatch):
     assert "doc-to-markdown" not in slugs
     assert "remux" not in slugs
     assert "cache-purge" in slugs
-    assert sum(len(c["tools"]) for c in categories) == 10
+    assert sum(len(c["tools"]) for c in categories) == 11
 
 
 def test_disabling_a_whole_category_drops_the_category(client, monkeypatch):
@@ -63,7 +64,7 @@ def test_disabling_a_whole_category_drops_the_category(client, monkeypatch):
 def test_unset_disabled_tools_lists_everything(client, monkeypatch):
     monkeypatch.delenv("TOOLKIT_DISABLED_TOOLS", raising=False)
     categories = client.get("/api/tools").json()
-    assert sum(len(c["tools"]) for c in categories) == 12
+    assert sum(len(c["tools"]) for c in categories) == 13
 
 
 def test_health_reports_dependency_booleans(client):
@@ -203,6 +204,9 @@ def test_all_api_routers_are_wired(app_state):
         "/api/torrent/resolve",
         "/api/torrent/resolve/{infohash}",
         "/api/torrent/{infohash}",
+        "/api/whatsapp/chats",
+        "/api/whatsapp/chats/export",
+        "/api/whatsapp/chats/{chat_id}/export",
         "/sub/{sub_id}",
     }
     assert expected <= paths, f"unwired routes: {expected - paths}"
@@ -246,10 +250,11 @@ def test_registry_never_evicts_a_running_job():
 def test_disabled_tools_are_not_mounted_at_all(app_state, monkeypatch):
     from fastapi.testclient import TestClient
 
-    monkeypatch.setenv("TOOLKIT_DISABLED_TOOLS", "cache-purge")
+    monkeypatch.setenv("TOOLKIT_DISABLED_TOOLS", "cache-purge, whatsapp")
     with TestClient(create_app(state=app_state)) as disabled_client:
         assert disabled_client.post("/api/purge/scan", json={}).status_code == 404
         assert disabled_client.post("/api/purge/delete", json={}).status_code == 404
+        assert disabled_client.get("/api/whatsapp/chats").status_code == 404
         assert disabled_client.post("/api/remux/scan", json={}).status_code != 404
 
 

@@ -337,6 +337,12 @@ export interface DownloadedBlob {
   filename: string
 }
 
+export interface WhatsAppChat {
+  id: number
+  name: string
+  type: 'direct' | 'group'
+}
+
 // --- Torrent Downloader ---
 
 export interface TorrentFileRow {

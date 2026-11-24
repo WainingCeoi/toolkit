@@ -10,6 +10,7 @@ export const TOOL_EMOJI: Record<string, string> = {
   '/tools/image-to-pdf': '🖼️',
   '/tools/doc-to-pdf': '📄',
   '/tools/doc-to-markdown': '📝',
+  '/tools/whatsapp': '💬',
   '/tools/cache-purge': '🧹',
   '/tools/photos-library-filter': '📸',
   '/tools/subscription': '🛰️',
@@ -76,6 +77,13 @@ export const TOOL_DETAILS: Record<string, ToolDetail> = {
     icon: 'markdown',
     tag: 'MinerU',
     description: 'Extract text, tables, and formulas into editable Markdown.',
+  },
+  whatsapp: {
+    title: 'WhatsApp Chat Exporter',
+    group: 'Documents',
+    icon: 'download',
+    tag: 'ZIP',
+    description: 'Download WhatsApp chats with replies, reactions, and local attachments in one ZIP.',
   },
   'file-gatherer': {
     title: 'File Gatherer',
