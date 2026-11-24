@@ -18,7 +18,7 @@ from urllib.parse import urlsplit
 
 import requests
 
-from toolkit_engine.aescbc import decrypt_cbc, encrypt_cbc
+from toolkit_engine.aescbc import encrypt_cbc
 
 CONFIG_PATH = (
     Path.home() / "Library" / "Application Support" / "BitComet" / "BitComet.xml"
@@ -44,7 +44,7 @@ _SUCCESS_CODES = frozenset({"OK", "SKIPPED"})
 # Fallback when BitComet does not report torrent_max_size; 2.20 ships 20 MB.
 DEFAULT_TORRENT_MAX_SIZE = 20 * 1024 * 1024
 
-# probe() only: a wedged BitComet accepts the connection and never answers.
+# A wedged BitComet accepts the connection and never answers.
 PROBE_TIMEOUT = 1.5
 
 # A LAN peer needs ARP/mDNS and may be asleep; 1.5s would read as "not running".
@@ -53,9 +53,6 @@ REMOTE_PROBE_TIMEOUT = 4.0
 # A BitComet busy starting a batch of tasks can take tens of seconds per call.
 REMOTE_TIMEOUT = 30.0
 
-# --- login envelope byte layout ---
-HEADER_LEN = 34
-MAC_LEN = 32
 ITERATIONS = 10_000
 
 
@@ -175,20 +172,6 @@ def encrypt(plaintext: str, client_id: str) -> str:
     body = b"\x03\x01" + salt_key + salt_mac + iv + ciphertext
     mac = hmac.new(mac_key, body, hashlib.sha256).digest()
     return base64.b64encode(body + mac).decode()
-
-
-def decrypt(blob: str, client_id: str) -> str:
-    """Inverse of encrypt()."""
-    raw = base64.b64decode(blob)
-    body, mac = raw[:-MAC_LEN], raw[-MAC_LEN:]
-    salt_key, salt_mac, iv = raw[2:10], raw[10:18], raw[18:34]
-
-    expected = hmac.new(_derive(client_id, salt_mac), body, hashlib.sha256).digest()
-    if not hmac.compare_digest(expected, mac):
-        raise ValueError("HMAC mismatch")
-
-    padded = decrypt_cbc(_derive(client_id, salt_key), iv, body[HEADER_LEN:])
-    return padded[: -padded[-1]].decode()
 
 
 def read_or_create_device_id(path: Path | None) -> str:
@@ -443,12 +426,8 @@ class BitCometClient:
         return self._decode(response, path)
 
     # --- liveness ---
-    def probe(self) -> str | None:
-        """BitComet's server name if reachable and remote access is on; never raises."""
-        return self.probe_folders()[0]
-
     def probe_folders(self) -> tuple[str | None, list[str]]:
-        """probe() and save_folders() out of one round trip; never raises."""
+        """Return the server name and save folders from one liveness request."""
         try:
             body = self.new_task_config(
                 timeout=PROBE_TIMEOUT if self.is_local else REMOTE_PROBE_TIMEOUT

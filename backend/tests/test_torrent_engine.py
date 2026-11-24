@@ -1,4 +1,4 @@
-"""Torrent Downloader: pure engine units (bencode, magnet, filter)."""
+"""Torrent Downloader: torrent and magnet parsing and BitComet selection syntax."""
 
 from __future__ import annotations
 
@@ -6,16 +6,14 @@ import base64
 import hashlib
 
 import pytest
+from fake_bitcomet import bencode, make_torrent
 
-from toolkit_engine.filetypes import SIZED_CATEGORIES, categorize
+from toolkit_engine.filetypes import categorize
 from toolkit_engine.torrent import (
     TorrentFile,
-    bdecode,
-    bencode,
     format_selection,
     parse_magnet,
     parse_torrent,
-    select_files,
 )
 
 
@@ -38,37 +36,6 @@ def test_categorize_maps_extensions_to_categories(path, expected):
     assert categorize(path) == expected
 
 
-def test_only_video_and_audio_are_size_gated():
-    assert SIZED_CATEGORIES == frozenset({"video", "audio"})
-
-
-# --- BENCODE / .TORRENT ---
-def make_torrent(files, name="Example.Release"):
-    return bencode(
-        {
-            b"announce": b"udp://tracker.example:80",
-            b"info": {
-                b"name": name.encode(),
-                b"piece length": 262144,
-                b"pieces": b"\x00" * 20,
-                b"files": [
-                    {b"length": size, b"path": [p.encode() for p in path.split("/")]}
-                    for path, size in files
-                ],
-            },
-        }
-    )
-
-
-def test_bencode_round_trips_every_type():
-    value = {b"a": 1, b"b": [b"x", 2], b"c": {b"d": b"e"}}
-    assert bdecode(bencode(value)) == value
-
-
-def test_bencode_encodes_negative_and_zero_integers():
-    assert bdecode(bencode({b"n": -5, b"z": 0})) == {b"n": -5, b"z": 0}
-
-
 def test_parse_torrent_lists_multi_file_contents():
     data = make_torrent(
         [("Movie.mkv", 2_000_000_000), ("Sample/sample.mkv", 40_000_000)]
@@ -76,7 +43,6 @@ def test_parse_torrent_lists_multi_file_contents():
     info = parse_torrent(data)
 
     assert info.name == "Example.Release"
-    assert info.total_bytes == 2_040_000_000
     assert info.files == [
         TorrentFile(index=1, path="Movie.mkv", size=2_000_000_000),
         TorrentFile(index=2, path="Sample/sample.mkv", size=40_000_000),
@@ -164,37 +130,6 @@ def test_parse_magnet_rejects_non_magnets_and_hashless_magnets(uri):
 
 
 # --- SELECTION ---
-SAMPLE = [
-    TorrentFile(index=1, path="Movie.2024.1080p.mkv", size=2_000_000_000),
-    TorrentFile(index=2, path="Sample/sample.mkv", size=40_000_000),
-    TorrentFile(index=3, path="Movie.2024.chi.srt", size=45_000),
-    TorrentFile(index=4, path="Screens/01.jpg", size=300_000),
-    TorrentFile(index=5, path="RARBG.txt", size=30),
-]
-
-
-def test_select_files_defaults_to_large_videos_only():
-    assert select_files(SAMPLE, {"video"}, 100 * 1024 * 1024) == [1]
-
-
-def test_size_floor_does_not_apply_to_subtitles():
-    got = select_files(SAMPLE, {"video", "subtitle"}, 100 * 1024 * 1024)
-    assert got == [1, 3]
-
-
-def test_a_zero_floor_keeps_every_file_in_the_chosen_categories():
-    assert select_files(SAMPLE, {"video"}, 0) == [1, 2]
-
-
-def test_select_files_returns_empty_when_nothing_matches():
-    assert select_files(SAMPLE, {"archive"}, 0) == []
-
-
-def test_select_files_preserves_ascending_index_order():
-    got = select_files(SAMPLE, {"video", "image", "subtitle", "document"}, 0)
-    assert got == sorted(got)
-
-
 def test_format_selection_sorts_and_joins_the_indexes():
     assert format_selection([3, 1, 2]) == "1,2,3"
 

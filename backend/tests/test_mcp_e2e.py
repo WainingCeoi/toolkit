@@ -296,21 +296,16 @@ def test_stdio_cancellation_uses_existing_backend_registry(tcp_api, app_state):
     asyncio.run(exercise())
 
 
-def test_stdio_backend_unavailable_is_tool_error():
-    # Bind without listening to reserve a guaranteed unavailable local endpoint.
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("127.0.0.1", 0))
-        url = f"http://127.0.0.1:{sock.getsockname()[1]}"
+def test_stdio_backend_unavailable_is_tool_error(refusing_loopback_url):
+    async def exercise():
+        async with stdio_client(refusing_loopback_url) as client:
+            assert (await client.list_tools()).tools
+            response = await client.call_tool("toolkit_health", {})
+            assert response.is_error
+            text = " ".join(item.text for item in response.content)
+            assert "connect" in text.lower() or "backend" in text.lower()
 
-        async def exercise():
-            async with stdio_client(url) as client:
-                assert (await client.list_tools()).tools
-                response = await client.call_tool("toolkit_health", {})
-                assert response.is_error
-                text = " ".join(item.text for item in response.content)
-                assert "connect" in text.lower() or "backend" in text.lower()
-
-        asyncio.run(exercise())
+    asyncio.run(exercise())
 
 
 def make_docx(path):
@@ -475,30 +470,32 @@ def test_stdio_real_ffmpeg_remux(tcp_api, tmp_path):
     ]
 
 
-def test_stdio_real_chrome_web_capture(tcp_api, app_state, tmp_path, monkeypatch):
+def test_stdio_real_chrome_web_capture(
+    tcp_api, app_state, tmp_path, monkeypatch, refusing_loopback_url
+):
     chrome = Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
     require_external(chrome.is_file(), "Google Chrome")
-    # Keep real driver downloads bounded. WDM 4.1 otherwise uses no HTTP timeout;
-    # this changes only waiting limits, never the response or browser behavior.
-    import webdriver_manager.chrome
-    from webdriver_manager.core.driver_cache import DriverCacheManager
-    from webdriver_manager.core.http import WDMHttpClient
+    chromedriver = shutil.which("chromedriver")
+    require_external(chromedriver, "ChromeDriver")
+    from selenium import webdriver
+    from webdriver_manager.chrome import ChromeDriverManager
 
-    real_manager = webdriver_manager.chrome.ChromeDriverManager
+    profile_path = tmp_path / "chrome-profile"
+    options = webdriver.ChromeOptions()
+    options.binary_location = str(chrome)
+    options.add_argument("--headless=new")
+    options.add_argument("--no-first-run")
+    options.add_argument("--disable-background-networking")
+    options.add_argument("--disable-quic")
+    options.add_argument(f"--user-data-dir={profile_path}")
+    options.add_argument(f"--proxy-server={refusing_loopback_url}")
+    launch_chrome = webdriver.Chrome
 
-    def isolated_manager():
-        return real_manager(cache_manager=DriverCacheManager(root_dir=str(tmp_path)))
+    def offline_chrome(**kwargs):
+        return launch_chrome(options=options, **kwargs)
 
-    monkeypatch.setattr(
-        webdriver_manager.chrome, "ChromeDriverManager", isolated_manager
-    )
-    real_get = WDMHttpClient.get
-
-    def bounded_get(self, url, **kwargs):
-        kwargs.setdefault("timeout", (3, 5))
-        return real_get(self, url, **kwargs)
-
-    monkeypatch.setattr(WDMHttpClient, "get", bounded_get)
+    monkeypatch.setattr(ChromeDriverManager, "install", lambda _manager: chromedriver)
+    monkeypatch.setattr(webdriver, "Chrome", offline_chrome)
     image_bytes = BytesIO()
     Image.new("RGB", (32, 48), "green").save(image_bytes, format="PNG")
     encoded = base64.b64encode(image_bytes.getvalue()).decode("ascii")
@@ -516,15 +513,16 @@ def test_stdio_real_chrome_web_capture(tcp_api, app_state, tmp_path, monkeypatch
         async with stdio_client(tcp_api, timeout=120) as client:
             opened = await call(client, "webpdf_open", url=url)
             assert opened["open"] is True
-            # Selenium launches a new temporary profile, never the user's profile.
             chrome_info = app_state.browser._driver.capabilities.get("chrome", {})
             profile = chrome_info.get("userDataDir", "")
             assert profile
-            assert "Library/Application Support/Google/Chrome" not in profile
+            assert Path(profile).resolve() == profile_path.resolve()
             status = await call(client, "webpdf_status")
             assert status["open"] is True
             scrolled = await call(client, "webpdf_scroll", steps=2, wait_ms=0)
-            assert scrolled
+            assert scrolled["steps"] == 2
+            assert scrolled["matched_images"] == 2
+            assert scrolled["loaded_images"] == 2
             captured = await call(client, "webpdf_capture")
             assert captured["pages"] == 2
             assert captured["skipped"] == 0

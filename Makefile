@@ -22,7 +22,8 @@ help:
 	  '  make test  Run tests, lint, type checks and build with prepared dependencies.' \
 	  '             TEST_SUITE=all|backend|frontend selects suites.' \
 	  '             TEST_WORKERS=auto|N|0 controls Vitest workers.' \
-	  '  See README.md for setup, reset scope and native LAN hosting.'
+	  '  See docs/getting-started.md for setup, docs/development.md for reset and checks,' \
+	  '  and docs/hosting.md for native LAN hosting.'
 
 dev init: export EXTRAS := $(EXTRAS)
 dev: export PORT := $(PORT)

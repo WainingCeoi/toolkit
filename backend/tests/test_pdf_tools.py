@@ -12,10 +12,8 @@ from io import BytesIO
 from types import SimpleNamespace
 
 import pytest
-from fastapi.testclient import TestClient
 from PIL import Image, PdfParser
 
-from toolkit_api.main import create_app
 from toolkit_api.routers import webpdf
 from toolkit_engine.webpdf import (
     BrowserSession,
@@ -28,13 +26,6 @@ NO_IMAGES_DETAIL = (
     "No images found on the page (selector `img[class*=bi]`). "
     "Make sure every page finished loading before capturing."
 )
-
-
-@pytest.fixture
-def tool_client(app_state):
-    app = create_app(state=app_state)
-    with TestClient(app) as c:
-        yield c
 
 
 def _png_bytes(color="red"):
@@ -68,43 +59,43 @@ class FakeBrowserSession:
 
 
 # --- Image to PDF ---
-def test_img_to_pdf_end_to_end(tool_client):
+def test_img_to_pdf_end_to_end(client):
     files = [
         ("files", ("b.png", _png_bytes("red"), "image/png")),
         ("files", ("a.png", _png_bytes("blue"), "image/png")),
     ]
-    resp = tool_client.post("/api/img-to-pdf", data={"name": "scan"}, files=files)
+    resp = client.post("/api/img-to-pdf", data={"name": "scan"}, files=files)
     assert resp.status_code == 200
     assert resp.content.startswith(b"%PDF")
     assert resp.headers["content-type"] == "application/pdf"
     assert 'filename="scan.pdf"' in resp.headers["content-disposition"]
 
 
-def test_img_to_pdf_keeps_explicit_pdf_extension(tool_client):
+def test_img_to_pdf_keeps_explicit_pdf_extension(client):
     files = [("files", ("a.png", _png_bytes(), "image/png"))]
-    resp = tool_client.post("/api/img-to-pdf", data={"name": " docs.PDF "}, files=files)
+    resp = client.post("/api/img-to-pdf", data={"name": " docs.PDF "}, files=files)
     assert resp.status_code == 200
     assert 'filename="docs.PDF"' in resp.headers["content-disposition"]
 
 
-def test_img_to_pdf_blank_name_is_400(tool_client):
+def test_img_to_pdf_blank_name_is_400(client):
     files = [("files", ("a.png", _png_bytes(), "image/png"))]
-    resp = tool_client.post("/api/img-to-pdf", data={"name": "   "}, files=files)
+    resp = client.post("/api/img-to-pdf", data={"name": "   "}, files=files)
     assert resp.status_code == 400
     assert resp.json()["detail"] == "❌ Please enter a PDF file name."
 
 
-def test_img_to_pdf_no_files_is_400(tool_client):
-    resp = tool_client.post("/api/img-to-pdf", data={"name": "scan"})
+def test_img_to_pdf_no_files_is_400(client):
+    resp = client.post("/api/img-to-pdf", data={"name": "scan"})
     assert resp.status_code == 400
     assert resp.json()["detail"] == "❌ Please select at least one image first."
 
 
-def test_img_to_pdf_non_ascii_name_uses_rfc5987(tool_client):
+def test_img_to_pdf_non_ascii_name_uses_rfc5987(client):
     from urllib.parse import quote
 
     files = [("files", ("a.png", _png_bytes(), "image/png"))]
-    resp = tool_client.post("/api/img-to-pdf", data={"name": "扫描文档"}, files=files)
+    resp = client.post("/api/img-to-pdf", data={"name": "扫描文档"}, files=files)
     assert resp.status_code == 200
     assert resp.content.startswith(b"%PDF")
     assert resp.headers["content-type"] == "application/pdf"
@@ -113,9 +104,9 @@ def test_img_to_pdf_non_ascii_name_uses_rfc5987(tool_client):
     assert quote("扫描文档.pdf") in disposition
 
 
-def test_img_to_pdf_name_with_quote_is_well_formed(tool_client):
+def test_img_to_pdf_name_with_quote_is_well_formed(client):
     files = [("files", ("a.png", _png_bytes(), "image/png"))]
-    resp = tool_client.post("/api/img-to-pdf", data={"name": 'a"b'}, files=files)
+    resp = client.post("/api/img-to-pdf", data={"name": 'a"b'}, files=files)
     assert resp.status_code == 200
     assert resp.content.startswith(b"%PDF")
     assert resp.headers["content-disposition"] == 'attachment; filename="a\\"b.pdf"'
@@ -360,31 +351,31 @@ def test_browser_session_current_url_follows_the_driver():
 
 
 # --- Web Images to PDF — router ---
-def test_webpdf_status_reflects_browser_slot(tool_client, app_state):
-    assert tool_client.get("/api/webpdf/status").json() == {"open": False}
+def test_webpdf_status_reflects_browser_slot(client, app_state):
+    assert client.get("/api/webpdf/status").json() == {"open": False}
     app_state.browser = FakeBrowserSession()
-    assert tool_client.get("/api/webpdf/status").json() == {"open": True}
+    assert client.get("/api/webpdf/status").json() == {"open": True}
 
 
-def test_webpdf_open_conflicts_when_already_open(tool_client, app_state):
+def test_webpdf_open_conflicts_when_already_open(client, app_state):
     app_state.browser = FakeBrowserSession()
-    resp = tool_client.post("/api/webpdf/open", json={"url": "http://example.com"})
+    resp = client.post("/api/webpdf/open", json={"url": "http://example.com"})
     assert resp.status_code == 409
 
 
-def test_webpdf_open_error_returns_502(tool_client, app_state, monkeypatch):
+def test_webpdf_open_error_returns_502(client, app_state, monkeypatch):
     class BoomSession:
         def open(self, url):
             raise RuntimeError("no chrome")
 
     monkeypatch.setattr(webpdf, "BrowserSession", BoomSession)
-    resp = tool_client.post("/api/webpdf/open", json={"url": "http://example.com"})
+    resp = client.post("/api/webpdf/open", json={"url": "http://example.com"})
     assert resp.status_code == 502
     assert resp.json()["detail"] == "Could not open browser: no chrome"
     assert app_state.browser is None
 
 
-def test_webpdf_open_stores_session(tool_client, app_state, monkeypatch):
+def test_webpdf_open_stores_session(client, app_state, monkeypatch):
     opened = []
 
     class RecordingSession(FakeBrowserSession):
@@ -392,21 +383,21 @@ def test_webpdf_open_stores_session(tool_client, app_state, monkeypatch):
             opened.append(url)
 
     monkeypatch.setattr(webpdf, "BrowserSession", RecordingSession)
-    resp = tool_client.post("/api/webpdf/open", json={"url": "http://example.com"})
+    resp = client.post("/api/webpdf/open", json={"url": "http://example.com"})
     assert resp.status_code == 200
     assert resp.json() == {"open": True}
     assert opened == ["http://example.com"]
     assert isinstance(app_state.browser, RecordingSession)
 
 
-def test_webpdf_capture_without_session_is_409(tool_client):
-    assert tool_client.post("/api/webpdf/capture").status_code == 409
+def test_webpdf_capture_without_session_is_409(client):
+    assert client.post("/api/webpdf/capture").status_code == 409
 
 
-def test_webpdf_capture_no_images_is_400_and_keeps_browser(tool_client, app_state):
+def test_webpdf_capture_no_images_is_400_and_keeps_browser(client, app_state):
     fake = FakeBrowserSession("<html><head><title>t</title></head><body></body></html>")
     app_state.browser = fake
-    resp = tool_client.post("/api/webpdf/capture")
+    resp = client.post("/api/webpdf/capture")
     assert resp.status_code == 400
     assert resp.json()["detail"] == NO_IMAGES_DETAIL
     assert app_state.browser is fake
@@ -414,7 +405,7 @@ def test_webpdf_capture_no_images_is_400_and_keeps_browser(tool_client, app_stat
 
 
 def test_webpdf_capture_resolves_images_against_the_current_page(
-    tool_client, app_state, monkeypatch
+    client, app_state, monkeypatch
 ):
     seen = {}
 
@@ -427,11 +418,11 @@ def test_webpdf_capture_resolves_images_against_the_current_page(
     fake.current_url = "http://example.com/chapter-2"  # the user browsed on
     app_state.browser = fake
 
-    assert tool_client.post("/api/webpdf/capture").status_code == 400
+    assert client.post("/api/webpdf/capture").status_code == 400
     assert seen["url"] == "http://example.com/chapter-2"
 
 
-def test_webpdf_capture_builds_pdf_and_closes_browser(tool_client, app_state):
+def test_webpdf_capture_builds_pdf_and_closes_browser(client, app_state):
     html = (
         "<html><head><title>Book: One</title></head><body>"
         f'<img class="bi" src="{_data_uri(_png_bytes("red"))}">'
@@ -441,7 +432,7 @@ def test_webpdf_capture_builds_pdf_and_closes_browser(tool_client, app_state):
     fake = FakeBrowserSession(html)
     app_state.browser = fake
 
-    resp = tool_client.post("/api/webpdf/capture")
+    resp = client.post("/api/webpdf/capture")
     assert resp.status_code == 200
     body = resp.json()
     assert body["name"] == "Book_ One.pdf"
@@ -452,14 +443,14 @@ def test_webpdf_capture_builds_pdf_and_closes_browser(tool_client, app_state):
     assert fake.quit_called is True
     assert app_state.browser is None
 
-    download = tool_client.get(f"/api/artifacts/{body['artifact_id']}")
+    download = client.get(f"/api/artifacts/{body['artifact_id']}")
     assert download.status_code == 200
     assert download.content.startswith(b"%PDF")
     # FileResponse RFC-5987-encodes the space in the filename.
     assert "Book_%20One.pdf" in download.headers["content-disposition"]
 
 
-def test_webpdf_capture_parses_the_page_once(tool_client, app_state, monkeypatch):
+def test_webpdf_capture_parses_the_page_once(client, app_state, monkeypatch):
     parsed = []
     real_parse = webpdf.parse_page
 
@@ -475,20 +466,20 @@ def test_webpdf_capture_parses_the_page_once(tool_client, app_state, monkeypatch
     )
     app_state.browser = FakeBrowserSession(html)
 
-    assert tool_client.post("/api/webpdf/capture").status_code == 200
+    assert client.post("/api/webpdf/capture").status_code == 200
     assert len(parsed) == 1
 
 
-def test_webpdf_close_is_idempotent(tool_client, app_state):
-    assert tool_client.post("/api/webpdf/close").json() == {"open": False}
+def test_webpdf_close_is_idempotent(client, app_state):
+    assert client.post("/api/webpdf/close").json() == {"open": False}
     fake = FakeBrowserSession()
     app_state.browser = fake
-    assert tool_client.post("/api/webpdf/close").json() == {"open": False}
+    assert client.post("/api/webpdf/close").json() == {"open": False}
     assert fake.quit_called is True
     assert app_state.browser is None
 
 
-def test_webpdf_open_is_race_safe(tool_client, app_state, monkeypatch):
+def test_webpdf_open_is_race_safe(client, app_state, monkeypatch):
     launches: list[str] = []
     launches_lock = threading.Lock()
     in_open = threading.Event()
@@ -506,7 +497,7 @@ def test_webpdf_open_is_race_safe(tool_client, app_state, monkeypatch):
     results: dict[str, int] = {}
 
     def call(key):
-        r = tool_client.post("/api/webpdf/open", json={"url": "http://example.com"})
+        r = client.post("/api/webpdf/open", json={"url": "http://example.com"})
         results[key] = r.status_code
 
     first = threading.Thread(target=call, args=("first",))
@@ -524,7 +515,7 @@ def test_webpdf_open_is_race_safe(tool_client, app_state, monkeypatch):
     assert isinstance(app_state.browser, SlowSession)
 
 
-def test_webpdf_capture_preserves_newer_session(tool_client, app_state, monkeypatch):
+def test_webpdf_capture_preserves_newer_session(client, app_state, monkeypatch):
     html = (
         "<html><head><title>Book</title></head><body>"
         f'<img class="bi" src="{_data_uri(_png_bytes("red"))}">'
@@ -540,7 +531,7 @@ def test_webpdf_capture_preserves_newer_session(tool_client, app_state, monkeypa
         return None
 
     monkeypatch.setattr(webpdf, "add_bookmark", reassign)
-    resp = tool_client.post("/api/webpdf/capture")
+    resp = client.post("/api/webpdf/capture")
     assert resp.status_code == 200
 
     assert captured.quit_called is True

@@ -349,10 +349,6 @@ def _lock_refresh(cmd: list[str], folder: str, tool: str) -> tuple[bool, str]:
 # --- uv (pyproject.toml + uv.lock) ---
 
 
-def uv_available() -> bool:
-    return shutil.which("uv") is not None
-
-
 def run_uv_upgrade(folder, on_message=None, is_cancelled=None) -> tuple[bool, str]:
     """Upgrade uv.lock only: the scan reads the lock and never needs the venv."""
     uv = shutil.which("uv")
@@ -514,10 +510,6 @@ _PNPM_LOCKFILE = "pnpm-lock.yaml"
 _JS_VERSION = r"\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.+-]+)?"
 _NPM_RANGE = re.compile(rf"^([~^]|>=)?\s*({_JS_VERSION})$")
 _PNPM_VERSION = re.compile(_JS_VERSION)
-
-
-def npm_available() -> bool:
-    return shutil.which("npm") is not None
 
 
 def run_npm_upgrade(folder, on_message=None, is_cancelled=None) -> tuple[bool, str]:

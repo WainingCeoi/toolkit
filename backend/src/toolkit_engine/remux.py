@@ -12,9 +12,6 @@ from ffmpeg_progress_yield import FfmpegProgress
 from toolkit_engine.filetypes import SUBTITLE_EXTENSIONS, VIDEO_EXTENSIONS
 from toolkit_engine.fsutil import natural_sort_key
 
-# Re-exported: callers and tests import these from toolkit_engine.remux.
-__all__ = ["SUBTITLE_EXTENSIONS", "VIDEO_EXTENSIONS"]
-
 
 def build_ffmpeg_cmd(
     input_video, input_subtitle, output_video, track_configs, sub_lang

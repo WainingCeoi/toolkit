@@ -7,30 +7,10 @@ import time
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
+from helpers import wait_for_job
 
-from toolkit_api.jobs import FINISHED_STATES
-from toolkit_api.main import create_app
 from toolkit_api.purgescans import PurgeScans
 from toolkit_engine import gather, purge
-
-
-@pytest.fixture
-def tool_client(app_state):
-    app = create_app(state=app_state)
-    with TestClient(app) as c:
-        yield c
-
-
-def wait_for_job(client, job_id, timeout=5.0):
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        snap = client.get(f"/api/jobs/{job_id}").json()
-        if snap["state"] in FINISHED_STATES:
-            return snap
-        time.sleep(0.02)
-    raise AssertionError(f"job {job_id} did not finish within {timeout}s")
-
 
 # --- engine units ---
 
@@ -84,7 +64,7 @@ def test_purge_normalize_pattern_keeps_real_globs(token):
 # --- File Gatherer API ---
 
 
-def test_gather_moves_files_and_autonumbers_duplicates(tool_client, tmp_path):
+def test_gather_moves_files_and_autonumbers_duplicates(client, tmp_path):
     src = tmp_path / "src"
     tgt = tmp_path / "tgt"
     (src / "a").mkdir(parents=True)
@@ -95,7 +75,7 @@ def test_gather_moves_files_and_autonumbers_duplicates(tool_client, tmp_path):
     (src / "b" / "dup.mkv").write_bytes(b"second")
     (src / "a" / "notes.txt").write_text("not a video")
 
-    resp = tool_client.post(
+    resp = client.post(
         "/api/gather/start",
         json={
             "source": str(src),
@@ -105,7 +85,7 @@ def test_gather_moves_files_and_autonumbers_duplicates(tool_client, tmp_path):
         },
     )
     assert resp.status_code == 200
-    snap = wait_for_job(tool_client, resp.json()["job_id"])
+    snap = wait_for_job(client, resp.json()["job_id"])
     assert snap["state"] == "done"
 
     result = snap["result"]
@@ -121,13 +101,13 @@ def test_gather_moves_files_and_autonumbers_duplicates(tool_client, tmp_path):
     assert (src / "a" / "notes.txt").exists()
 
 
-def test_gather_no_match_does_not_create_target(tool_client, tmp_path):
+def test_gather_no_match_does_not_create_target(client, tmp_path):
     src = tmp_path / "src"
     src.mkdir()
     (src / "notes.txt").write_text("not a video")
     tgt = tmp_path / "tgt"
 
-    resp = tool_client.post(
+    resp = client.post(
         "/api/gather/start",
         json={
             "source": str(src),
@@ -137,16 +117,14 @@ def test_gather_no_match_does_not_create_target(tool_client, tmp_path):
         },
     )
     assert resp.status_code == 200
-    snap = wait_for_job(tool_client, resp.json()["job_id"])
+    snap = wait_for_job(client, resp.json()["job_id"])
     assert snap["state"] == "done"
     assert snap["result"]["moved"] == []
     assert snap["result"]["failed"] == []
     assert not tgt.exists()
 
 
-def test_gather_cancel_keeps_partial_report(
-    tool_client, app_state, tmp_path, monkeypatch
-):
+def test_gather_cancel_keeps_partial_report(client, app_state, tmp_path, monkeypatch):
     src = tmp_path / "src"
     src.mkdir()
     (src / "a.mkv").write_bytes(b"a")
@@ -163,7 +141,7 @@ def test_gather_cancel_keeps_partial_report(
 
     monkeypatch.setattr(gather, "move_files", fake_move_files)
 
-    resp = tool_client.post(
+    resp = client.post(
         "/api/gather/start",
         json={
             "source": str(src),
@@ -178,7 +156,7 @@ def test_gather_cancel_keeps_partial_report(
     assert app_state.jobs.cancel(job_id)
     release.set()
 
-    snap = wait_for_job(tool_client, job_id)
+    snap = wait_for_job(client, job_id)
     assert snap["state"] == "cancelled"
     assert snap["result"] is not None
     assert snap["result"]["moved"] == ["a.mkv"]
@@ -186,10 +164,10 @@ def test_gather_cancel_keeps_partial_report(
     assert snap["result"]["target"] == str(tgt.resolve())
 
 
-def test_gather_rejects_target_inside_source(tool_client, tmp_path):
+def test_gather_rejects_target_inside_source(client, tmp_path):
     src = tmp_path / "src"
     src.mkdir()
-    resp = tool_client.post(
+    resp = client.post(
         "/api/gather/start",
         json={
             "source": str(src),
@@ -204,7 +182,7 @@ def test_gather_rejects_target_inside_source(tool_client, tmp_path):
     )
 
 
-def test_gather_rejects_a_case_variant_target(tool_client, tmp_path):
+def test_gather_rejects_a_case_variant_target(client, tmp_path):
     src = tmp_path / "Movies"
     src.mkdir()
     (src / "ep1.mkv").write_bytes(b"one")
@@ -212,7 +190,7 @@ def test_gather_rejects_a_case_variant_target(tool_client, tmp_path):
     if not alt.is_dir():
         pytest.skip("case-sensitive filesystem")
 
-    resp = tool_client.post(
+    resp = client.post(
         "/api/gather/start",
         json={
             "source": str(src),
@@ -227,8 +205,8 @@ def test_gather_rejects_a_case_variant_target(tool_client, tmp_path):
     )
 
 
-def test_gather_rejects_relative_paths(tool_client, tmp_path):
-    resp = tool_client.post(
+def test_gather_rejects_relative_paths(client, tmp_path):
+    resp = client.post(
         "/api/gather/start",
         json={
             "source": "relative/src",
@@ -246,7 +224,7 @@ def test_gather_rejects_relative_paths(tool_client, tmp_path):
 # --- Cache Purge API ---
 
 
-def test_purge_scan_and_delete_end_to_end(tool_client, tmp_path):
+def test_purge_scan_and_delete_end_to_end(client, tmp_path):
     folder = tmp_path / "cache"
     (folder / "sub").mkdir(parents=True)
     (folder / "a.log").write_text("aaaa")
@@ -254,7 +232,7 @@ def test_purge_scan_and_delete_end_to_end(tool_client, tmp_path):
     (folder / "sub" / "c.log").write_text("cccc")
     (folder / "keep.txt").write_text("keep")
 
-    resp = tool_client.post(
+    resp = client.post(
         "/api/purge/scan",
         json={"folder": str(folder), "patterns_raw": "*.log, tmp, *"},
     )
@@ -265,9 +243,9 @@ def test_purge_scan_and_delete_end_to_end(tool_client, tmp_path):
     assert body["errors"] == []
     assert body["rejected_tokens"] == ["*"]
 
-    resp = tool_client.post("/api/purge/delete", json={"scan_id": body["scan_id"]})
+    resp = client.post("/api/purge/delete", json={"scan_id": body["scan_id"]})
     assert resp.status_code == 200
-    snap = wait_for_job(tool_client, resp.json()["job_id"])
+    snap = wait_for_job(client, resp.json()["job_id"])
     assert snap["state"] == "done"
     assert len(snap["result"]["deleted"]) == 3
     assert snap["result"]["failed"] == []
@@ -276,43 +254,43 @@ def test_purge_scan_and_delete_end_to_end(tool_client, tmp_path):
     assert (folder / "keep.txt").exists()
 
     # A scan record is single-use.
-    again = tool_client.post("/api/purge/delete", json={"scan_id": body["scan_id"]})
+    again = client.post("/api/purge/delete", json={"scan_id": body["scan_id"]})
     assert again.status_code == 409
 
 
-def test_purge_delete_only_removes_what_the_scan_recorded(tool_client, tmp_path):
+def test_purge_delete_only_removes_what_the_scan_recorded(client, tmp_path):
     folder = tmp_path / "cache"
     folder.mkdir()
     (folder / "a.log").write_text("junk")
     outside = tmp_path / "secret.txt"
     outside.write_text("do not delete me")
 
-    scan = tool_client.post(
+    scan = client.post(
         "/api/purge/scan",
         json={"folder": str(folder), "patterns_raw": "*.log"},
     ).json()
     assert [Path(f).name for f in scan["files"]] == ["a.log"]
 
-    resp = tool_client.post("/api/purge/delete", json={"scan_id": scan["scan_id"]})
+    resp = client.post("/api/purge/delete", json={"scan_id": scan["scan_id"]})
     assert resp.status_code == 200
-    snap = wait_for_job(tool_client, resp.json()["job_id"])
+    snap = wait_for_job(client, resp.json()["job_id"])
     assert snap["state"] == "done"
     assert outside.exists()
     assert not (folder / "a.log").exists()
 
 
-def test_purge_delete_refuses_an_unknown_or_expired_scan(tool_client):
-    resp = tool_client.post("/api/purge/delete", json={"scan_id": "deadbeefcafe"})
+def test_purge_delete_refuses_an_unknown_or_expired_scan(client):
+    resp = client.post("/api/purge/delete", json={"scan_id": "deadbeefcafe"})
     assert resp.status_code == 409
     assert "scan again" in resp.json()["detail"]
 
 
 def test_purge_keeps_the_scan_when_job_submission_fails(
-    tool_client, app_state, tmp_path, monkeypatch
+    client, app_state, tmp_path, monkeypatch
 ):
     target = tmp_path / "a.log"
     target.write_text("junk")
-    scan = tool_client.post(
+    scan = client.post(
         "/api/purge/scan",
         json={"folder": str(tmp_path), "patterns_raw": "*.log"},
     ).json()
@@ -323,12 +301,12 @@ def test_purge_keeps_the_scan_when_job_submission_fails(
 
     monkeypatch.setattr(app_state.jobs, "submit", unavailable)
     with pytest.raises(RuntimeError, match="No job capacity"):
-        tool_client.post("/api/purge/delete", json={"scan_id": scan["scan_id"]})
+        client.post("/api/purge/delete", json={"scan_id": scan["scan_id"]})
     assert target.exists()
     monkeypatch.setattr(app_state.jobs, "submit", submit)
-    retry = tool_client.post("/api/purge/delete", json={"scan_id": scan["scan_id"]})
+    retry = client.post("/api/purge/delete", json={"scan_id": scan["scan_id"]})
     assert retry.status_code == 200
-    result = wait_for_job(tool_client, retry.json()["job_id"])
+    result = wait_for_job(client, retry.json()["job_id"])
     assert result["state"] == "done"
     assert result["result"]["deleted"] == [str(target)]
 
@@ -350,7 +328,7 @@ def test_rejected_scan_keeps_its_original_eviction_age(monkeypatch):
 
 
 def test_purge_delete_cancel_keeps_partial_report(
-    tool_client, app_state, tmp_path, monkeypatch
+    client, app_state, tmp_path, monkeypatch
 ):
     started = threading.Event()
     release = threading.Event()
@@ -362,49 +340,49 @@ def test_purge_delete_cancel_keeps_partial_report(
 
     (tmp_path / "a.log").write_text("a")
     (tmp_path / "b.log").write_text("b")
-    scan = tool_client.post(
+    scan = client.post(
         "/api/purge/scan",
         json={"folder": str(tmp_path), "patterns_raw": "*.log"},
     ).json()
 
     monkeypatch.setattr(purge, "delete_files", fake_delete_files)
 
-    resp = tool_client.post("/api/purge/delete", json={"scan_id": scan["scan_id"]})
+    resp = client.post("/api/purge/delete", json={"scan_id": scan["scan_id"]})
     assert resp.status_code == 200
     job_id = resp.json()["job_id"]
     assert started.wait(3.0)
     assert app_state.jobs.cancel(job_id)
     release.set()
 
-    snap = wait_for_job(tool_client, job_id)
+    snap = wait_for_job(client, job_id)
     assert snap["state"] == "cancelled"
     assert snap["result"] is not None
     assert snap["result"]["deleted"] == [str(tmp_path / "a.log")]
     assert snap["result"]["failed"] == []
 
 
-def test_purge_delete_ignores_a_client_supplied_file_list(tool_client, tmp_path):
+def test_purge_delete_ignores_a_client_supplied_file_list(client, tmp_path):
     folder = tmp_path / "cache"
     folder.mkdir()
     (folder / "a.log").write_text("junk")
     outside = tmp_path / "secret.txt"
     outside.write_text("do not delete me")
 
-    scan = tool_client.post(
+    scan = client.post(
         "/api/purge/scan",
         json={"folder": str(folder), "patterns_raw": "*.log"},
     ).json()
 
-    resp = tool_client.post(
+    resp = client.post(
         "/api/purge/delete",
         json={"scan_id": scan["scan_id"], "folder": "/", "files": [str(outside)]},
     )
     assert resp.status_code == 200
-    wait_for_job(tool_client, resp.json()["job_id"])
+    wait_for_job(client, resp.json()["job_id"])
     assert outside.exists()
 
 
-def test_purge_delete_reports_per_file_failures(tool_client, tmp_path, monkeypatch):
+def test_purge_delete_reports_per_file_failures(client, tmp_path, monkeypatch):
     folder = tmp_path / "cache"
     folder.mkdir()
     good = folder / "a.log"
@@ -412,7 +390,7 @@ def test_purge_delete_reports_per_file_failures(tool_client, tmp_path, monkeypat
     good.write_text("a")
     bad.write_text("b")
 
-    scan = tool_client.post(
+    scan = client.post(
         "/api/purge/scan",
         json={"folder": str(folder), "patterns_raw": "*.log"},
     ).json()
@@ -426,15 +404,15 @@ def test_purge_delete_reports_per_file_failures(tool_client, tmp_path, monkeypat
 
     monkeypatch.setattr(Path, "unlink", flaky_unlink)
 
-    resp = tool_client.post("/api/purge/delete", json={"scan_id": scan["scan_id"]})
+    resp = client.post("/api/purge/delete", json={"scan_id": scan["scan_id"]})
     assert resp.status_code == 200
-    snap = wait_for_job(tool_client, resp.json()["job_id"])
+    snap = wait_for_job(client, resp.json()["job_id"])
     assert snap["state"] == "done"
     assert snap["result"]["deleted"] == [str(good)]
     assert snap["result"]["failed"] == [{"name": "b.log", "error": "locked"}]
 
 
-def test_gather_reports_per_file_move_failures(tool_client, tmp_path, monkeypatch):
+def test_gather_reports_per_file_move_failures(client, tmp_path, monkeypatch):
     src = tmp_path / "src"
     src.mkdir()
     (src / "a.mkv").write_bytes(b"a")
@@ -452,7 +430,7 @@ def test_gather_reports_per_file_move_failures(tool_client, tmp_path, monkeypatc
 
     monkeypatch.setattr(gather.shutil, "move", flaky_move)
 
-    resp = tool_client.post(
+    resp = client.post(
         "/api/gather/start",
         json={
             "source": str(src),
@@ -462,7 +440,7 @@ def test_gather_reports_per_file_move_failures(tool_client, tmp_path, monkeypatc
         },
     )
     assert resp.status_code == 200
-    snap = wait_for_job(tool_client, resp.json()["job_id"])
+    snap = wait_for_job(client, resp.json()["job_id"])
     assert snap["state"] == "done"
     assert snap["result"]["moved"] == ["a.mkv"]
     assert snap["result"]["failed"] == [
@@ -494,8 +472,8 @@ def test_purge_delete_cancel_reports_every_file_it_removed(tmp_path, monkeypatch
 
 
 @pytest.mark.parametrize("token", ["[", "*.[abc"])
-def test_purge_scan_rejects_a_malformed_bracket_pattern(tool_client, tmp_path, token):
-    resp = tool_client.post(
+def test_purge_scan_rejects_a_malformed_bracket_pattern(client, tmp_path, token):
+    resp = client.post(
         "/api/purge/scan",
         json={"folder": str(tmp_path), "patterns_raw": token},
     )
@@ -503,13 +481,13 @@ def test_purge_scan_rejects_a_malformed_bracket_pattern(tool_client, tmp_path, t
     assert resp.json()["detail"].startswith("❌ Invalid pattern:")
 
 
-def test_gather_presets_cover_the_shared_file_type_table(tool_client, tmp_path):
+def test_gather_presets_cover_the_shared_file_type_table(client, tmp_path):
     src = tmp_path / "src"
     src.mkdir()
     (src / "disc.m2ts").write_bytes(b"x")  # a video to Remux, but not to Gather
     tgt = tmp_path / "tgt"
 
-    resp = tool_client.post(
+    resp = client.post(
         "/api/gather/start",
         json={
             "source": str(src),
@@ -519,15 +497,15 @@ def test_gather_presets_cover_the_shared_file_type_table(tool_client, tmp_path):
         },
     )
     assert resp.status_code == 200
-    snap = wait_for_job(tool_client, resp.json()["job_id"])
+    snap = wait_for_job(client, resp.json()["job_id"])
     assert snap["state"] == "done"
     assert snap["result"]["moved"] == ["disc.m2ts"]
 
 
-def test_gather_rejects_an_unknown_category(tool_client, tmp_path):
+def test_gather_rejects_an_unknown_category(client, tmp_path):
     src = tmp_path / "src"
     src.mkdir()
-    resp = tool_client.post(
+    resp = client.post(
         "/api/gather/start",
         json={
             "source": str(src),
@@ -540,8 +518,8 @@ def test_gather_rejects_an_unknown_category(tool_client, tmp_path):
     assert resp.json()["detail"] == "❌ Unknown file type: video"
 
 
-def test_purge_scan_rejects_catch_all_only_patterns(tool_client, tmp_path):
-    resp = tool_client.post(
+def test_purge_scan_rejects_catch_all_only_patterns(client, tmp_path):
+    resp = client.post(
         "/api/purge/scan",
         json={"folder": str(tmp_path), "patterns_raw": "* *.* ?"},
     )

@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from urllib.parse import urlsplit
+
 import pytest
+import requests
 from fake_bitcomet import SERVER_NAME, FakeBitComet
 from fastapi.testclient import TestClient
 
@@ -54,6 +57,18 @@ def client(app_state, local_is_the_fake, tmp_path):
         yield test_client
 
 
+@pytest.fixture
+def offline_nas(monkeypatch):
+    request = requests.Session.request
+
+    def refuse_nas(session, method, url, **kwargs):
+        if urlsplit(url).hostname == "192.168.1.50":
+            raise requests.ConnectionError("Simulated NAS connection failure")
+        return request(session, method, url, **kwargs)
+
+    monkeypatch.setattr(requests.Session, "request", refuse_nas)
+
+
 def add(client, url, label="NAS", username="admin", password=SECRET):
     return client.post(
         "/api/torrent/devices",
@@ -92,12 +107,12 @@ def test_adding_a_device_selects_it(client):
     assert active["is_local"] is False
 
 
-def test_adding_a_device_re_points_the_tool_at_it(client, fake):
+def test_adding_a_device_re_points_the_tool_at_it(client, offline_nas):
     add(client, "192.168.1.50:19377")
     status = client.get("/api/torrent/status").json()
     assert status["url"] == "http://192.168.1.50:19377"
     assert status["is_local"] is False
-    assert status["running"] is False  # nothing is listening there
+    assert status["running"] is False
 
 
 def test_a_bad_address_is_refused_with_a_sentence(client):
@@ -150,7 +165,7 @@ def test_removing_an_unknown_device_is_a_404(client):
 
 
 # --- SELECT ---
-def test_selecting_switches_the_tool_and_back_again(client, fake):
+def test_selecting_switches_the_tool_and_back_again(client, fake, offline_nas):
     device_id = add(client, "192.168.1.50:19377").json()["active"]
 
     back = client.post(f"/api/torrent/devices/{LOCAL_ID}/select").json()
@@ -188,10 +203,12 @@ def test_testing_a_wrong_password_says_so_rather_than_just_failing(client, fake)
     assert "password" in body["detail"].lower()
 
 
-def test_testing_an_unreachable_address_fails_without_raising(client):
+def test_testing_an_unreachable_address_fails_without_raising(
+    client, refusing_loopback_url
+):
     body = client.post(
         "/api/torrent/devices/test",
-        json={"url": "127.0.0.1:1", "username": "u", "password": "p"},
+        json={"url": refusing_loopback_url, "username": "u", "password": "p"},
     ).json()
     assert body["ok"] is False
     assert body["detail"]
@@ -243,7 +260,7 @@ def test_status_asks_the_peer_for_its_config_only_once(client, fake):
     assert len(reads) == 1
 
 
-def test_status_explains_an_unreachable_peer_in_lan_terms(client):
+def test_status_explains_an_unreachable_peer_in_lan_terms(client, offline_nas):
     add(client, "192.168.1.50:19377", label="Basement NAS")
     detail = client.get("/api/torrent/status").json()["detail"]
     assert "Basement NAS" in detail

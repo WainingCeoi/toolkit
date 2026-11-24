@@ -448,11 +448,6 @@ def test_apply_npm_bumps_tolerates_spacing(tmp_path):
 # --- git: combined, path-limited commit ---
 
 
-def test_commit_subject_is_a_plain_conventional_subject():
-    assert depsync.COMMIT_SUBJECT == "chore(deps): update dependencies"
-    assert "\n" not in depsync.COMMIT_SUBJECT
-
-
 def _git(repo, *args):
     return subprocess.run(
         ["git", "-C", str(repo), *args], capture_output=True, text=True

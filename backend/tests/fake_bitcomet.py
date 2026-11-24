@@ -3,15 +3,69 @@
 from __future__ import annotations
 
 import base64
+import hashlib
+import hmac
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from toolkit_engine.bitcomet import decrypt
+from toolkit_engine.aescbc import encrypt_cbc
 from toolkit_engine.torrent import parse_magnet, parse_torrent
 
 SERVER_NAME = "BitComet-Test"
 TORRENT_MAX_SIZE = 20 * 1024 * 1024
+HEADER_LEN = 34
+MAC_LEN = 32
+
+
+def authentication_matches(blob: str, client_id: str, plaintext: str) -> bool:
+    """Verify the envelope and match the ciphertext to known fixture credentials."""
+    raw = base64.b64decode(blob, validate=True)
+    body, mac = raw[:-MAC_LEN], raw[-MAC_LEN:]
+    if body[:2] != b"\x03\x01":
+        raise ValueError("invalid envelope header")
+    mac_key = hashlib.pbkdf2_hmac("sha1", client_id.encode(), body[10:18], 10_000, 32)
+    if not hmac.compare_digest(hmac.digest(mac_key, body, "sha256"), mac):
+        raise ValueError("HMAC mismatch")
+
+    key = hashlib.pbkdf2_hmac("sha1", client_id.encode(), body[2:10], 10_000, 32)
+    contents = plaintext.encode()
+    pad = 16 - len(contents) % 16
+    expected = encrypt_cbc(key, body[18:HEADER_LEN], contents + bytes([pad]) * pad)
+    return hmac.compare_digest(body[HEADER_LEN:], expected)
+
+
+def bencode(value) -> bytes:
+    """Encode values with sorted dictionary keys for synthetic torrent files."""
+    if isinstance(value, int):
+        return b"i%de" % value
+    if isinstance(value, bytes):
+        return b"%d:%s" % (len(value), value)
+    if isinstance(value, list):
+        return b"l" + b"".join(bencode(item) for item in value) + b"e"
+    if isinstance(value, dict):
+        items = sorted(value.items())
+        return (
+            b"d" + b"".join(bencode(key) + bencode(item) for key, item in items) + b"e"
+        )
+    raise TypeError(f"cannot bencode {type(value).__name__}")
+
+
+def make_torrent(files, name="Example.Release"):
+    return bencode(
+        {
+            b"announce": b"udp://tracker.example:80",
+            b"info": {
+                b"name": name.encode(),
+                b"piece length": 262144,
+                b"pieces": b"\x00" * 20,
+                b"files": [
+                    {b"length": size, b"path": [p.encode() for p in path.split("/")]}
+                    for path, size in files
+                ],
+            },
+        }
+    )
 
 
 def _magnet_infohash(link: str) -> str:
@@ -236,17 +290,17 @@ class FakeBitComet:
     def _login(self, payload: dict) -> dict:
         self.logins += 1
         client_id = payload.get("client_id") or ""
+        credentials = json.dumps({"username": self.username, "password": self.password})
         try:
-            creds = json.loads(decrypt(payload.get("authentication", ""), client_id))
-        except (ValueError, IndexError) as exc:  # bad base64, HMAC, padding or JSON
+            authenticated = authentication_matches(
+                payload.get("authentication", ""), client_id, credentials
+            )
+        except ValueError as exc:
             raise _RejectedError(
                 "INVALID_AUTH", f"authentication invalid: {exc}"
             ) from exc
 
-        if (creds.get("username"), creds.get("password")) != (
-            self.username,
-            self.password,
-        ):
+        if not authenticated:
             raise _RejectedError("INVALID_USER", "invalid username or password")
 
         invite = f"invite-{self.logins}"

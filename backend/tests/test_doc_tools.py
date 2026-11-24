@@ -11,30 +11,11 @@ import zipfile
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
+from helpers import wait_for_job
 from lxml import etree
 
-from toolkit_api.jobs import FINISHED_STATES
-from toolkit_api.main import create_app
 from toolkit_api.routers import docmd as docmd_router
 from toolkit_engine import docmd, docpdf
-
-
-@pytest.fixture
-def tool_client(app_state):
-    app = create_app(state=app_state)
-    with TestClient(app) as c:
-        yield c
-
-
-def wait_for_job(client, job_id, timeout=5.0):
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        snap = client.get(f"/api/jobs/{job_id}").json()
-        if snap["state"] in FINISHED_STATES:
-            return snap
-        time.sleep(0.02)
-    raise AssertionError(f"job {job_id} did not finish within {timeout}s")
 
 
 # --- Doc to Markdown engine units ---
@@ -263,17 +244,17 @@ def test_batch_to_pdf_kills_soffice_on_cancel(tmp_path):
 
 
 # --- Doc to PDF router ---
-def test_docpdf_post_without_files_is_400(tool_client):
-    resp = tool_client.post("/api/doc-to-pdf")
+def test_docpdf_post_without_files_is_400(client):
+    resp = client.post("/api/doc-to-pdf")
     assert resp.status_code == 400
     assert resp.json()["detail"] == (
         "❌ Please select at least one Word (.docx) file first."
     )
 
 
-def test_docpdf_post_without_libreoffice_is_400(tool_client, monkeypatch):
+def test_docpdf_post_without_libreoffice_is_400(client, monkeypatch):
     monkeypatch.setattr(docpdf, "find_soffice", lambda: None)
-    resp = tool_client.post(
+    resp = client.post(
         "/api/doc-to-pdf",
         files={"files": ("a.docx", b"stub", "application/octet-stream")},
     )
@@ -283,8 +264,8 @@ def test_docpdf_post_without_libreoffice_is_400(tool_client, monkeypatch):
     )
 
 
-def test_docpdf_post_rejects_non_docx(tool_client):
-    resp = tool_client.post(
+def test_docpdf_post_rejects_non_docx(client):
+    resp = client.post(
         "/api/doc-to-pdf",
         files={"files": ("a.txt", b"stub", "text/plain")},
     )
@@ -292,7 +273,7 @@ def test_docpdf_post_rejects_non_docx(tool_client):
     assert resp.json()["detail"] == "❌ Only Word (.docx) files are supported."
 
 
-def test_docpdf_job_bundles_pdfs_into_zip_artifact(tool_client, monkeypatch, tmp_path):
+def test_docpdf_job_bundles_pdfs_into_zip_artifact(client, monkeypatch, tmp_path):
     monkeypatch.setattr(docpdf, "find_soffice", lambda: "/stub/soffice")
 
     def fake_batch_to_pdf(soffice, docx_paths, out_dir, *_args):
@@ -303,41 +284,41 @@ def test_docpdf_job_bundles_pdfs_into_zip_artifact(tool_client, monkeypatch, tmp
     monkeypatch.setattr(docpdf, "batch_to_pdf", fake_batch_to_pdf)
 
     src = make_docx(tmp_path / "report.docx")
-    resp = tool_client.post(
+    resp = client.post(
         "/api/doc-to-pdf",
         files={"files": ("report.docx", src.read_bytes(), "application/octet-stream")},
     )
     assert resp.status_code == 200
 
-    snap = wait_for_job(tool_client, resp.json()["job_id"])
+    snap = wait_for_job(client, resp.json()["job_id"])
     assert snap["state"] == "done"
     assert snap["result"]["done"] == ["report.pdf"]
     assert snap["result"]["failed"] == []
     assert snap["result"]["filename"] == "converted_pdfs.zip"
     assert snap["items"][0]["state"] == "done"
 
-    download = tool_client.get(f"/api/artifacts/{snap['result']['artifact_id']}")
+    download = client.get(f"/api/artifacts/{snap['result']['artifact_id']}")
     assert download.status_code == 200
     with zipfile.ZipFile(io.BytesIO(download.content)) as z:
         assert z.namelist() == ["report.pdf"]
 
 
 def test_docpdf_job_cancels_while_the_soffice_lock_is_held(
-    tool_client, app_state, monkeypatch, tmp_path
+    client, app_state, monkeypatch, tmp_path
 ):
     monkeypatch.setattr(docpdf, "find_soffice", lambda: "/stub/soffice")
     src = make_docx(tmp_path / "a.docx").read_bytes()
 
     app_state.soffice_lock.acquire()
     try:
-        resp = tool_client.post(
+        resp = client.post(
             "/api/doc-to-pdf",
             files={"files": ("a.docx", src, "application/octet-stream")},
         )
         assert resp.status_code == 200
         job_id = resp.json()["job_id"]
-        assert tool_client.post(f"/api/jobs/{job_id}/cancel").status_code == 200
-        snap = wait_for_job(tool_client, job_id)
+        assert client.post(f"/api/jobs/{job_id}/cancel").status_code == 200
+        snap = wait_for_job(client, job_id)
     finally:
         app_state.soffice_lock.release()
 
@@ -345,19 +326,19 @@ def test_docpdf_job_cancels_while_the_soffice_lock_is_held(
 
 
 # --- Doc to Markdown router ---
-def test_docmd_post_without_files_is_400(tool_client):
-    resp = tool_client.post("/api/doc-to-markdown")
+def test_docmd_post_without_files_is_400(client):
+    resp = client.post("/api/doc-to-markdown")
     assert resp.status_code == 400
     assert resp.json()["detail"] == "❌ Please select at least one file first."
 
 
-def test_docmd_health_reports_booleans(tool_client):
-    body = tool_client.get("/api/doc-to-markdown/health").json()
+def test_docmd_health_reports_booleans(client):
+    body = client.get("/api/doc-to-markdown/health").json()
     assert set(body) == {"mineru", "backend_ready"}
     assert all(isinstance(v, bool) for v in body.values())
 
 
-def test_docmd_health_accepts_onnx_without_torch(tool_client, monkeypatch):
+def test_docmd_health_accepts_onnx_without_torch(client, monkeypatch):
     checked = []
 
     def find_spec(name):
@@ -365,14 +346,14 @@ def test_docmd_health_accepts_onnx_without_torch(tool_client, monkeypatch):
         return object() if name == "onnxruntime" else None
 
     monkeypatch.setattr(docmd_router.importlib.util, "find_spec", find_spec)
-    body = tool_client.get("/api/doc-to-markdown/health").json()
+    body = client.get("/api/doc-to-markdown/health").json()
     assert body["backend_ready"] is True
     assert checked == ["onnxruntime"]
 
 
 @pytest.mark.parametrize("options", [{"tier": "pipeline"}, {"ocr_mode": "unsupported"}])
-def test_docmd_rejects_invalid_conversion_options(tool_client, options):
-    resp = tool_client.post(
+def test_docmd_rejects_invalid_conversion_options(client, options):
+    resp = client.post(
         "/api/doc-to-markdown",
         files={"files": ("notes.pdf", b"stub", "application/pdf")},
         data=options,
@@ -407,7 +388,7 @@ def test_docmd_corrupt_later_asset_leaves_batch_archive_untouched(tmp_path):
         assert archive.namelist() == ["successful.pdf/full.md"]
 
 
-def test_docmd_job_zips_markdown_artifact(tool_client, monkeypatch):
+def test_docmd_job_zips_markdown_artifact(client, monkeypatch):
     monkeypatch.setattr(docmd, "find_mineru", lambda: ["mineru"])
 
     def fake_run(cmd, *_args, **_kwargs):
@@ -426,21 +407,21 @@ def test_docmd_job_zips_markdown_artifact(tool_client, monkeypatch):
 
     monkeypatch.setattr(docmd, "run_mineru", fake_run)
 
-    resp = tool_client.post(
+    resp = client.post(
         "/api/doc-to-markdown",
         files={"files": ("notes.pdf", b"%PDF-1.4 stub", "application/pdf")},
         data={"tier": "basic", "ocr_mode": "txt", "image_analysis": "false"},
     )
     assert resp.status_code == 200
 
-    snap = wait_for_job(tool_client, resp.json()["job_id"])
+    snap = wait_for_job(client, resp.json()["job_id"])
     assert snap["state"] == "done"
     assert snap["result"]["done"] == ["notes.pdf"]
     assert snap["result"]["failed"] == []
     assert snap["result"]["filename"] == "markdown.zip"
     assert snap["items"][0]["state"] == "done"
 
-    download = tool_client.get(f"/api/artifacts/{snap['result']['artifact_id']}")
+    download = client.get(f"/api/artifacts/{snap['result']['artifact_id']}")
     assert download.status_code == 200
     with zipfile.ZipFile(io.BytesIO(download.content)) as z:
         assert sorted(z.namelist()) == [
@@ -451,8 +432,8 @@ def test_docmd_job_zips_markdown_artifact(tool_client, monkeypatch):
         assert z.read("notes.pdf/images/figure.png") == b"image content"
 
 
-def test_docmd_post_rejects_unsupported_type(tool_client):
-    resp = tool_client.post(
+def test_docmd_post_rejects_unsupported_type(client):
+    resp = client.post(
         "/api/doc-to-markdown",
         files={"files": ("evil.exe", b"stub", "application/octet-stream")},
     )
@@ -491,9 +472,7 @@ def test_docmd_convert_batch_sanitizes_traversal_filename(monkeypatch):
     assert ".." not in in_path.parts
 
 
-def test_docmd_same_stem_different_extension_keep_separate_trees(
-    tool_client, monkeypatch
-):
+def test_docmd_same_stem_different_extension_keep_separate_trees(client, monkeypatch):
     monkeypatch.setattr(docmd, "find_mineru", lambda: ["mineru"])
 
     def fake_run(cmd, *_args, **_kwargs):
@@ -502,7 +481,7 @@ def test_docmd_same_stem_different_extension_keep_separate_trees(
 
     monkeypatch.setattr(docmd, "run_mineru", fake_run)
 
-    resp = tool_client.post(
+    resp = client.post(
         "/api/doc-to-markdown",
         files=[
             ("files", ("report.pdf", b"%PDF-1.4 one", "application/pdf")),
@@ -512,9 +491,9 @@ def test_docmd_same_stem_different_extension_keep_separate_trees(
     )
     assert resp.status_code == 200
 
-    snap = wait_for_job(tool_client, resp.json()["job_id"])
+    snap = wait_for_job(client, resp.json()["job_id"])
     assert snap["state"] == "done"
-    download = tool_client.get(f"/api/artifacts/{snap['result']['artifact_id']}")
+    download = client.get(f"/api/artifacts/{snap['result']['artifact_id']}")
     with zipfile.ZipFile(io.BytesIO(download.content)) as z:
         assert sorted(z.namelist()) == [
             "report.docx/full.md",
@@ -522,7 +501,7 @@ def test_docmd_same_stem_different_extension_keep_separate_trees(
         ]
 
 
-def test_docmd_duplicate_names_get_index_correct_states(tool_client, monkeypatch):
+def test_docmd_duplicate_names_get_index_correct_states(client, monkeypatch):
     monkeypatch.setattr(docmd, "find_mineru", lambda: ["mineru"])
 
     def fake_run(cmd, *_args, **_kwargs):
@@ -533,7 +512,7 @@ def test_docmd_duplicate_names_get_index_correct_states(tool_client, monkeypatch
 
     monkeypatch.setattr(docmd, "run_mineru", fake_run)
 
-    resp = tool_client.post(
+    resp = client.post(
         "/api/doc-to-markdown",
         files=[
             ("files", ("a.pdf", b"%PDF-1.4 one", "application/pdf")),
@@ -543,12 +522,12 @@ def test_docmd_duplicate_names_get_index_correct_states(tool_client, monkeypatch
     )
     assert resp.status_code == 200
 
-    snap = wait_for_job(tool_client, resp.json()["job_id"])
+    snap = wait_for_job(client, resp.json()["job_id"])
     assert snap["state"] == "done"
     assert [item["state"] for item in snap["items"]] == ["failed", "done"]
 
 
-def test_docmd_cancel_publishes_the_files_already_converted(tool_client, monkeypatch):
+def test_docmd_cancel_publishes_the_files_already_converted(client, monkeypatch):
     monkeypatch.setattr(docmd, "find_mineru", lambda: ["mineru"])
     reached_second = threading.Event()
     cancel_landed = threading.Event()
@@ -564,7 +543,7 @@ def test_docmd_cancel_publishes_the_files_already_converted(tool_client, monkeyp
 
     monkeypatch.setattr(docmd, "run_mineru", fake_run)
 
-    resp = tool_client.post(
+    resp = client.post(
         "/api/doc-to-markdown",
         files=[
             ("files", ("a.pdf", b"%PDF-1.4 one", "application/pdf")),
@@ -575,23 +554,23 @@ def test_docmd_cancel_publishes_the_files_already_converted(tool_client, monkeyp
     assert resp.status_code == 200
     job_id = resp.json()["job_id"]
     assert reached_second.wait(5)
-    assert tool_client.post(f"/api/jobs/{job_id}/cancel").status_code == 200
+    assert client.post(f"/api/jobs/{job_id}/cancel").status_code == 200
     cancel_landed.set()
 
-    snap = wait_for_job(tool_client, job_id)
+    snap = wait_for_job(client, job_id)
     assert snap["state"] == "cancelled"
     assert snap["result"]["done"] == ["a.pdf"]
     assert snap["result"]["failed"] == []
     assert [item["state"] for item in snap["items"]] == ["done", "pending"]
 
-    download = tool_client.get(f"/api/artifacts/{snap['result']['artifact_id']}")
+    download = client.get(f"/api/artifacts/{snap['result']['artifact_id']}")
     assert download.status_code == 200
     with zipfile.ZipFile(io.BytesIO(download.content)) as z:
         assert z.namelist() == ["a.pdf/full.md"]
 
 
 def test_docpdf_cancel_publishes_the_pdfs_already_rendered(
-    tool_client, monkeypatch, tmp_path
+    client, monkeypatch, tmp_path
 ):
     monkeypatch.setattr(docpdf, "find_soffice", lambda: "/stub/soffice")
     rendering = threading.Event()
@@ -607,7 +586,7 @@ def test_docpdf_cancel_publishes_the_pdfs_already_rendered(
     monkeypatch.setattr(docpdf, "batch_to_pdf", fake_batch_to_pdf)
 
     src = make_docx(tmp_path / "x.docx").read_bytes()
-    resp = tool_client.post(
+    resp = client.post(
         "/api/doc-to-pdf",
         files=[
             ("files", ("a.docx", src, "application/octet-stream")),
@@ -617,24 +596,22 @@ def test_docpdf_cancel_publishes_the_pdfs_already_rendered(
     assert resp.status_code == 200
     job_id = resp.json()["job_id"]
     assert rendering.wait(5)
-    assert tool_client.post(f"/api/jobs/{job_id}/cancel").status_code == 200
+    assert client.post(f"/api/jobs/{job_id}/cancel").status_code == 200
     cancel_landed.set()
 
-    snap = wait_for_job(tool_client, job_id)
+    snap = wait_for_job(client, job_id)
     assert snap["state"] == "cancelled"
     assert snap["result"]["done"] == ["a.pdf"]
     assert snap["result"]["failed"] == [["b.docx", "cancelled"]]
     assert [item["state"] for item in snap["items"]] == ["done", "failed"]
 
-    download = tool_client.get(f"/api/artifacts/{snap['result']['artifact_id']}")
+    download = client.get(f"/api/artifacts/{snap['result']['artifact_id']}")
     assert download.status_code == 200
     with zipfile.ZipFile(io.BytesIO(download.content)) as z:
         assert z.namelist() == ["a.pdf"]
 
 
-def test_docpdf_duplicate_names_get_index_correct_states(
-    tool_client, monkeypatch, tmp_path
-):
+def test_docpdf_duplicate_names_get_index_correct_states(client, monkeypatch, tmp_path):
     monkeypatch.setattr(docpdf, "find_soffice", lambda: "/stub/soffice")
 
     def fake_batch_to_pdf(soffice, docx_paths, out_dir, *_args):
@@ -647,7 +624,7 @@ def test_docpdf_duplicate_names_get_index_correct_states(
     monkeypatch.setattr(docpdf, "batch_to_pdf", fake_batch_to_pdf)
 
     src = make_docx(tmp_path / "a.docx").read_bytes()
-    resp = tool_client.post(
+    resp = client.post(
         "/api/doc-to-pdf",
         files=[
             ("files", ("a.docx", src, "application/octet-stream")),
@@ -656,6 +633,6 @@ def test_docpdf_duplicate_names_get_index_correct_states(
     )
     assert resp.status_code == 200
 
-    snap = wait_for_job(tool_client, resp.json()["job_id"])
+    snap = wait_for_job(client, resp.json()["job_id"])
     assert snap["state"] == "done"
     assert [item["state"] for item in snap["items"]] == ["failed", "done"]

@@ -10,42 +10,27 @@ import uuid
 
 import pytest
 import requests
-from fake_bitcomet import SERVER_NAME, FakeBitComet
+from fake_bitcomet import (
+    HEADER_LEN,
+    MAC_LEN,
+    SERVER_NAME,
+    FakeBitComet,
+    authentication_matches,
+    make_torrent,
+)
 
 from toolkit_engine.bitcomet import (
     DESELECTED,
-    HEADER_LEN,
-    MAC_LEN,
     PROBE_TIMEOUT,
     BitCometClient,
     BitCometError,
     Credentials,
-    decrypt,
     encrypt,
     login_payload,
     read_credentials,
     to_engine_index,
     to_toolkit_index,
 )
-from toolkit_engine.torrent import bencode
-
-
-def make_torrent(files, name="Example.Release"):
-    return bencode(
-        {
-            b"announce": b"udp://tracker.example:80",
-            b"info": {
-                b"name": name.encode(),
-                b"piece length": 262144,
-                b"pieces": b"\x00" * 20,
-                b"files": [
-                    {b"length": size, b"path": [p.encode() for p in path.split("/")]}
-                    for path, size in files
-                ],
-            },
-        }
-    )
-
 
 SAMPLE_FILES = [
     ("Movie.2024.1080p.mkv", 4_000_000),
@@ -56,12 +41,6 @@ SAMPLE_FILES = [
 
 
 # --- LOGIN ENVELOPE ---
-def test_login_envelope_round_trips():
-    client_id = str(uuid.uuid4())
-    original = json.dumps({"username": "someone", "password": "hunter2"})
-    assert decrypt(encrypt(original, client_id), client_id) == original
-
-
 def test_login_envelope_has_the_documented_byte_layout():
     client_id = str(uuid.uuid4())
     plaintext = json.dumps({"username": "a", "password": "b"})
@@ -77,30 +56,18 @@ def test_login_envelope_has_the_documented_byte_layout():
 
 def test_login_envelope_pads_by_utf8_length_not_utf16():
     client_id = str(uuid.uuid4())
-    plaintext = json.dumps({"username": "你好", "password": "pässwörd"})
-    raw = base64.b64decode(encrypt(plaintext, client_id))
-
-    assert (len(raw) - HEADER_LEN - MAC_LEN) % 16 == 0
-    assert decrypt(encrypt(plaintext, client_id), client_id) == plaintext
-
-
-def test_login_envelope_rejects_a_tampered_blob():
-    client_id = str(uuid.uuid4())
-    raw = bytearray(base64.b64decode(encrypt("secret", client_id)))
-    raw[-1] ^= 0xFF
-
-    with pytest.raises(ValueError, match="HMAC"):
-        decrypt(base64.b64encode(bytes(raw)).decode(), client_id)
+    plaintext = json.dumps(
+        {"username": "你好", "password": "pässwörd"}, ensure_ascii=False
+    )
+    assert authentication_matches(encrypt(plaintext, client_id), client_id, plaintext)
 
 
 def test_login_payload_sends_the_key_in_the_clear_beside_the_ciphertext():
     first, second = login_payload("u", "p"), login_payload("u", "p")
 
     assert first["client_id"] != second["client_id"]
-    assert json.loads(decrypt(first["authentication"], first["client_id"])) == {
-        "username": "u",
-        "password": "p",
-    }
+    expected = json.dumps({"username": "u", "password": "p"})
+    assert authentication_matches(first["authentication"], first["client_id"], expected)
 
 
 # --- CREDENTIALS ---
@@ -182,7 +149,9 @@ def test_client_never_routes_loopback_through_a_proxy():
         api.close()
 
 
-def test_a_non_json_response_becomes_a_bitcomet_error(monkeypatch):
+def test_a_non_json_response_becomes_a_bitcomet_error(
+    monkeypatch, refusing_loopback_url
+):
     class FakeResponse:
         status_code = 200
 
@@ -192,17 +161,19 @@ def test_a_non_json_response_becomes_a_bitcomet_error(monkeypatch):
         def json(self):
             raise ValueError("Expecting value: line 1 column 1 (char 0)")
 
-    api = BitCometClient(base_url="http://127.0.0.1:1", username="u", password="p")
+    api = BitCometClient(base_url=refusing_loopback_url, username="u", password="p")
     try:
         monkeypatch.setattr(api._session, "request", lambda *a, **k: FakeResponse())
         with pytest.raises(BitCometError, match="non-JSON"):
             api.task_list()
-        assert api.probe() is None
+        assert api.probe_folders() == (None, [])
     finally:
         api.close()
 
 
-def test_an_http_error_status_becomes_a_bitcomet_error(monkeypatch):
+def test_an_http_error_status_becomes_a_bitcomet_error(
+    monkeypatch, refusing_loopback_url
+):
     class FakeResponse:
         status_code = 503
 
@@ -212,30 +183,30 @@ def test_an_http_error_status_becomes_a_bitcomet_error(monkeypatch):
         def json(self):  # pragma: no cover - must never be reached
             raise AssertionError("json() must not run on a 5xx")
 
-    api = BitCometClient(base_url="http://127.0.0.1:1", username="u", password="p")
+    api = BitCometClient(base_url=refusing_loopback_url, username="u", password="p")
     try:
         monkeypatch.setattr(api._session, "request", lambda *a, **k: FakeResponse())
         with pytest.raises(BitCometError, match="HTTP 503"):
             api.task_list()
-        assert api.probe() is None
+        assert api.probe_folders() == (None, [])
     finally:
         api.close()
 
 
-def test_an_unreachable_bitcomet_raises_a_clear_error():
+def test_an_unreachable_bitcomet_raises_a_clear_error(refusing_loopback_url):
     api = BitCometClient(
-        base_url="http://127.0.0.1:1", username="u", password="p", timeout=0.5
+        base_url=refusing_loopback_url, username="u", password="p", timeout=0.5
     )
     try:
         with pytest.raises(BitCometError, match="not reachable"):
             api.task_list()
-        assert api.probe() is None
+        assert api.probe_folders() == (None, [])
     finally:
         api.close()
 
 
-def test_probe_reports_the_server_name_when_reachable(client):
-    assert client.probe() == SERVER_NAME
+def test_probe_reports_the_server_name_and_folders_when_reachable(client, save_folder):
+    assert client.probe_folders() == (SERVER_NAME, [str(save_folder)])
 
 
 def test_bad_credentials_surface_as_an_error(fake):
@@ -532,12 +503,15 @@ def test_the_size_cap_is_asked_for_once_and_remembered(fake, client, save_folder
 
 
 # --- TIMEOUTS ---
-def test_probe_gives_up_quickly_on_a_wedged_bitcomet(client):
-    client.base_url = "http://10.255.255.1:19377"  # black-holes, never refuses
-    started = time.monotonic()
-    assert client.probe() is None
-    elapsed = time.monotonic() - started
-    assert elapsed < 5.0, f"probe took {elapsed:.1f}s; PROBE_TIMEOUT is not applied"
+def test_probe_uses_its_short_timeout_when_bitcomet_does_not_answer(
+    client, monkeypatch
+):
+    def no_response(*_args, timeout, **_kwargs):
+        assert timeout == PROBE_TIMEOUT
+        raise requests.ReadTimeout("BitComet did not answer")
+
+    monkeypatch.setattr(client._session, "request", no_response)
+    assert client.probe_folders() == (None, [])
     assert client.timeout == 10.0
 
 
@@ -558,7 +532,7 @@ def test_a_probe_racing_a_slow_login_keeps_its_own_budget(client):
     try:
         assert logging_in.wait(5.0)
         started = time.monotonic()
-        answer = client.probe()
+        answer = client.probe_folders()
         elapsed = time.monotonic() - started
     finally:
         release.set()
@@ -567,7 +541,7 @@ def test_a_probe_racing_a_slow_login_keeps_its_own_budget(client):
     assert elapsed < PROBE_TIMEOUT + 1.0, (
         f"probe spent {elapsed:.1f}s on another thread's login"
     )
-    assert answer is None  # it gave up on the lock, not on a dead BitComet
+    assert answer == (None, [])  # it gave up on the lock before it could connect
 
 
 def test_a_401_retry_racing_a_slow_login_keeps_its_own_budget(fake, client):
@@ -587,7 +561,7 @@ def test_a_401_retry_racing_a_slow_login_keeps_its_own_budget(fake, client):
     try:
         assert holding.wait(5.0)
         started = time.monotonic()
-        answer = client.probe()
+        answer = client.probe_folders()
         elapsed = time.monotonic() - started
     finally:
         release.set()
@@ -596,7 +570,7 @@ def test_a_401_retry_racing_a_slow_login_keeps_its_own_budget(fake, client):
     assert elapsed < PROBE_TIMEOUT + 1.0, (
         f"the 401 retry spent {elapsed:.1f}s on another thread's login"
     )
-    assert answer is None
+    assert answer == (None, [])
 
 
 def test_a_probe_cannot_shorten_a_call_running_beside_it(client):
@@ -613,7 +587,7 @@ def test_a_probe_cannot_shorten_a_call_running_beside_it(client):
         return request(*args, **kwargs)
 
     client._session.request = wrapped
-    thread = threading.Thread(target=client.probe)
+    thread = threading.Thread(target=client.probe_folders)
     thread.start()
     try:
         assert probing.wait(5.0)
