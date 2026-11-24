@@ -1,22 +1,6 @@
 import type { IconName } from './components/Icon'
 import type { Category, Tool } from './types/api'
 
-export const TOOL_EMOJI: Record<string, string> = {
-  '/tools/magnet-scraper': '🧲',
-  '/tools/remux': '🎬',
-  '/tools/torrent-downloader': '🌊',
-  '/tools/web-images-to-pdf': '🌐',
-  '/tools/file-gatherer': '📦',
-  '/tools/image-to-pdf': '🖼️',
-  '/tools/doc-to-pdf': '📄',
-  '/tools/doc-to-markdown': '📝',
-  '/tools/whatsapp': '💬',
-  '/tools/cache-purge': '🧹',
-  '/tools/photos-library-filter': '📸',
-  '/tools/subscription': '🛰️',
-  '/tools/dep-upgrade': '📦',
-}
-
 export const TOOL_GROUPS = ['Media', 'Documents', 'Files', 'Network'] as const
 export type ToolGroup = (typeof TOOL_GROUPS)[number]
 
@@ -144,11 +128,4 @@ export function toolTitle(slug: string, fallback?: string): string {
     fallback?.replace(/^\S+\s/, '') ??
     slug.replace(/-/g, ' ')
   )
-}
-
-// Keys are the category names the API returns.
-export const CATEGORY_ACCENT: Record<string, string> = {
-  '🎬 Media': 'var(--amber)',
-  '🗂️ Files & Tools': 'var(--teal)',
-  '🌐 Network': 'var(--violet)',
 }

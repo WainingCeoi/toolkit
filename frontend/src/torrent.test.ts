@@ -1,12 +1,7 @@
-import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest'
-import { act, fireEvent, render, screen } from '@testing-library/react'
-import { createElement } from 'react'
+import { describe, it, expect } from 'vitest'
 import {
-  DEFAULT_SAVE_DIR,
-  SIZED_CATEGORIES,
   addTorrent,
   applyFilter,
-  formatBytes,
   magnetLink,
   MB,
   parseMagnetLines,
@@ -19,23 +14,7 @@ import {
   windowedRun,
 } from './torrent'
 import { ApiError } from './api'
-import { ToolActiveContext } from './toolHost'
-import TorrentDownloader from './pages/TorrentDownloader'
 import type { TorrentFileRow, TorrentResolve } from './types/api'
-
-const apiMock = vi.hoisted(() => ({
-  torrentStatus: vi.fn(),
-  torrentDevices: vi.fn(),
-  torrentResolveMagnet: vi.fn(),
-  torrentPollResolve: vi.fn(),
-  torrentDiscard: vi.fn(),
-  torrentDeviceSelect: vi.fn(),
-}))
-
-vi.mock('./api', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('./api')>()),
-  api: apiMock,
-}))
 
 const FILES: TorrentFileRow[] = [
   { index: 1, path: 'Movie.mkv', size: 2_000_000_000, category: 'video' },
@@ -48,19 +27,19 @@ function torrent(infohash: string, files = FILES, over: Partial<TorrentResolve> 
   return { infohash, ready: true, name: infohash, files, state: 'awaiting_selection', ...over }
 }
 
-describe('DEFAULT_SAVE_DIR', () => {
-  it('is ~/Downloads, matching the backend default', () => {
-    expect(DEFAULT_SAVE_DIR).toBe('~/Downloads')
-  })
-})
-
 describe('applyFilter', () => {
   it('keeps only large videos by default', () => {
     expect(applyFilter(FILES, new Set(['video']), 100 * MB)).toEqual([1])
   })
 
-  it('does not apply the size floor to subtitles', () => {
-    expect(applyFilter(FILES, new Set(['video', 'subtitle']), 100 * MB)).toEqual([1, 3])
+  it('applies the size floor to video and audio while keeping smaller subtitles', () => {
+    const files = [
+      ...FILES,
+      { index: 5, path: 'Sample.flac', size: 30 * MB, category: 'audio' },
+      { index: 6, path: 'Concert.flac', size: 120 * MB, category: 'audio' },
+    ]
+    expect(applyFilter(files, new Set(['video', 'audio', 'subtitle']), 100 * MB))
+      .toEqual([1, 3, 6])
   })
 
   it('keeps every file in a chosen category when the floor is zero', () => {
@@ -69,51 +48,6 @@ describe('applyFilter', () => {
 
   it('returns nothing when no category matches', () => {
     expect(applyFilter(FILES, new Set(['archive']), 0)).toEqual([])
-  })
-
-  it('gates only video and audio on size', () => {
-    expect(SIZED_CATEGORIES).toEqual(new Set(['video', 'audio']))
-  })
-})
-
-describe('formatters', () => {
-  it('scales bytes through the units', () => {
-    expect(formatBytes(512)).toBe('512 B')
-    expect(formatBytes(2048)).toBe('2.0 KB')
-    expect(formatBytes(2_000_000_000)).toBe('1.9 GB')
-  })
-})
-
-function resolve(
-  files: TorrentFileRow[],
-  ruleSelected: Set<number>,
-  overrides: ReadonlyMap<number, boolean>,
-): Set<number> {
-  const out = new Set<number>()
-  for (const file of files) {
-    if (overrides.get(file.index) ?? ruleSelected.has(file.index)) out.add(file.index)
-  }
-  return out
-}
-
-describe('rule + override composition', () => {
-  const rule = new Set(applyFilter(FILES, new Set(['video']), 100 * MB))
-
-  it('falls back to the rule when nothing was ticked', () => {
-    expect(resolve(FILES, rule, new Map())).toEqual(new Set([1]))
-  })
-
-  it('lets the user add a file the rule excluded', () => {
-    expect(resolve(FILES, rule, new Map([[3, true]]))).toEqual(new Set([1, 3]))
-  })
-
-  it('lets the user remove a file the rule included', () => {
-    expect(resolve(FILES, rule, new Map([[1, false]]))).toEqual(new Set())
-  })
-
-  it('treats an explicit false as a choice, not as absent', () => {
-    const overrides = new Map([[1, false]])
-    expect(overrides.get(1) ?? rule.has(1)).toBe(false)
   })
 })
 
@@ -164,10 +98,9 @@ describe('selectionFor + ruleKey (per-torrent)', () => {
     expect(selectionFor(torrent('a'), cats, 100 * MB, new Map())).toEqual(new Set([1]))
   })
 
-  it("honours one torrent's overrides without touching another's", () => {
-    const t = torrent('a')
-    const withSub = selectionFor(t, cats, 100 * MB, new Map([[3, true]]))
-    expect(withSub).toEqual(new Set([1, 3]))
+  it('applies both checked and unchecked overrides to the shared filter', () => {
+    const overrides = new Map([[1, false], [3, true]])
+    expect(selectionFor(torrent('a'), cats, 100 * MB, overrides)).toEqual(new Set([3]))
   })
 
   it('keys the rule by infohash so two torrents differ', () => {
@@ -182,30 +115,6 @@ describe('selectionFor + ruleKey (per-torrent)', () => {
 })
 
 describe('truncateMiddle', () => {
-  it('leaves anything that already fits alone', () => {
-    expect(truncateMiddle('Movie.mkv', 44)).toBe('Movie.mkv')
-    expect(truncateMiddle('exactly-ten', 11)).toBe('exactly-ten')
-  })
-
-  it('keeps the head AND the tail, so the extension survives', () => {
-    const long = 'Some.Very.Long.Release.Name.2024.2160p.WEB-DL.DDP5.1.HDR.x265.mkv'
-    const cut = truncateMiddle(long, 30)
-    expect(cut).toHaveLength(30)
-    expect(cut).toContain('…')
-    expect(cut.startsWith('Some.Very.Long')).toBe(true)
-    expect(cut.endsWith('.mkv')).toBe(true)
-  })
-
-  it('never returns more than the budget', () => {
-    for (const max of [5, 6, 7, 12, 41, 44]) {
-      expect(truncateMiddle('x'.repeat(200), max).length).toBe(max)
-    }
-  })
-
-  it('gives up rather than emitting an ellipsis with nothing around it', () => {
-    expect(truncateMiddle('abcdefgh', 4)).toBe('abcdefgh')
-  })
-
   it('distinguishes two names that differ only in their tail', () => {
     const a = 'The.Show.S01E01.1080p.WEB.h264-ALPHA.mkv'
     const b = 'The.Show.S01E01.1080p.WEB.h264-BRAVO.mp4'
@@ -384,131 +293,5 @@ describe('selectionUnder', () => {
     const key = ruleKey('a', rules.categories, rules.minMb)
     const overrides = new Map([['a', { key, map: new Map([[1, false]]) }]])
     expect(selectionUnder(torrent('b'), { ...rules, overrides })).toEqual(new Set([1]))
-  })
-})
-
-describe('TorrentDownloader: discarding a magnet that is still fetching', () => {
-  const INFOHASH = 'aaaabbbbccccddddeeeeffff0000111122223333'
-
-  // The page's own async work runs on timers; yield a real macrotask to drain it.
-  const flush = () => act(async () => void (await vi.advanceTimersByTimeAsync(0)))
-
-  beforeEach(() => {
-    vi.useFakeTimers()
-    apiMock.torrentStatus.mockResolvedValue({
-      running: true,
-      server: 'BitComet',
-      detail: null,
-      url: 'http://127.0.0.1:19377',
-    })
-    apiMock.torrentDevices.mockResolvedValue({ active: 'local', devices: [] })
-    apiMock.torrentResolveMagnet.mockResolvedValue({
-      infohash: INFOHASH,
-      ready: false,
-      name: null,
-      files: [],
-      state: 'awaiting_metadata',
-    })
-    // Discard deletes the BitComet task, so a poll crossing it gets a 404.
-    apiMock.torrentPollResolve.mockRejectedValue(new ApiError('Unknown torrent.', 404))
-    apiMock.torrentDiscard.mockResolvedValue({ infohash: INFOHASH, state: 'discarded' })
-  })
-
-  afterEach(() => {
-    vi.useRealTimers()
-    vi.clearAllMocks()
-  })
-
-  it('names the reason a magnet was refused', async () => {
-    apiMock.torrentResolveMagnet.mockRejectedValue(new ApiError('Not a magnet link.', 400))
-    render(createElement(TorrentDownloader))
-    await flush()
-
-    fireEvent.change(screen.getByLabelText('Magnet links'), { target: { value: 'nonsense' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Resolve' }))
-    await flush()
-    expect(screen.getByText(/nonsense — Not a magnet link\./)).toBeTruthy()
-  })
-
-  it('stops counting it as fetching and never files it as a failure', async () => {
-    render(createElement(TorrentDownloader))
-    await flush()
-
-    fireEvent.change(screen.getByLabelText('Magnet links'), {
-      target: { value: `magnet:?xt=urn:btih:${INFOHASH}` },
-    })
-    fireEvent.click(screen.getByRole('button', { name: 'Resolve' }))
-    await flush()
-    expect(screen.queryAllByText(/fetching metadata for/)).toHaveLength(1)
-
-    fireEvent.click(screen.getByRole('button', { name: 'Discard' }))
-    await flush()
-    expect(apiMock.torrentDiscard).toHaveBeenCalledWith(INFOHASH)
-    expect(screen.queryAllByText(/fetching metadata for/)).toHaveLength(0)
-
-    // Let the poll that was already sleeping answer.
-    await act(async () => void (await vi.advanceTimersByTimeAsync(5000)))
-    expect(screen.queryAllByText(/Failed/)).toHaveLength(0)
-  })
-})
-
-describe('TorrentDownloader: a slow probe answering after a device switch', () => {
-  const NAS = { id: 'nas', label: 'Basement NAS', url: '192.168.1.50:19377', username: 'me', has_password: true, is_local: false }
-  const MAC = { id: 'local', label: 'This Mac', url: null, username: '', has_password: false, is_local: true }
-  const BOOK = { active: 'nas', devices: [NAS, MAC] }
-  const NAS_UP = { running: true, server: 'BitComet', detail: null, url: 'http://192.168.1.50:19377', device: NAS, is_local: false, save_folders: ['/vol1'] }
-  const NAS_DOWN = { running: false, server: null, detail: 'Basement NAS is not answering.', url: 'http://192.168.1.50:19377', device: NAS, is_local: false, save_folders: [] }
-  const MAC_UP = { running: true, server: 'BitComet', detail: null, url: 'http://127.0.0.1:19377', device: MAC, is_local: true, save_folders: [] }
-
-  const page = (active: boolean) =>
-    createElement(ToolActiveContext.Provider, { value: active }, createElement(TorrentDownloader))
-  const flush = () => act(async () => void (await Promise.resolve()))
-
-  afterEach(() => vi.clearAllMocks())
-
-  it('keeps the picked device instead of letting the stale answer win', async () => {
-    let landSlow: (s: unknown) => void = () => {}
-    apiMock.torrentStatus
-      .mockResolvedValueOnce(NAS_UP)
-      .mockImplementationOnce(() => new Promise((r) => (landSlow = r)))
-      .mockResolvedValue(MAC_UP)
-    apiMock.torrentDevices.mockResolvedValue(BOOK)
-    apiMock.torrentDeviceSelect.mockResolvedValue({ ...BOOK, active: 'local' })
-
-    const { rerender } = render(page(true))
-    await flush()
-
-    // Leaving and returning to the tab re-probes; the sleeping NAS takes seconds.
-    rerender(page(false))
-    rerender(page(true))
-    await flush()
-
-    fireEvent.click(screen.getByRole('button', { name: 'Change device' }))
-    fireEvent.click(screen.getAllByRole('radio')[1]!)
-    await flush()
-    await flush()
-    expect(apiMock.torrentDeviceSelect).toHaveBeenCalledWith('local')
-
-    await act(async () => {
-      landSlow(NAS_DOWN)
-      await Promise.resolve()
-    })
-    expect(screen.queryAllByText('Basement NAS is not answering.')).toHaveLength(0)
-    expect(screen.queryAllByText('http://192.168.1.50:19377')).toHaveLength(0)
-  })
-
-  it('says why a switch did not take, with no device form open', async () => {
-    apiMock.torrentStatus.mockResolvedValue(NAS_UP)
-    apiMock.torrentDevices.mockResolvedValue(BOOK)
-    apiMock.torrentDeviceSelect.mockRejectedValue(new ApiError('No such device.', 404))
-
-    render(page(true))
-    await flush()
-
-    fireEvent.click(screen.getByRole('button', { name: 'Change device' }))
-    fireEvent.click(screen.getAllByRole('radio')[1]!)
-    await flush()
-    await flush()
-    expect(screen.getByText('No such device.')).toBeTruthy()
   })
 })

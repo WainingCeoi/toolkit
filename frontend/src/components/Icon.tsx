@@ -1,5 +1,3 @@
-import type { CSSProperties } from 'react'
-
 const paths = {
   toolkit: (
     <>
@@ -141,12 +139,10 @@ export default function Icon({
   name,
   size = 20,
   className,
-  style,
 }: {
   name: IconName
   size?: number
   className?: string
-  style?: CSSProperties
 }) {
   return (
     <svg
@@ -159,7 +155,6 @@ export default function Icon({
       strokeLinecap="round"
       strokeLinejoin="round"
       className={className}
-      style={style}
       aria-hidden="true"
     >
       {paths[name]}

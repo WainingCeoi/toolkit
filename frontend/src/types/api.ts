@@ -2,7 +2,6 @@
 
 // --- job envelope ---
 
-export type JobState = 'running' | 'done' | 'failed' | 'cancelled'
 export type JobItemState = 'pending' | 'running' | 'done' | 'failed'
 
 export interface JobItem {

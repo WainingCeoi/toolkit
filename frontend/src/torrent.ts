@@ -3,8 +3,7 @@
 import { ApiError } from './api'
 import type { TorrentFileRow, TorrentResolve } from './types/api'
 
-// Mirrors SIZED_CATEGORIES in toolkit_engine/filetypes.py; update both.
-export const SIZED_CATEGORIES = new Set(['video', 'audio'])
+const SIZED_CATEGORIES = new Set(['video', 'audio'])
 
 // Mirrors DEFAULT_SAVE_DIR in the backend; update both.
 export const DEFAULT_SAVE_DIR = '~/Downloads'
