@@ -161,17 +161,25 @@ def test_find_manifests_leaves_poetry_and_pdm_projects_alone(tmp_path):
     ]
 
 
-def test_find_manifests_leaves_pnpm_yarn_and_bun_projects_alone(tmp_path):
+def test_find_manifests_selects_pnpm_without_selecting_yarn_or_bun(tmp_path):
     for i, lock in enumerate(("pnpm-lock.yaml", "yarn.lock", "bun.lock", "bun.lockb")):
         project = _npm_project(tmp_path / f"p{i}")
         (project / lock).write_text("", encoding="utf-8")
-    assert depsync.find_manifests(str(tmp_path))[0] == []
+    pinned = _npm_project(
+        tmp_path / "pinned",
+        PACKAGE_JSON.replace("{", '{"packageManager":"pnpm@10.0.0",', 1),
+    )
+    (pinned / "package-lock.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "p1" / "package-lock.json").write_text("{}", encoding="utf-8")
 
-    # A package-lock.json beside it means the user does drive this one with npm.
-    (tmp_path / "p0" / "package-lock.json").write_text("{}", encoding="utf-8")
-    assert [m.rel for m in depsync.find_manifests(str(tmp_path))[0]] == [
-        "p0/package.json"
-    ]
+    manifests, error = depsync.find_manifests(str(tmp_path))
+
+    assert error is None
+    assert {m.rel: m.kind for m in manifests} == {
+        "p0/package.json": "pnpm",
+        "p1/package.json": "npm",
+        "pinned/package.json": "pnpm",
+    }
 
 
 def test_find_manifests_rejects_empty_and_relative(tmp_path):
@@ -685,6 +693,78 @@ def test_write_manifest_npm_rolls_back_when_no_culprit_is_named(tmp_path, monkey
     assert (root / "package.json").read_text(encoding="utf-8") == original
 
 
+def _pnpm_member(root):
+    member = _npm_project(root / "packages" / "web")
+    (root / "pnpm-workspace.yaml").write_text(
+        "packages: ['packages/{web,api}']\n", encoding="utf-8"
+    )
+    lock = root / "pnpm-lock.yaml"
+    lock.write_text(
+        """\
+lockfileVersion: '9.0'
+importers:
+  .:
+    devDependencies:
+      eslint: {specifier: ^10.0.0, version: 10.7.0}
+  packages/web:
+    devDependencies:
+      eslint: {specifier: ^9.15.0, version: 9.16.0(peer@1.0.0)}
+""",
+        encoding="utf-8",
+    )
+    return member, lock
+
+
+def test_pnpm_scan_reads_only_the_selected_workspace_importer(tmp_path, monkeypatch):
+    member, _ = _pnpm_member(tmp_path)
+    monkeypatch.setattr(depsync.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    def install(cmd, cwd, *_):
+        assert cmd[0] == "/usr/bin/pnpm" and "--lockfile-only" in cmd
+        assert Path(cwd) == member.resolve()
+        return True, ""
+
+    def outdated(cmd, **kwargs):
+        assert cmd[:2] == ["/usr/bin/pnpm", "outdated"]
+        assert kwargs["cwd"] == member.resolve()
+        return subprocess.CompletedProcess(cmd, 1, '{"react":{"latest":"19.1.0"}}', "")
+
+    monkeypatch.setattr(depsync, "_stream", install)
+    monkeypatch.setattr(depsync.subprocess, "run", outdated)
+    [manifest], error = depsync.find_manifests(str(member))
+
+    result = depsync.scan_manifest(manifest)
+
+    assert error is None and result["error"] is None and result["kind"] == "pnpm"
+    assert {b["name"]: b["new"] for b in result["bumps"]} == {
+        "react": "^19.1.0",
+        "eslint": "^9.16.0",
+    }
+
+
+def test_pnpm_apply_restores_workspace_lock_and_manifest_on_failure(
+    tmp_path, monkeypatch
+):
+    member, lock = _pnpm_member(tmp_path)
+    [manifest], _ = depsync.find_manifests(str(member))
+    original_lock = lock.read_bytes()
+    monkeypatch.setattr(depsync, "pnpm_latest", lambda _: ({"react": "19.1.0"}, None))
+
+    def refresh(target):
+        assert '"react": "^19.1.0"' in target.path.read_text(encoding="utf-8")
+        lock.write_text("partial resolution", encoding="utf-8")
+        return False, "resolution failed"
+
+    monkeypatch.setattr(depsync, "pnpm_lock_refresh", refresh)
+
+    result = depsync.write_manifest(manifest)
+
+    assert result["error"] and "resolution failed" in result["error"]
+    assert result["written"] == 0 and result["changed"] == []
+    assert manifest.path.read_text(encoding="utf-8") == PACKAGE_JSON
+    assert lock.read_bytes() == original_lock
+
+
 # --- API: scan (syncs monkeypatched) + apply ---
 
 
@@ -710,6 +790,75 @@ def _fake_syncs(monkeypatch):
         depsync, "run_npm_upgrade", lambda *a, **k: (True, "up to date")
     )
     monkeypatch.setattr(depsync, "npm_latest", lambda folder: (LATEST, None))
+
+
+def test_runtime_updates_only_choose_compatible_stable_patches(
+    client, tmp_path, monkeypatch
+):
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nrequires-python = ">=3.14.7,<3.14.11"\n', encoding="utf-8"
+    )
+    project = tmp_path / "app"
+    project.mkdir()
+    python = project / ".python-version"
+    node = project / ".nvmrc"
+    rolling = project / ".node-version"
+    python.write_text("3.14.7\n", encoding="utf-8")
+    node.write_bytes(b"# app\r\nv22.22.9\r\n")
+    rolling.write_text("lts/*\n", encoding="utf-8")
+    monkeypatch.setattr(
+        depsync.RuntimeReleases,
+        "python",
+        lambda *args: (["3.14.10", "3.14.11", "3.14.9", "3.14.12rc1", "3.15.2"], None),
+    )
+    monkeypatch.setattr(
+        depsync.RuntimeReleases,
+        "node",
+        (["22.22.8", "22.22.11-rc.1", "22.23.1", "22.22.10", "23.22.20"], None),
+    )
+
+    started = client.post("/api/deps/scan", json={"folder": str(project)})
+    snap = _wait(client, started.json()["job_id"])
+    assert snap["state"] == "done"
+    assert {t["rel"]: t["bumps"][0]["new"] for t in snap["result"]["targets"]} == {
+        ".nvmrc": "v22.22.10",
+        ".python-version": "3.14.10",
+    }
+    assert python.read_text(encoding="utf-8") == "3.14.7\n"
+
+    applied = client.post(
+        "/api/deps/apply", json={"folder": str(project), "commit": False}
+    )
+
+    assert applied.json()["written_total"] == 2
+    assert python.read_text(encoding="utf-8") == "3.14.10\n"
+    assert node.read_bytes() == b"# app\r\nv22.22.10\r\n"
+    assert rolling.read_text(encoding="utf-8") == "lts/*\n"
+
+
+@requires_git
+def test_rejected_runtime_commit_restores_the_pin(client, tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git(repo)
+    original = b"# app\r\nv22.22.2\r\n"
+    pin = repo / ".node-version"
+    pin.write_bytes(original)
+    _git(repo, "add", pin.name)
+    _git(repo, "commit", "-qm", "init")
+    hook = repo / ".git" / "hooks" / "pre-commit"
+    hook.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    hook.chmod(0o755)
+    monkeypatch.setattr(depsync.RuntimeReleases, "node", (["22.22.3"], None))
+
+    result = client.post(
+        "/api/deps/apply", json={"folder": str(repo), "commit": True}
+    ).json()
+
+    assert result["written_total"] == 0
+    assert "rolled back" in result["results"][0]["error"]
+    assert pin.read_bytes() == original
+    assert _git(repo, "status", "--porcelain").stdout == ""
 
 
 def test_scan_rejects_bad_folder_and_no_manifests(client, tmp_path):

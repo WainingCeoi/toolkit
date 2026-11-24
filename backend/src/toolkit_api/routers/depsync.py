@@ -1,9 +1,9 @@
-"""Dependency Upgrader: upgrade every uv/npm manifest under a folder, then commit."""
+"""Dependency Upgrader: scan and update dependencies and project runtimes."""
 
 from __future__ import annotations
 
 import threading
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -11,6 +11,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from toolkit_engine import depsync
+from toolkit_engine.runtime_releases import RuntimeReleases
 
 from ..deps import JobsDep
 from ..jobs import Job
@@ -33,26 +34,34 @@ def _root_key(folder: str) -> str:
 
 
 @contextmanager
-def _exclusive_root(root: str) -> Iterator[None]:
-    here = Path(root)
+def _exclusive_root(
+    root: str, manifests: Iterable[depsync.Manifest] = ()
+) -> Iterator[None]:
+    roots = {root}
+    for manifest in manifests:
+        if manifest.workspace is not None:
+            roots.add(str(manifest.workspace))
+        if manifest.pnpm_lock is not None:
+            roots.add(str(manifest.pnpm_lock.parent))
     with _busy_lock:
-        # Nested roots clash too: /repo and /repo/backend share the same manifests.
+        # Nested scans and workspace siblings may write the same lockfile.
         if any(
-            here.is_relative_to(other) or Path(other).is_relative_to(here)
+            Path(here).is_relative_to(other) or Path(other).is_relative_to(here)
+            for here in roots
             for other in _busy_roots
         ):
             raise _BusyError(_BUSY)
-        _busy_roots.add(root)
+        _busy_roots.update(roots)
     try:
         yield
     finally:
         with _busy_lock:
-            _busy_roots.discard(root)
+            _busy_roots.difference_update(roots)
 
 
 _NO_MANIFESTS = (
-    "❌ No pyproject.toml or package.json found under that folder "
-    "(node_modules, .venv, .git, and build dirs are skipped)."
+    "❌ No pyproject.toml or package.json targets or exact runtime pins found. "
+    "Runtime pins are read from .python-version, .node-version, or .nvmrc."
 )
 _NOT_A_REPO = (
     "❌ Not a git repository — uncheck “commit after applying” to write without "
@@ -113,8 +122,9 @@ def scan(req: ScanIn, jobs: JobsDep) -> JobStartedOut:
     root = str(Path(req.folder).expanduser())
 
     def worker(job):
-        with _exclusive_root(_root_key(req.folder)):
+        with _exclusive_root(_root_key(req.folder), manifests):
             targets = []
+            releases = RuntimeReleases()
             for manifest in manifests:
                 if job.cancelled:
                     return None
@@ -126,6 +136,7 @@ def scan(req: ScanIn, jobs: JobsDep) -> JobStartedOut:
                             f"{rel}: {line}"
                         ),
                         is_cancelled=lambda: job.cancelled,
+                        releases=releases,
                     )
                 )
             if job.cancelled:
@@ -144,7 +155,7 @@ def scan(req: ScanIn, jobs: JobsDep) -> JobStartedOut:
 def apply(req: ApplyIn) -> ApplyOut:
     manifests = _apply_targets(req)
     try:
-        with _exclusive_root(_root_key(req.folder)):
+        with _exclusive_root(_root_key(req.folder), manifests):
             return _apply_manifests(manifests, req)
     except _BusyError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from None
@@ -156,7 +167,7 @@ def start_apply(req: ApplyIn, jobs: JobsDep) -> JobStartedOut:
     manifests = _apply_targets(req)
 
     def worker(job: Job) -> dict:
-        with _exclusive_root(_root_key(req.folder)):
+        with _exclusive_root(_root_key(req.folder), manifests):
             result = _apply_manifests(manifests, req, job=job)
         if job.cancelled:
             job.set_message(
@@ -168,7 +179,7 @@ def start_apply(req: ApplyIn, jobs: JobsDep) -> JobStartedOut:
     return JobStartedOut(job_id=job.id)
 
 
-def _apply_targets(req: ApplyIn) -> list:
+def _apply_targets(req: ApplyIn) -> list[depsync.Manifest]:
     """Shared preflight for synchronous and job-based apply."""
     manifests, err = depsync.find_manifests(req.folder)
     if err:
@@ -186,17 +197,22 @@ def _apply_targets(req: ApplyIn) -> list:
 
 
 def _apply_manifests(
-    manifests: list, req: ApplyIn, *, job: Job | None = None
+    manifests: list[depsync.Manifest], req: ApplyIn, *, job: Job | None = None
 ) -> ApplyOut:
     # A manifest write/relock and each commit are indivisible cancellation units.
     # Never interrupt one halfway through or claim that cancellation rolls it back.
     results = []
-    for manifest in manifests:
+    releases = RuntimeReleases()
+    # Resolve dependencies with the current pins before switching the project versions.
+    for manifest in sorted(manifests, key=lambda target: target.is_runtime):
         if job is not None:
             if job.cancelled:
                 break
             job.set_message(f"Applying {manifest.rel} …")
-        results.append(depsync.write_manifest(manifest))
+        if manifest.is_runtime:
+            results.append(depsync.write_manifest(manifest, releases=releases))
+        else:
+            results.append(depsync.write_manifest(manifest))
     commits: list[dict] = []
 
     if req.commit and not (job is not None and job.cancelled):

@@ -31,7 +31,7 @@ function BumpTable({ bumps }: { bumps: Bump[] }) {
       <table className="table">
         <thead>
           <tr>
-            <th scope="col">Package</th>
+            <th scope="col">Package or interpreter</th>
             <th scope="col">Change</th>
             <th scope="col">Section</th>
           </tr>
@@ -105,8 +105,7 @@ export default function DepUpgrade() {
     <div>
       <ToolHeader slug="dep-upgrade" />
       <p className="page-sub">
-        Find Python and Node.js package updates across your project. Refresh
-        lockfiles, review the proposed version changes, then apply them with an optional commit.
+        Review package updates and interpreter patches across your project, then apply them with an optional commit.
       </p>
 
       <div className="station">
@@ -124,7 +123,7 @@ export default function DepUpgrade() {
 
             <div className="action-summary">
               <strong>Scanning updates lockfiles</strong>
-              <p>The scan runs uv lock -U or npm install --package-lock-only, including in subfolders. Manifest version changes are applied after review.</p>
+              <p>The scan refreshes uv, npm, and pnpm lockfiles. For pinned interpreters, it looks for newer patches within the current major and minor version.</p>
             </div>
 
             <Button
@@ -133,9 +132,9 @@ export default function DepUpgrade() {
               loading={running}
               disabled={!folder.trim() || running || applying}
             >
-              <Icon name="search" size={17} /> Scan &amp; refresh locks
+              <Icon name="search" size={17} /> Scan for updates
             </Button>
-            {!folder.trim() && <p className="hint">Choose a project containing pyproject.toml or package.json.</p>}
+            {!folder.trim() && <p className="hint">Choose a folder containing a package manifest or a version file such as .python-version, .node-version, or .nvmrc.</p>}
             {error && <div className="note error">{error}</div>}
           </div>
 
@@ -163,12 +162,12 @@ export default function DepUpgrade() {
                 spellCheck={false}
               />
               <p style={caption}>
-                One commit covers every upgraded manifest and its lockfile. Blank
+                One commit covers the updated files in each repository. Blank
                 falls back to “{DEFAULT_COMMIT_MESSAGE}”.
               </p>
             </div>
 
-            <p className="hint">Review major version changes for compatibility before applying.</p>
+            <p className="hint">Review major package updates for compatibility. After applying interpreter updates, use your version manager to install the new versions.</p>
           </div>
         </div>
 
@@ -176,17 +175,17 @@ export default function DepUpgrade() {
           <div className="step"><span className="n">03</span><span>Review &amp; apply</span></div>
 
           {!snapshot && (
-            <EmptyState icon="package" title="Package updates appear here">Scan a project to compare current and proposed versions, including major changes.</EmptyState>
+            <EmptyState icon="package" title="Updates appear here">Scan a project to compare current and proposed package and interpreter versions.</EmptyState>
           )}
 
           <JobPanel snapshot={snapshot}>
             {result && <div className="metrics">
-              <div className="metric"><span className="v">{targets.length}</span><span className="k">Manifests scanned</span></div>
+              <div className="metric"><span className="v">{targets.length}</span><span className="k">Files scanned</span></div>
               <div className={totalBumps > 0 ? 'metric' : 'metric ok'}><span className="v">{totalBumps}</span><span className="k">Proposed updates</span></div>
             </div>}
             {result && targets.length === 0 && (
               <div className="note info">
-                No uv or npm manifests found under that folder.
+                No supported manifests or interpreter pins found under that folder.
               </div>
             )}
 
@@ -229,7 +228,7 @@ export default function DepUpgrade() {
 
             {applyResult && (
               <div style={{ marginTop: 12 }}>
-                <div className="action-summary"><strong>{applyResult.written_total} version changes applied</strong><p>{applyResult.commits.length} commit(s) created. Review individual manifests below.</p></div>
+                <div className="action-summary"><strong>{applyResult.written_total} version changes applied</strong><p>{applyResult.commits.length} commit(s) created. Review the results by file below.</p></div>
                 {applyResult.results.map((r) => (
                   <div
                     key={r.rel}

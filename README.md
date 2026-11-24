@@ -15,7 +15,8 @@ Install the prerequisites before the first run.
 - [Node.js](https://nodejs.org/) 22.22.2+ within 22.x, 24.15.0+ within 24.x, or 26+.
 - [pnpm](https://pnpm.io/installation), available on `PATH` (for example, `brew install pnpm`).
 
-uv manages Toolkit's pinned Python 3.14.7 runtime.
+uv manages Toolkit's Python runtime using the pin in
+[backend/.python-version](backend/.python-version).
 Run this command from the `toolkit` project folder in Terminal.
 
 ```bash
@@ -50,13 +51,20 @@ tabs along the bottom, so you can switch tools while a task is running.
 | Doc to Markdown | Convert PDFs, Office documents, and images into Markdown text. |
 | Cache Purge | Find cache and junk files, review the results, then delete them. |
 | Photos Library Filter | Create a copy of a Photos library without its caches, preserving originals and edits. |
-| Dependency Upgrader | Update packages in uv and npm projects and commit the changes. |
+| Dependency Upgrader | Review and apply uv, npm, and pnpm package updates and Python and Node.js interpreter patches, with an optional commit. |
 | WhatsApp Chat Exporter | Export selected WhatsApp chats as one ZIP with JSON, CSV, replies, reactions, and local attachments. |
 | Optimized-IP Subscription | Replace server addresses in proxy configurations and generate subscription links. |
 
 File Gatherer moves files, and Cache Purge permanently deletes them. Review the
 selected folders and results carefully. Photos Library Filter offers a dry run
 to preview changes before creating or updating the destination library.
+
+Dependency Upgrader checks exact interpreter pins in `.python-version`,
+`.node-version`, and `.nvmrc`. It proposes the newest available stable patch
+within each pin's current major and minor version. Python patches come from
+uv's available Python versions, and Node.js patches come from the Node.js
+release index. Apply writes the updated version files. Use your project's
+version manager to install or select the new interpreter.
 
 Open **WhatsApp Chat Exporter** from the home page or sidebar. Search or filter
 the chats synced by the native WhatsApp app on the Mac running Toolkit, check

@@ -102,9 +102,8 @@ CATEGORIES = [
                 slug="dep-upgrade",
                 title="📦 Dependency Upgrader",
                 description=(
-                    "Scan a project for uv (pyproject.toml) and npm (package.json) "
-                    "manifests, review the outdated dependencies, then upgrade and "
-                    "commit each one."
+                    "Review package updates and interpreter patches for Python and "
+                    "Node.js. Apply them with an optional commit."
                 ),
             ),
             ToolOut(
