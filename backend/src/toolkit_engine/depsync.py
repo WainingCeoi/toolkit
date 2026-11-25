@@ -21,6 +21,11 @@ from packaging.utils import canonicalize_name
 from packaging.version import InvalidVersion, Version
 
 from .runtime_releases import RuntimeReleases
+from .uv_workspace import (
+    find_uv_workspace,
+    stage_uv_workspace,
+    uv_workspace_fingerprint,
+)
 
 _SKIP_DIRS = {
     "node_modules",
@@ -229,7 +234,8 @@ def find_manifests(folder: str) -> tuple[list[Manifest], str | None]:
         here = Path(dirpath)
         if "pyproject.toml" in filenames and _is_uv_project(here / "pyproject.toml"):
             p = here / "pyproject.toml"
-            found.append(Manifest(p, "uv", str(p.relative_to(base))))
+            workspace = find_uv_workspace(here)
+            found.append(Manifest(p, "uv", str(p.relative_to(base)), workspace))
         if "package.json" in filenames:
             manifest = _js_manifest(here / "package.json", base)
             if manifest is not None:
@@ -279,11 +285,14 @@ def _stream(
     on_message=None,
     is_cancelled=None,
     poll: float = 0.2,
+    *,
+    env: dict[str, str] | None = None,
 ) -> tuple[bool, str]:
     """Run ``cmd`` in ``folder``, streaming output lines to ``on_message``."""
     proc = subprocess.Popen(
         cmd,
         cwd=folder,
+        env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
@@ -350,23 +359,34 @@ def _lock_refresh(cmd: list[str], folder: str, tool: str) -> tuple[bool, str]:
 
 
 def run_uv_upgrade(folder, on_message=None, is_cancelled=None) -> tuple[bool, str]:
-    """Upgrade uv.lock only: the scan reads the lock and never needs the venv."""
+    """Resolve a candidate lock in the staged project's directory."""
     uv = shutil.which("uv")
     if uv is None:
         return False, "❌ uv is not installed or not on PATH."
-    return _stream([uv, "lock", "-U"], folder, on_message, is_cancelled)
+    return _stream(
+        [uv, "lock", "-U"],
+        folder,
+        on_message,
+        is_cancelled,
+        env=dict(os.environ, UV_PROJECT=folder, UV_WORKING_DIR=folder),
+    )
 
 
 def uv_lock_refresh(folder: str) -> tuple[bool, str]:
     """Re-resolve uv.lock: it stores the declared floors, so a bump makes it stale."""
-    return _lock_refresh(["uv", "lock"], folder, "uv")
+    return _lock_refresh(
+        ["uv", "lock", "--project", folder, "--directory", folder], folder, "uv"
+    )
 
 
 def resolved_versions(folder: str) -> tuple[dict[str, str], str | None]:
     """Canonical-name → version, read from the folder's ``uv.lock``."""
-    lock = _lock_path(folder, "uv.lock")
+    return _resolved_uv_versions(_lock_path(folder, "uv.lock"))
+
+
+def _resolved_uv_versions(lock: Path) -> tuple[dict[str, str], str | None]:
     if not lock.is_file():
-        return {}, f"❌ No uv.lock in {folder} (run the scan first)."
+        return {}, f"❌ No uv.lock in {lock.parent}."
     try:
         data = tomllib.loads(lock.read_text(encoding="utf-8"))
     except (OSError, tomllib.TOMLDecodeError) as exc:
@@ -1013,6 +1033,31 @@ def _runtime_bump(
 
 _LOCKS = {"uv": "uv.lock", "npm": "package-lock.json"}
 _NPM_RETRY_ROUNDS = 3
+UV_PREVIEW_STALE = "The uv project changed since the preview. Scan again."
+
+
+@dataclass(frozen=True)
+class UvScan:
+    versions: dict[str, str]
+    fingerprint: str = ""
+    error: str | None = None
+
+
+def _scan_uv_workspace(workspace: Path, on_message, is_cancelled) -> UvScan:
+    try:
+        fingerprint = uv_workspace_fingerprint(workspace)
+        with stage_uv_workspace(workspace) as staged:
+            ok, log = run_uv_upgrade(str(staged), on_message, is_cancelled)
+            if is_cancelled is not None and is_cancelled():
+                return UvScan({})
+            if not ok:
+                return UvScan({}, error=f"uv lock -U failed:\n{_tail(log)}")
+            versions, error = _resolved_uv_versions(staged / "uv.lock")
+        if uv_workspace_fingerprint(workspace) != fingerprint:
+            return UvScan({}, error=UV_PREVIEW_STALE)
+        return UvScan(versions, fingerprint, error)
+    except (OSError, ValueError) as exc:
+        return UvScan({}, error=f"Could not preview uv dependencies: {exc}")
 
 
 def scan_manifest(
@@ -1021,25 +1066,30 @@ def scan_manifest(
     is_cancelled=None,
     *,
     releases: RuntimeReleases | None = None,
+    uv_scans: dict[Path, UvScan] | None = None,
 ) -> dict:
-    """Compute version updates and refresh dependency locks where required."""
+    """Preview version updates. Only JavaScript managers refresh live locks here."""
     folder = str(manifest.path.parent)
     out = {"rel": manifest.rel, "kind": manifest.kind, "bumps": [], "error": None}
     if manifest.is_runtime:
         bump, out["error"] = _runtime_bump(manifest, releases or RuntimeReleases())
         bumps = [bump] if bump else []
     elif manifest.kind == "uv":
-        ok, log = run_uv_upgrade(folder, on_message, is_cancelled)
+        workspace = manifest.workspace or find_uv_workspace(manifest.path.parent)
+        if uv_scans is None:
+            uv_scans = {}
+        if workspace not in uv_scans:
+            uv_scans[workspace] = _scan_uv_workspace(
+                workspace, on_message, is_cancelled
+            )
+        preview = uv_scans[workspace]
         if is_cancelled is not None and is_cancelled():
             return out
-        if not ok:
-            out["error"] = f"uv lock -U failed:\n{_tail(log)}"
+        if preview.error:
+            out["error"] = preview.error
             return out
-        resolved, err = resolved_versions(folder)
-        if err:
-            out["error"] = err
-            return out
-        bumps = compute_uv_bumps(manifest.path, resolved)
+        bumps = compute_uv_bumps(manifest.path, preview.versions)
+        out["uv_fingerprint"] = preview.fingerprint
     else:
         if manifest.kind == "pnpm":
             ok, log = run_pnpm_upgrade(manifest, on_message, is_cancelled)
@@ -1103,11 +1153,8 @@ def _npm_write_with_retry(
     return [], skipped, "npm could not resolve these upgrades after several tries."
 
 
-def write_manifest(
-    manifest: Manifest, *, releases: RuntimeReleases | None = None
-) -> dict:
-    """Write one manifest and refresh its lockfile if needed, without committing."""
-    result = {
+def _write_result(manifest: Manifest) -> dict:
+    return {
         "rel": manifest.rel,
         "kind": manifest.kind,
         "written": 0,
@@ -1117,6 +1164,80 @@ def write_manifest(
         "changed": [],
         "originals": {},
     }
+
+
+def write_reviewed_uv_workspace(
+    workspace: Path, targets: list[tuple[Manifest, dict]]
+) -> list[dict]:
+    """Relock reviewed changes in a copy before publishing the updated files."""
+    results = [_write_result(manifest) for manifest, _ in targets]
+    pending = []
+    for (manifest, preview), result in zip(targets, results, strict=True):
+        result["error"] = preview["error"]
+        if preview["bumps"]:
+            pending.append((manifest.path, preview, result))
+    if not pending:
+        return results
+
+    originals: dict[str, str | None] = {}
+    try:
+        fingerprint = pending[0][1]["uv_fingerprint"]
+        if uv_workspace_fingerprint(workspace) != fingerprint:
+            raise ValueError(UV_PREVIEW_STALE)
+        with stage_uv_workspace(workspace) as staged:
+            edits = []
+            for path, preview, result in pending:
+                staged_path = staged / path.relative_to(workspace)
+                versions = {
+                    canonicalize_name(bump["name"]): bump["new"].removeprefix(">=")
+                    for bump in preview["bumps"]
+                }
+                bumps = compute_uv_bumps(staged_path, versions)
+                if [bump_dict(bump) for bump in bumps] != preview["bumps"]:
+                    raise ValueError(UV_PREVIEW_STALE)
+                apply_uv_bumps(staged_path, bumps)
+                edits.append((path, staged_path, result, preview["bumps"]))
+            ok, log = uv_lock_refresh(str(staged))
+            if not ok:
+                raise ValueError(f"uv lock failed:\n{_tail(log)}")
+            lock, candidate = workspace / "uv.lock", staged / "uv.lock"
+            changes = {
+                path: staged_path.read_bytes() for path, staged_path, _, _ in edits
+            }
+            changes[lock] = candidate.read_bytes()
+        snapshots = {
+            path: path.read_bytes() if path.is_file() else None for path in changes
+        }
+        if uv_workspace_fingerprint(workspace) != fingerprint:
+            raise ValueError(UV_PREVIEW_STALE)
+        for path, content in changes.items():
+            original = snapshots[path]
+            if content != original:
+                originals[str(path)] = (
+                    original.decode("utf-8") if original is not None else None
+                )
+                path.write_bytes(content)
+        for path, _, result, bumps in edits:
+            changed = [file for file in (path, lock) if str(file) in originals]
+            result.update(
+                written=len(bumps),
+                bumps=bumps,
+                changed=changed,
+                originals={str(file): originals[str(file)] for file in changed},
+            )
+    except (OSError, ValueError) as exc:
+        with contextlib.suppress(OSError):
+            restore(originals)
+        for _, _, result in pending:
+            result["error"] = str(exc)
+    return results
+
+
+def write_manifest(
+    manifest: Manifest, *, releases: RuntimeReleases | None = None
+) -> dict:
+    """Write one manifest and refresh its lockfile if needed, without committing."""
+    result = _write_result(manifest)
     originals: dict[str, str | None] = {}
     try:
         if manifest.is_runtime:

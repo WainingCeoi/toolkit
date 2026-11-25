@@ -123,6 +123,8 @@ export interface ScanTarget {
   kind: string
   bumps: Bump[]
   error: string | null
+  project?: { root: string; name: string }
+  project_rel?: string
 }
 
 export interface DepScanResult {

@@ -272,6 +272,25 @@ input[type="range"] { cursor: pointer; }
 .expander > summary::before { content: "›"; display: inline-block; margin-right: 9px; color: var(--faint); }
 .expander[open] > summary::before { transform: rotate(90deg); }
 .expander > .body { padding: 5px 14px 14px; }
+.dep-project > summary { display: flex; flex-wrap: wrap; align-items: baseline; row-gap: 5px; }
+.dep-project-name { color: var(--text); overflow-wrap: anywhere; margin-right: 10px; }
+.dep-project-counts { display: flex; flex-wrap: wrap; gap: 3px 9px; margin-left: auto; font-size: 11px; }
+.dep-project-errors { color: var(--red-text); }
+.dep-project-current { color: var(--teal-text); }
+.dep-project-target { margin: 8px 0 12px; overflow-wrap: anywhere; }
+.dep-current-targets { font-size: 12px; color: var(--muted); }
+.dep-current-targets > strong { color: var(--teal-text); }
+.dep-current-targets ul { list-style: none; margin: 5px 0 0; padding: 0; }
+.dep-current-targets li { display: flex; flex-wrap: wrap; gap: 2px 8px; padding: 3px 0; overflow-wrap: anywhere; }
+.dep-current-targets li span { font: 11px var(--mono); }
+.dep-current-targets li small { color: var(--faint); font-size: 10px; text-transform: uppercase; }
+.dep-apply-section { display: block; margin-top: 3px; color: var(--faint); font: 10px var(--mono); }
+.dep-apply-attention > summary { color: var(--red-text); }
+.dep-apply-items { list-style: none; margin: 0; padding: 0; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.dep-apply-items > li + li { margin-top: 10px; }
+.dep-apply-items p { margin: 3px 0 0; }
+.dep-apply-items ul { margin: 3px 0 0; padding-left: 18px; }
+.dep-apply-error { color: var(--red-text); white-space: pre-line; }
 .table { width: 100%; border-collapse: collapse; font-size: 12px; }
 .table th { text-align: left; font-weight: 550; font-size: 10px; color: var(--faint); padding: 10px; border-bottom: 1px solid var(--edge); }
 .table td { color: var(--muted); padding: 10px; border-bottom: 1px solid var(--edge); overflow-wrap: anywhere; }

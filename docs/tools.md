@@ -47,6 +47,19 @@ and are saved to `backend/.env`; automatic runs keep the stopping point updated.
 
 ## Dependency Upgrader
 
+Scan results are grouped by project, even when you scan just one project.
+Groups with proposed updates or scan errors open by default. Expand an
+up-to-date project to see the checked files grouped by directory. **Apply**
+uses the proposed updates from the whole scan.
+
+After applying, the result shows actual version changes by project and file.
+Open the notices to see any updates that failed or were skipped, and the
+commit list to see the commit hashes and files.
+
+Scanning previews uv dependency upgrades. The project’s `uv.lock` is written
+only when you select **Apply** and there are uv dependency upgrades to apply.
+Scanning refreshes npm and pnpm lockfiles.
+
 Dependency Upgrader checks exact interpreter pins in `.python-version`,
 `.node-version`, and `.nvmrc`. It proposes the newest available stable patch
 within each pin's current major and minor version. Python patches come from

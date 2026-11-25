@@ -1,4 +1,4 @@
-import { useState, type CSSProperties } from 'react'
+import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { api } from '../api'
 import { useToolJob } from '../jobs'
 import FolderField from '../components/FolderField'
@@ -7,7 +7,7 @@ import Button from '../components/Button'
 import ToolHeader from '../components/ToolHeader'
 import EmptyState from '../components/EmptyState'
 import Icon from '../components/Icon'
-import type { Bump, DepApplyResult, DepScanResult } from '../types/api'
+import type { Bump, DepApplyResult, DepScanResult, ScanTarget } from '../types/api'
 
 // Mirrors depsync.COMMIT_SUBJECT; keep them in sync.
 const DEFAULT_COMMIT_MESSAGE = 'chore(deps): update dependencies'
@@ -25,7 +25,7 @@ const badge: CSSProperties = {
   marginLeft: 8,
 }
 
-function BumpTable({ bumps }: { bumps: Bump[] }) {
+function BumpTable({ bumps, compact = false }: { bumps: Bump[]; compact?: boolean }) {
   return (
     <div style={{ overflowX: 'auto' }}>
       <table className="table">
@@ -33,7 +33,7 @@ function BumpTable({ bumps }: { bumps: Bump[] }) {
           <tr>
             <th scope="col">Package or interpreter</th>
             <th scope="col">Change</th>
-            <th scope="col">Section</th>
+            {!compact && <th scope="col">Section</th>}
           </tr>
         </thead>
         <tbody>
@@ -46,9 +46,10 @@ function BumpTable({ bumps }: { bumps: Bump[] }) {
                     major
                   </span>
                 )}
+                {compact && <small className="dep-apply-section">{b.table}</small>}
               </td>
               <td style={change}>{b.old} → {b.new}</td>
-              <td style={mono}>{b.table}</td>
+              {!compact && <td style={mono}>{b.table}</td>}
             </tr>
           ))}
         </tbody>
@@ -57,17 +58,173 @@ function BumpTable({ bumps }: { bumps: Bump[] }) {
   )
 }
 
+interface ProjectScan {
+  root: string
+  name: string
+  updates: number
+  errors: number
+  details: ScanTarget[]
+  current: ScanTarget[]
+}
+
+function groupProjects(root: string, targets: (ScanTarget & { written?: number })[]): ProjectScan[] {
+  const projects = new Map<string, ProjectScan>()
+  const fallback = { root, name: root.split('/').filter(Boolean).at(-1) ?? root }
+  for (const target of targets) {
+    const { root, name } = target.project ?? fallback
+    let project = projects.get(root)
+    if (!project) {
+      project = { root, name, updates: 0, errors: 0, details: [], current: [] }
+      projects.set(root, project)
+    }
+    const updates = target.written ?? target.bumps.length
+    project.updates += updates
+    if (target.error) project.errors++
+    const files = target.error || updates > 0 ? project.details : project.current
+    files.push(target)
+  }
+  return [...projects.values()].sort((a, b) => Number(b.details.length > 0) - Number(a.details.length > 0))
+}
+
+function CurrentTargets({ targets, showStatus }: { targets: ScanTarget[]; showStatus: boolean }) {
+  const directories = new Map<string, { name: string; kind: string }[]>()
+  for (const target of targets) {
+    const relative = target.project_rel ?? target.rel
+    const slash = relative.lastIndexOf('/')
+    const directory = slash < 0 ? '' : relative.slice(0, slash + 1)
+    const file = { name: relative.slice(slash + 1), kind: target.kind }
+    const files = directories.get(directory)
+    if (files) files.push(file)
+    else directories.set(directory, [file])
+  }
+
+  return (
+    <div className="dep-current-targets">
+      {showStatus && <strong>Up to date</strong>}
+      <ul role="list">
+        {[...directories].map(([directory, files]) => (
+          <li key={directory}>
+            <strong>{directory || 'Root'}</strong>
+            {files.map(({ name, kind }) => (
+              <span key={name}>{name} <small>{kind}</small></span>
+            ))}
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
+function ProjectResult({ project, applied = false }: { project: ProjectScan; applied?: boolean }) {
+  const files = project.details.length + project.current.length
+  const updateLabel = applied ? 'applied' : project.updates === 1 ? 'update' : 'updates'
+  return (
+    <details className="expander dep-project" open={project.details.length > 0}>
+      <summary>
+        <strong className="dep-project-name" title={project.root}>{project.name}</strong>
+        <span className="dep-project-counts">
+          <span>{files} {files === 1 ? 'file' : 'files'}</span>
+          {project.updates > 0 && <span>{project.updates} {updateLabel}</span>}
+          {project.errors > 0 && <span className="dep-project-errors">{project.errors} {project.errors === 1 ? 'error' : 'errors'}</span>}
+          {project.details.length === 0 && <span className="dep-project-current">Up to date</span>}
+        </span>
+      </summary>
+      <div className="body">
+        {project.details.map((target) => (
+          <div className="dep-project-target" key={target.rel}>
+            <strong style={change}>{target.project_rel ?? target.rel}</strong>
+            <span style={badge}>{target.kind}</span>
+            {target.error && <div className="note error">{target.error}</div>}
+            {!target.error && target.bumps.length > 0 && <BumpTable bumps={target.bumps} compact={applied} />}
+          </div>
+        ))}
+        {project.current.length > 0 && (
+          <CurrentTargets targets={project.current} showStatus={project.details.length > 0} />
+        )}
+      </div>
+    </details>
+  )
+}
+
+function ApplyReport({ result, scan }: { result: DepApplyResult; scan: DepScanResult }) {
+  const summaryRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    summaryRef.current?.focus()
+  }, [])
+
+  const scannedFiles = new Map(scan.targets.map((target) => [target.rel, target]))
+  const applied = result.results.flatMap((target) => {
+    if (target.written <= 0 || target.error) return []
+    const scanned = scannedFiles.get(target.rel)
+    return [{ ...target, project: scanned?.project, project_rel: scanned?.project_rel }]
+  })
+  const attention = result.results.filter((target) => target.error || target.skipped.length > 0)
+  const total = result.written_total
+
+  return (
+    <>
+      <div className="action-summary" role="status" tabIndex={-1} ref={summaryRef}>
+        <strong>{total === 0 ? 'No upgrades applied' : `${total} version ${total === 1 ? 'change' : 'changes'} applied`}</strong>
+      </div>
+
+      {attention.length > 0 && (
+        <details className="expander dep-apply-attention" open={total === 0}>
+          <summary>Needs attention · {attention.length} {attention.length === 1 ? 'file' : 'files'}</summary>
+          <div className="body">
+            <ul className="dep-apply-items" role="list">
+              {attention.map((target) => (
+                <li key={target.rel}>
+                  <strong>{target.rel}</strong>
+                  {target.error && <p className="dep-apply-error">{target.error}</p>}
+                  {target.skipped.length > 0 && (
+                    <ul>
+                      {target.skipped.map(({ name, reason }) => (
+                        <li key={name}>Skipped <strong>{name}</strong> — {reason}</li>
+                      ))}
+                    </ul>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </div>
+        </details>
+      )}
+
+      {groupProjects(scan.root, applied).map((project) => (
+        <ProjectResult key={project.root} project={project} applied />
+      ))}
+
+      {result.commits.length > 0 && (
+        <details className="expander">
+          <summary>{result.commits.length} {result.commits.length === 1 ? 'commit' : 'commits'} created</summary>
+          <div className="body">
+            <ul className="dep-apply-items" role="list">
+              {result.commits.map((commit, index) => (
+                <li key={`${commit.sha}:${index}`}>
+                  {commit.sha && <strong><code>{commit.sha}</code></strong>}
+                  <p>{commit.files.join(', ')}</p>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </details>
+      )}
+    </>
+  )
+}
+
 export default function DepUpgrade() {
   const [commitAfter, setCommitAfter] = useState(true)
   const [commitMessage, setCommitMessage] = useState(DEFAULT_COMMIT_MESSAGE)
   const [scannedThisMount, setScannedThisMount] = useState<string | null>(null)
   const [applying, setApplying] = useState(false)
-  const [applyResult, setApplyResult] = useState<DepApplyResult | null>(null)
+  const [appliedScan, setAppliedScan] = useState<{ result: DepApplyResult; scan: DepScanResult } | null>(null)
   const [applyError, setApplyError] = useState<string | null>(null)
 
   const { start, snapshot, running, error, setError } = useToolJob<DepScanResult>('/tools/dep-upgrade')
 
-  const result = snapshot?.state === 'done' ? snapshot.result : null
+  const completedScan = snapshot?.state === 'done' ? snapshot : null
+  const result = completedScan?.result ?? null
 
   // null until the user edits it: an untouched field follows a scan restored after mount.
   const [typedFolder, setTypedFolder] = useState<string | null>(null)
@@ -77,23 +234,26 @@ export default function DepUpgrade() {
   const targets = result?.targets ?? []
   const totalBumps = result?.total_bumps ?? 0
   const stale = result != null && scannedFolder !== folder
-  const canApply = totalBumps > 0 && !stale && applyResult == null
+  const canApply = totalBumps > 0 && !stale && !running && appliedScan == null
 
   async function runScan() {
     setError(null)
-    setApplyResult(null)
     setApplyError(null)
     // Only once the job starts: a rejected scan must not retarget Apply.
     const id = await start(() => api.depsScan(folder))
-    if (id) setScannedThisMount(folder)
+    if (id) {
+      setAppliedScan(null)
+      setScannedThisMount(folder)
+    }
   }
 
   async function runApply() {
-    if (scannedFolder === null) return
+    if (completedScan === null || scannedFolder === null || !canApply) return
     setApplying(true)
     setApplyError(null)
     try {
-      setApplyResult(await api.depsApply(scannedFolder, commitAfter, commitMessage))
+      const response = await api.depsApply(scannedFolder, commitAfter, commitMessage, completedScan.id)
+      setAppliedScan({ result: response, scan: completedScan.result })
     } catch (err) {
       setApplyError((err as Error).message)
     } finally {
@@ -122,8 +282,8 @@ export default function DepUpgrade() {
             />
 
             <div className="action-summary">
-              <strong>Scanning updates lockfiles</strong>
-              <p>The scan refreshes uv, npm, and pnpm lockfiles. For pinned interpreters, it looks for newer patches within the current major and minor version.</p>
+              <strong>uv lockfiles update on Apply</strong>
+              <p>The scan previews uv upgrades, refreshes npm and pnpm lockfiles, and checks pinned interpreters for newer patches.</p>
             </div>
 
             <Button
@@ -172,92 +332,50 @@ export default function DepUpgrade() {
         </div>
 
         <div className="panel result-panel">
-          <div className="step"><span className="n">03</span><span>Review &amp; apply</span></div>
+          <div className="step"><span className="n">03</span><span>{appliedScan ? 'Apply result' : 'Review & apply'}</span></div>
 
-          {!snapshot && (
+          {!snapshot && !appliedScan && (
             <EmptyState icon="package" title="Updates appear here">Scan a project to compare current and proposed package and interpreter versions.</EmptyState>
           )}
 
-          <JobPanel snapshot={snapshot}>
-            {result && <div className="metrics">
-              <div className="metric"><span className="v">{targets.length}</span><span className="k">Files scanned</span></div>
-              <div className={totalBumps > 0 ? 'metric' : 'metric ok'}><span className="v">{totalBumps}</span><span className="k">Proposed updates</span></div>
-            </div>}
-            {result && targets.length === 0 && (
-              <div className="note info">
-                No supported manifests or interpreter pins found under that folder.
-              </div>
-            )}
+          {appliedScan ? (
+            <ApplyReport {...appliedScan} />
+          ) : (
+            <JobPanel snapshot={snapshot}>
+              {result && <div className="metrics">
+                <div className="metric"><span className="v">{targets.length}</span><span className="k">Files scanned</span></div>
+                <div className={totalBumps > 0 ? 'metric' : 'metric ok'}><span className="v">{totalBumps}</span><span className="k">Proposed updates</span></div>
+              </div>}
+              {result && targets.length === 0 && (
+                <div className="note info">
+                  No supported manifests or interpreter pins found under that folder.
+                </div>
+              )}
 
-            {result &&
-              targets.map((t) => (
-                <div key={t.rel} style={{ marginTop: 14 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', marginBottom: 6 }}>
-                    <strong style={{ font: '12px var(--mono)' }}>{t.rel}</strong>
-                    <span style={badge}>{t.kind}</span>
+              {completedScan && result && groupProjects(result.root, result.targets).map((project) => (
+                <ProjectResult key={`${completedScan.id}:${project.root}`} project={project} />
+              ))}
+
+              {result &&
+                totalBumps > 0 &&
+                (stale ? (
+                  <div className="note warn" style={{ marginTop: 12 }}>
+                    Folder changed since this scan — re-scan before applying.
                   </div>
-                  {t.error ? (
-                    <div className="note error">{t.error}</div>
-                  ) : t.bumps.length === 0 ? (
-                    <div className="note ok">Up to date.</div>
-                  ) : (
-                    <BumpTable bumps={t.bumps} />
-                  )}
-                </div>
-              ))}
-
-            {result &&
-              totalBumps > 0 &&
-              (stale ? (
-                <div className="note warn" style={{ marginTop: 12 }}>
-                  Folder changed since this scan — re-scan before applying.
-                </div>
-              ) : (
-                <Button
-                  variant="primary"
-                  onClick={runApply}
-                  loading={applying}
-                  disabled={!canApply}
-                  style={{ marginTop: 14 }}
-                >
-                  <Icon name="check" size={17} /> Apply {totalBumps} upgrade(s){commitAfter ? ' & commit' : ''}
-                </Button>
-              ))}
-
-            {applyError && <div className="note error">{applyError}</div>}
-
-            {applyResult && (
-              <div style={{ marginTop: 12 }}>
-                <div className="action-summary"><strong>{applyResult.written_total} version changes applied</strong><p>{applyResult.commits.length} commit(s) created. Review the results by file below.</p></div>
-                {applyResult.results.map((r) => (
-                  <div
-                    key={r.rel}
-                    className={`note ${r.error ? 'error' : 'ok'}`}
-                    style={{ marginTop: 6 }}
+                ) : (
+                  <Button
+                    variant="primary"
+                    onClick={runApply}
+                    loading={applying}
+                    disabled={!canApply}
+                    style={{ marginTop: 14 }}
                   >
-                    <strong>{r.rel}</strong>
-                    {' — '}
-                    {r.error
-                      ? r.error
-                      : r.written === 0
-                        ? 'nothing upgraded'
-                        : `upgraded ${r.written}`}
-                    {r.skipped.length > 0 && (
-                      <div className="hint" style={{ marginTop: 4 }}>
-                        skipped {r.skipped.map((s) => s.name).join(', ')} —{' '}
-                        {r.skipped[0].reason}
-                      </div>
-                    )}
-                  </div>
+                    <Icon name="check" size={17} /> Apply {totalBumps} upgrade(s){commitAfter ? ' & commit' : ''}
+                  </Button>
                 ))}
-                {applyResult.commits.map((c) => (
-                  <div key={c.sha} className="note ok" style={{ marginTop: 6 }}>
-                    Committed <strong>{c.sha}</strong> — {c.files.join(', ')}
-                  </div>
-                ))}
-              </div>
-            )}
-          </JobPanel>
+            </JobPanel>
+          )}
+          {applyError && <div className="note error">{applyError}</div>}
         </div>
       </div>
     </div>
