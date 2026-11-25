@@ -244,9 +244,8 @@ def _read_messages(
     query: str,
     chat_id: int,
     db_path: Path,
-    *,
-    archive: ZipFile | None = None,
-    chat_folder: str = "",
+    archive: ZipFile,
+    chat_folder: str,
 ) -> list[dict]:
     rows = db.execute(query, (chat_id,)).fetchall()
     by_stanza: dict[str, sqlite3.Row | None] = {}
@@ -291,16 +290,6 @@ def _read_messages(
 
 def _chat_metadata(chat: ChatInfo) -> dict[str, int | str]:
     return {"chat_id": chat["id"], "chat_name": chat["name"]}
-
-
-def export_chat(chat_id: int, db_path: Path | None = None) -> tuple[str, str]:
-    """Return the chat name and its synchronized messages as JSON."""
-    db_path = db_path or DATABASE
-    with _read_database(db_path) as db:
-        chat = _read_chat(db, chat_id)
-        messages = _read_messages(db, _message_query(db), chat_id, db_path)
-    data = {**_chat_metadata(chat), "messages": messages}
-    return chat["name"], json.dumps(data, ensure_ascii=False, indent=2) + "\n"
 
 
 def _folder_key(name: str) -> str:

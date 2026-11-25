@@ -197,7 +197,6 @@ def test_all_api_routers_are_wired(app_state):
         "/api/torrent/{infohash}",
         "/api/whatsapp/chats",
         "/api/whatsapp/chats/export",
-        "/api/whatsapp/chats/{chat_id}/export",
         "/sub/{sub_id}",
     }
     assert expected <= paths, f"unwired routes: {expected - paths}"
