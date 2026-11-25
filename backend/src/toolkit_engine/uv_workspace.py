@@ -22,12 +22,9 @@ _SKIP = {
     ".mypy_cache",
     ".pytest_cache",
     ".ruff_cache",
+    "htmlcov",
     "node_modules",
     "__pycache__",
-    "build",
-    "dist",
-    "htmlcov",
-    "target",
 }
 
 
@@ -146,6 +143,13 @@ def _resolution_inputs(root: Path) -> tuple[set[Path], set[Path]]:
                 elif dependency.is_dir() and dependency not in projects:
                     pending.add(dependency)
     return projects, {path for path in files if path.is_file()}
+
+
+def uv_local_projects(root: Path) -> set[Path]:
+    """The workspace members and the path-source projects their lock describes."""
+    with suppress(OSError, ValueError):
+        return {project.resolve() for project in _resolution_inputs(root.resolve())[0]}
+    return set()
 
 
 def _inherited_config(root: Path) -> tuple[Path, bytes] | None:
