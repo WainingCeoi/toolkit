@@ -60,6 +60,12 @@ Scanning previews uv dependency upgrades. The project’s `uv.lock` is written
 only when you select **Apply** and there are uv dependency upgrades to apply.
 Scanning refreshes npm and pnpm lockfiles.
 
+For npm and pnpm, only versions written in `package.json` as `1.2.3`,
+`^1.2.3`, `~1.2.3`, or `>=1.2.3` are upgraded. Other entries are left
+unchanged and are not listed: pnpm `catalog:` entries (and the catalog
+versions in `pnpm-workspace.yaml`), `workspace:` links, dist-tags, URLs, and
+compound ranges.
+
 Dependency Upgrader checks exact interpreter pins in `.python-version`,
 `.node-version`, and `.nvmrc`. It proposes the newest available stable patch
 within each pin's current major and minor version. Python patches come from
