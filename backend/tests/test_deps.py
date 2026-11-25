@@ -956,29 +956,39 @@ def test_uv_scan_preserves_working_lock_until_confirmed_apply(
     assert lock.read_bytes() == updated_lock
 
 
-def test_apply_writes_uv_projects_linked_by_a_path_source(
-    client, tmp_path, monkeypatch
+@pytest.mark.parametrize("dependent, mutual", [("web-api", False), ("api", True)])
+def test_apply_writes_uv_projects_linked_by_path_sources(
+    client, tmp_path, monkeypatch, dependent, mutual
 ):
     lock = 'version = 1\n\n[[package]]\nname = "uvicorn"\nversion = "0.30.0"\n'
     newer = lock.replace("0.30.0", "0.31.0")
     pyproject = (
         '[project]\nname = "{name}"\nversion = "0.1.0"\n'
         'dependencies = ["uvicorn>=0.30.0"]\n'
+        '\n[tool.uv.sources]\n{source} = {{ path = "../{source}" }}\n'
     )
-    _uv_project(tmp_path / "shared", pyproject.format(name="shared"), lock)
+    plain = pyproject.partition("\n[tool.uv")[0]
     _uv_project(
-        tmp_path / "web-api",
-        pyproject.format(name="web-api")
-        + '\n[tool.uv.sources]\nshared = { path = "../shared" }\n',
+        tmp_path / "shared",
+        (pyproject if mutual else plain).format(name="shared", source=dependent),
         lock,
+    )
+    _uv_project(
+        tmp_path / dependent, pyproject.format(name=dependent, source="shared"), lock
     )
 
     def resolve(folder, *_args):
         (Path(folder) / "uv.lock").write_text(newer, encoding="utf-8")
         return True, "Resolved"
 
+    def relock(folder):
+        # Each lock must describe the manifests as they are once apply finishes.
+        for manifest in Path(folder).parent.glob("*/pyproject.toml"):
+            assert ">=0.31.0" in manifest.read_text(encoding="utf-8")
+        return resolve(folder)
+
     monkeypatch.setattr(depsync, "run_uv_upgrade", resolve)
-    monkeypatch.setattr(depsync, "uv_lock_refresh", resolve)
+    monkeypatch.setattr(depsync, "uv_lock_refresh", relock)
 
     job_id = client.post("/api/deps/scan", json={"folder": str(tmp_path)}).json()[
         "job_id"
@@ -991,7 +1001,7 @@ def test_apply_writes_uv_projects_linked_by_a_path_source(
 
     assert response.status_code == 200
     assert [r["error"] for r in response.json()["results"]] == [None, None]
-    for name in ("shared", "web-api"):
+    for name in ("shared", dependent):
         assert ">=0.31.0" in (tmp_path / name / "pyproject.toml").read_text("utf-8")
         assert (tmp_path / name / "uv.lock").read_text("utf-8") == newer
 

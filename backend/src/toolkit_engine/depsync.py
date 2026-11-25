@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import threading
 import tomllib
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -1166,15 +1167,26 @@ def _write_result(manifest: Manifest) -> dict:
     }
 
 
+def _reviewed_uv_bumps(path: Path, preview: dict) -> list[Bump]:
+    versions = {
+        canonicalize_name(bump["name"]): bump["new"].removeprefix(">=")
+        for bump in preview["bumps"]
+    }
+    return compute_uv_bumps(path, versions)
+
+
 def write_reviewed_uv_workspace(
     workspace: Path,
     targets: list[tuple[Manifest, dict]],
     applied: dict[str, str | None] | None = None,
+    upcoming: Iterable[tuple[Manifest, dict]] = (),
 ) -> list[dict]:
     """Relock reviewed changes in a copy before publishing the updated files.
 
     ``applied`` holds the previous text of files this apply already rewrote in
     other uv projects; they do not make this project's preview stale.
+    ``upcoming`` lists the reviewed uv targets this apply writes later, so the
+    lock already matches the projects referenced through path sources.
     """
     results = [_write_result(manifest) for manifest, _ in targets]
     pending = []
@@ -1194,15 +1206,18 @@ def write_reviewed_uv_workspace(
             edits = []
             for path, preview, result in pending:
                 staged_path = staged / path.relative_to(workspace)
-                versions = {
-                    canonicalize_name(bump["name"]): bump["new"].removeprefix(">=")
-                    for bump in preview["bumps"]
-                }
-                bumps = compute_uv_bumps(staged_path, versions)
+                bumps = _reviewed_uv_bumps(staged_path, preview)
                 if [bump_dict(bump) for bump in bumps] != preview["bumps"]:
                     raise ValueError(UV_PREVIEW_STALE)
                 apply_uv_bumps(staged_path, bumps)
                 edits.append((path, staged_path, result, preview["bumps"]))
+            for manifest, preview in upcoming:
+                relative = os.path.relpath(manifest.path.resolve(), workspace.resolve())
+                staged_path = Path(os.path.normpath(staged / relative))
+                if preview["bumps"] and staged_path.is_file():
+                    apply_uv_bumps(
+                        staged_path, _reviewed_uv_bumps(staged_path, preview)
+                    )
             ok, log = uv_lock_refresh(str(staged))
             if not ok:
                 raise ValueError(f"uv lock failed:\n{_tail(log)}")

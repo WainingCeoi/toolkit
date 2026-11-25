@@ -352,8 +352,11 @@ def _apply_manifests(
                     for result in results
                     for path, text in result["originals"].items()
                 }
+                upcoming = [later for group in reviewed_uv.values() for later in group]
                 results.extend(
-                    depsync.write_reviewed_uv_workspace(workspace, targets, applied)
+                    depsync.write_reviewed_uv_workspace(
+                        workspace, targets, applied, upcoming
+                    )
                 )
         elif manifest.is_runtime:
             results.append(depsync.write_manifest(manifest, releases=releases))
