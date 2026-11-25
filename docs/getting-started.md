@@ -5,7 +5,7 @@ Install the prerequisites before the first run.
 - macOS Command Line Tools (`xcode-select --install`) for Git, Make, and `python3`.
 - [uv](https://docs.astral.sh/uv/getting-started/installation/), which installs and manages Python for Toolkit.
 - [Node.js](https://nodejs.org/) 22.22.2+ within 22.x, 24.15.0+ within 24.x, or 26+.
-- [pnpm](https://pnpm.io/installation), available on `PATH` (for example, `brew install pnpm`).
+- [pnpm](https://pnpm.io/installation) 12.23+ within 12.x, available on `PATH` (for example, `brew install pnpm`).
 
 uv manages Toolkit's Python runtime using the pin in
 [backend/.python-version](../backend/.python-version).
