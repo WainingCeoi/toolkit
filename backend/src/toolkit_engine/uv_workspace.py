@@ -160,8 +160,8 @@ def uv_workspace_fingerprint(
     previous = {Path(path).resolve(): text for path, text in (applied or {}).items()}
     digest = hashlib.sha256()
     for path in sorted(files):
-        if path in previous:
-            if (text := previous[path]) is None:
+        if (resolved := path.resolve()) in previous:
+            if (text := previous[resolved]) is None:
                 continue  # Created by this apply, so the preview never saw it.
             content = hashlib.sha256(text.encode("utf-8")).digest()
         else:
