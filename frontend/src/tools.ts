@@ -95,7 +95,7 @@ export const TOOL_DETAILS: Record<string, ToolDetail> = {
     group: 'Files',
     icon: 'package',
     tag: 'Python · Node.js',
-    description: 'Review package updates, upgrade your project, and commit changes.',
+    description: 'Review package updates and interpreter patches, apply them, and commit changes.',
   },
   subscription: {
     title: 'Optimized-IP Subscription',
