@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import csv
-import io
 import json
 import sqlite3
 import unicodedata
@@ -11,6 +9,7 @@ from collections import Counter
 from collections.abc import Iterable, Iterator
 from contextlib import closing, contextmanager
 from datetime import UTC, datetime
+from itertools import chain
 from pathlib import Path
 from typing import BinaryIO, Literal, TypedDict
 from zipfile import ZIP_DEFLATED, ZipFile
@@ -57,37 +56,6 @@ _MESSAGE_QUERY = """
     WHERE m.ZCHATSESSION = ?
     ORDER BY m.ZSORT, m.Z_PK
 """
-_CSV_MESSAGE_COLUMNS = (
-    "row_id",
-    "message_id",
-    "sent_at",
-    "from_me",
-    "sender_id",
-    "text",
-    "message_type",
-)
-_CSV_REPLY_COLUMNS = {
-    "reply_to_message_id": "message_id",
-    "quoted_author_id": "quoted_author_id",
-    "quoted_text": "quoted_text",
-    "reply_status": "status",
-    "reply_to_row_id": "row_id",
-    "reply_original_text": "original_text",
-}
-_CSV_OPTIONAL_COLUMNS = (
-    "metadata_status",
-    "database_parent_row_id",
-    "attachment_name",
-    "attachment_path",
-    "attachment_status",
-    "thumbnail_path",
-    "thumbnail_status",
-    "media_caption",
-    "media_duration_seconds",
-    "contact_card",
-    "location",
-    "reactions",
-)
 
 
 class WhatsAppDatabaseError(RuntimeError):
@@ -238,26 +206,6 @@ def _export_message(row: sqlite3.Row, by_stanza: dict[str, sqlite3.Row | None]) 
     return record
 
 
-def _export_csv(messages: list[dict]) -> str:
-    output = io.StringIO(newline="")
-    writer = csv.DictWriter(
-        output, (*_CSV_MESSAGE_COLUMNS, *_CSV_REPLY_COLUMNS, *_CSV_OPTIONAL_COLUMNS)
-    )
-    writer.writeheader()
-    for message in messages:
-        reply = message["reply_to"] or {}
-        row = {
-            **{column: message.get(column) for column in _CSV_MESSAGE_COLUMNS},
-            **{column: reply.get(key) for column, key in _CSV_REPLY_COLUMNS.items()},
-            **{column: message.get(column) for column in _CSV_OPTIONAL_COLUMNS},
-        }
-        for column in ("contact_card", "location", "reactions"):
-            if value := row[column]:
-                row[column] = json.dumps(value, ensure_ascii=False)
-        writer.writerow(row)
-    return output.getvalue()
-
-
 def _read_chat(db: sqlite3.Connection, chat_id: int) -> ChatInfo:
     row = db.execute(
         f"SELECT {_CHAT_COLUMNS} FROM ZWACHATSESSION WHERE Z_PK = ?", (chat_id,)
@@ -341,22 +289,18 @@ def _read_messages(
     return messages
 
 
-def _export_json(chat: ChatInfo, messages: list[dict]) -> str:
-    data = {"chat_id": chat["id"], "chat_name": chat["name"], "messages": messages}
-    return json.dumps(data, ensure_ascii=False, indent=2) + "\n"
+def _chat_metadata(chat: ChatInfo) -> dict[str, int | str]:
+    return {"chat_id": chat["id"], "chat_name": chat["name"]}
 
 
-def export_chat(
-    chat_id: int, export_format: Literal["json", "csv"], db_path: Path | None = None
-) -> tuple[str, str]:
-    """Return the chat name and its synchronized messages in the requested format."""
+def export_chat(chat_id: int, db_path: Path | None = None) -> tuple[str, str]:
+    """Return the chat name and its synchronized messages as JSON."""
     db_path = db_path or DATABASE
     with _read_database(db_path) as db:
         chat = _read_chat(db, chat_id)
         messages = _read_messages(db, _message_query(db), chat_id, db_path)
-    if export_format == "csv":
-        return chat["name"], _export_csv(messages)
-    return chat["name"], _export_json(chat, messages)
+    data = {**_chat_metadata(chat), "messages": messages}
+    return chat["name"], json.dumps(data, ensure_ascii=False, indent=2) + "\n"
 
 
 def _folder_key(name: str) -> str:
@@ -385,7 +329,7 @@ def _archive_folders(chats: list[ChatInfo]) -> Iterator[str]:
 def write_chat_archive(
     chat_ids: Iterable[int], destination: BinaryIO, db_path: Path | None = None
 ) -> None:
-    """Export the selected chats from one snapshot, in both formats."""
+    """Export the selected chats from one snapshot as JSONL and media files."""
     db_path = db_path or DATABASE
     with (
         _read_database(db_path) as db,
@@ -398,7 +342,9 @@ def write_chat_archive(
             messages = _read_messages(
                 db, query, chat["id"], db_path, archive=archive, chat_folder=chat_folder
             )
-            archive.writestr(f"{chat_folder}/messages.csv", _export_csv(messages))
-            archive.writestr(
-                f"{chat_folder}/messages.json", _export_json(chat, messages)
-            )
+            with archive.open(
+                f"{chat_folder}/messages.jsonl", "w", force_zip64=True
+            ) as member:
+                for record in chain((_chat_metadata(chat),), messages):
+                    line = json.dumps(record, ensure_ascii=False) + "\n"
+                    member.write(line.encode("utf-8"))

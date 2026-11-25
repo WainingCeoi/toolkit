@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import csv
 import io
 import json
 import sqlite3
@@ -173,33 +172,27 @@ def _export_zip(client):
     return ZipFile(io.BytesIO(response.content))
 
 
+def _read_jsonl(archive, path):
+    with archive.open(path) as stream:
+        return [json.loads(line) for line in stream]
+
+
 def _unpack_chat(archive):
     folder = f"WhatsApp_Chats/{CHAT_NAME}"
-    messages = json.loads(archive.read(f"{folder}/messages.json"))["messages"]
-    with io.TextIOWrapper(
-        archive.open(f"{folder}/messages.csv"), encoding="utf-8-sig", newline=""
-    ) as stream:
-        rows = {int(row["row_id"]): row for row in csv.DictReader(stream)}
-    return folder, {message["row_id"]: message for message in messages}, rows
+    _, *messages = _read_jsonl(archive, f"{folder}/messages.jsonl")
+    return folder, {message["row_id"]: message for message in messages}
 
 
-def _export(client, chat_id, export_format):
+def _export_json(client, chat_id):
     response = client.get(
-        f"/api/whatsapp/chats/{chat_id}/export", params={"format": export_format}
+        f"/api/whatsapp/chats/{chat_id}/export", params={"format": "json"}
     )
     assert response.status_code == 200
     disposition = response.headers["content-disposition"]
     assert disposition.startswith("attachment;")
-    assert f"filename*=UTF-8''{CHAT_NAME}.{export_format}" in unquote(disposition)
+    assert f"filename*=UTF-8''{CHAT_NAME}.json" in unquote(disposition)
     assert response.headers["cache-control"] == "no-store"
     return response
-
-
-def _csv_rows(response):
-    assert response.headers["content-type"] == "text/csv; charset=utf-8"
-    return list(
-        csv.DictReader(io.StringIO(response.content.decode("utf-8-sig"), newline=""))
-    )
 
 
 def test_chat_list_only_exposes_selection_metadata(whatsapp_client):
@@ -214,8 +207,8 @@ def test_chat_list_only_exposes_selection_metadata(whatsapp_client):
     ]
 
 
-def test_direct_json_and_csv_match_stanza_in_committed_wal(whatsapp_client):
-    response = _export(whatsapp_client, 17, "json")
+def test_direct_json_matches_stanza_in_committed_wal(whatsapp_client):
+    response = _export_json(whatsapp_client, 17)
     assert response.headers["content-type"] == "application/json"
     exported = response.json()
     assert (exported["chat_id"], exported["chat_name"]) == (17, CHAT_NAME)
@@ -237,19 +230,9 @@ def test_direct_json_and_csv_match_stanza_in_committed_wal(whatsapp_client):
         "original_text": "hi",
     }
 
-    rows = _csv_rows(_export(whatsapp_client, 17, "csv"))
-    assert [row["text"] for row in rows] == ["hi", "11", "引用"]
-    for row in rows[:2]:
-        assert row["reply_to_message_id"] == row["quoted_author_id"] == ""
-        assert row["quoted_text"] == row["reply_status"] == ""
-    assert rows[2]["reply_to_message_id"] == rows[0]["message_id"] == FIRST_STANZA
-    assert rows[2]["quoted_author_id"] == DIRECT_SENDER
-    assert rows[2]["quoted_text"] == "hi"
-    assert rows[2]["reply_status"] == "matched"
-
 
 def test_group_export_preserves_missing_ambiguous_and_malformed(whatsapp_client):
-    exported = _export(whatsapp_client, 45, "json").json()
+    exported = _export_json(whatsapp_client, 45).json()
     assert exported["chat_id"] == 45
     duplicates = exported["messages"][:2]
     assert [message["sender_id"] for message in duplicates] == [
@@ -272,27 +255,20 @@ def test_group_export_preserves_missing_ambiguous_and_malformed(whatsapp_client)
     assert malformed["metadata_status"] == "unrecognized_format"
     assert malformed["reply_to"] is None
 
-    rows = _csv_rows(_export(whatsapp_client, 45, "csv"))
-    assert len(rows) == 5
-    assert rows[2]["text"] == rows[2]["quoted_text"] == SPECIAL_TEXT
-    assert rows[2]["reply_to_message_id"] == FIRST_STANZA
-    assert rows[2]["reply_status"] == "missing_in_chat"
-    assert rows[3]["reply_status"] == "ambiguous"
-    assert rows[4]["reply_status"] == ""
-
 
 def test_export_rejects_unknown_chat_and_format(whatsapp_client):
     assert (
         whatsapp_client.get("/api/whatsapp/chats/999/export?format=json").status_code
         == 404
     )
-    assert (
-        whatsapp_client.get("/api/whatsapp/chats/17/export?format=xml").status_code
-        == 422
-    )
+    for export_format in ("xml", "csv"):
+        response = whatsapp_client.get(
+            "/api/whatsapp/chats/17/export", params={"format": export_format}
+        )
+        assert response.status_code == 422
 
 
-def test_zip_exports_both_formats_for_each_selected_chat(whatsapp_client):
+def test_zip_exports_one_jsonl_for_each_selected_chat(whatsapp_client):
     response = whatsapp_client.post(
         "/api/whatsapp/chats/export", json={"chat_ids": [45, 17, 45]}
     )
@@ -304,16 +280,15 @@ def test_zip_exports_both_formats_for_each_selected_chat(whatsapp_client):
     assert response.headers["cache-control"] == "no-store"
     with ZipFile(io.BytesIO(response.content)) as archive:
         assert archive.testzip() is None
-        expected = {
-            f"WhatsApp_Chats/{CHAT_NAME} ({chat_id})/messages.{export_format}": _export(
-                whatsapp_client, chat_id, export_format
-            ).content
+        paths = {
+            chat_id: f"WhatsApp_Chats/{CHAT_NAME} ({chat_id})/messages.jsonl"
             for chat_id in (17, 45)
-            for export_format in ("json", "csv")
         }
-        assert sorted(archive.namelist()) == sorted(expected)
-        for path, content in expected.items():
-            assert archive.read(path) == content
+        assert sorted(archive.namelist()) == sorted(paths.values())
+        for chat_id, path in paths.items():
+            header, *messages = _read_jsonl(archive, path)
+            assert header == {"chat_id": chat_id, "chat_name": CHAT_NAME}
+            assert messages == _export_json(whatsapp_client, chat_id).json()["messages"]
 
 
 def test_zip_keeps_chat_folders_distinct_after_sanitizing_names(whatsapp_client):
@@ -322,12 +297,16 @@ def test_zip_keeps_chat_folders_distinct_after_sanitizing_names(whatsapp_client)
     )
     assert response.status_code == 200
     with ZipFile(io.BytesIO(response.content)) as archive:
-        assert sorted(archive.namelist()) == [
-            "WhatsApp_Chats/周末🌿_计划 (61)/messages.csv",
-            "WhatsApp_Chats/周末🌿_计划 (61)/messages.json",
-            "WhatsApp_Chats/周末🌿_计划 (62)/messages.csv",
-            "WhatsApp_Chats/周末🌿_计划 (62)/messages.json",
-        ]
+        expected = {
+            f"WhatsApp_Chats/周末🌿_计划 ({chat_id})/messages.jsonl": {
+                "chat_id": chat_id,
+                "chat_name": name,
+            }
+            for chat_id, name in zip((61, 62), UNSAFE_NAMES, strict=True)
+        }
+        assert sorted(archive.namelist()) == sorted(expected)
+        for path, header in expected.items():
+            assert _read_jsonl(archive, path) == [header]
 
 
 def test_zip_links_to_original_document_sticker_and_thumbnail(client_with_media):
@@ -349,21 +328,18 @@ def test_zip_links_to_original_document_sticker_and_thumbnail(client_with_media)
     )
 
     with _export_zip(client) as archive:
-        folder, messages, rows = _unpack_chat(archive)
+        folder, messages = _unpack_chat(archive)
         for row_id, label, content in [
             (201, "附件.txt", document),
             (202, "sticker.webp", sticker),
         ]:
-            message, row = messages[row_id], rows[row_id]
-            assert message["attachment_name"] == row["attachment_name"] == label
-            assert (
-                message["attachment_status"] == row["attachment_status"] == "exported"
-            )
+            message = messages[row_id]
+            assert message["attachment_name"] == label
+            assert message["attachment_status"] == "exported"
             attachment = message["attachment_path"]
-            assert attachment == row["attachment_path"] == f"media/{row_id}-{label}"
+            assert attachment == f"media/{row_id}-{label}"
             assert archive.read(f"{folder}/{attachment}") == content
         preview = messages[201]["thumbnail_path"]
-        assert preview == rows[201]["thumbnail_path"]
         assert preview.endswith(".jpg")
         assert archive.read(f"{folder}/{preview}") == thumbnail
 
@@ -385,18 +361,13 @@ def test_zip_keeps_records_for_missing_and_outside_attachments(client_with_media
     )
 
     with _export_zip(client) as archive:
-        folder, messages, rows = _unpack_chat(archive)
-        assert set(archive.namelist()) == {
-            f"{folder}/messages.json",
-            f"{folder}/messages.csv",
-        }
+        folder, messages = _unpack_chat(archive)
+        assert archive.namelist() == [f"{folder}/messages.jsonl"]
         for row_id in (201, 202, 203):
-            message, row = messages[row_id], rows[row_id]
-            assert message["text"] == row["text"] == "media message"
+            message = messages[row_id]
+            assert message["text"] == "media message"
             assert message["attachment_status"] == "missing_local"
-            assert row["attachment_status"] == "missing_local"
             assert "attachment_path" not in message
-            assert row["attachment_path"] == ""
 
 
 def test_zip_keeps_own_and_participant_reactions_on_target_message(client_with_media):
@@ -422,10 +393,9 @@ def test_zip_keeps_own_and_participant_reactions_on_target_message(client_with_m
         db.commit()
 
     with _export_zip(client) as archive:
-        _, messages, rows = _unpack_chat(archive)
+        _, messages = _unpack_chat(archive)
         reactions = messages[102]["reactions"]
-        assert rows[102]["message_id"] == messages[102]["message_id"] == FIRST_STANZA
-        assert reactions == json.loads(rows[102]["reactions"])
+        assert messages[102]["message_id"] == FIRST_STANZA
         assert reactions == [
             {
                 "reaction_id": "SYNTHETICOTHER001",
@@ -443,7 +413,6 @@ def test_zip_keeps_own_and_participant_reactions_on_target_message(client_with_m
             },
         ]
         assert "reactions" not in messages[103]
-        assert rows[103]["reactions"] == ""
 
 
 @pytest.mark.parametrize("chat_ids, status_code", [([], 422), ([17, 999], 404)])

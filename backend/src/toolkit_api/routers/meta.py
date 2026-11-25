@@ -111,7 +111,7 @@ CATEGORIES = [
                 title="💬 WhatsApp Chat Exporter",
                 description=(
                     "Download WhatsApp chats synced to this Mac in one ZIP with "
-                    "JSON, CSV, reactions, and local attachments."
+                    "JSONL, reactions, and local attachments."
                 ),
             ),
         ],

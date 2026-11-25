@@ -166,7 +166,7 @@ export default function WhatsAppChatExporter() {
                 ? 'Select chats to export'
                 : `${selectedCount} ${selectedCount === 1 ? 'chat' : 'chats'} selected`}
             </strong>
-            <p>Each chat includes CSV and JSON records plus locally available attachments and stickers.</p>
+            <p>Each chat includes one JSONL file plus locally available attachments and stickers.</p>
           </div>
           <Button variant="primary" onClick={exportChats} disabled={selectedCount === 0} loading={exporting}>
             {!exporting && <Icon name="download" size={16} />}
