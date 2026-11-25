@@ -958,7 +958,11 @@ def test_uv_scan_preserves_working_lock_until_confirmed_apply(
 
 @pytest.mark.parametrize(
     "dependent, mutual, floor",
-    [("web-api", False, True), ("api", True, True), ("api", False, False)],
+    [
+        ("web-api", False, True),
+        ("api", True, True),
+        ("api", False, False),
+    ],
 )
 def test_apply_writes_uv_projects_linked_by_path_sources(
     client, tmp_path, monkeypatch, dependent, mutual, floor

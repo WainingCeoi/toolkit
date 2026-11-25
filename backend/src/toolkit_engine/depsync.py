@@ -11,7 +11,6 @@ import shutil
 import subprocess
 import threading
 import tomllib
-from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -25,6 +24,7 @@ from .runtime_releases import RuntimeReleases
 from .uv_workspace import (
     find_uv_workspace,
     stage_uv_workspace,
+    uv_local_projects,
     uv_workspace_fingerprint,
 )
 
@@ -1178,8 +1178,8 @@ def _reviewed_uv_bumps(path: Path, preview: dict) -> list[Bump]:
 def write_reviewed_uv_workspace(
     workspace: Path,
     targets: list[tuple[Manifest, dict]],
-    applied: dict[str, str | None] | None = None,
-    upcoming: Iterable[tuple[Manifest, dict]] = (),
+    applied: dict[str, str | None],
+    upcoming: list[tuple[Manifest, dict]],
 ) -> list[dict]:
     """Relock reviewed changes in a copy before publishing the updated files.
 
@@ -1197,10 +1197,10 @@ def write_reviewed_uv_workspace(
             pending.append((manifest.path, preview, result))
         if not preview["error"]:
             reviewed.append((manifest.path, preview, result))
-    # With no updates of its own, a project is relocked only to follow the
-    # path sources this apply already rewrote.
+    # With no updates of its own, a project's existing lock is refreshed only
+    # to follow the path sources this apply rewrites.
     owners = pending or reviewed[:1]
-    if not owners or not (pending or applied):
+    if not owners or not (pending or (workspace / "uv.lock").is_file()):
         return results
 
     originals: dict[str, str | None] = {}
@@ -1209,7 +1209,12 @@ def write_reviewed_uv_workspace(
         if uv_workspace_fingerprint(workspace, applied) != fingerprint:
             raise ValueError(UV_PREVIEW_STALE)
         if not pending and uv_workspace_fingerprint(workspace) == fingerprint:
-            return results
+            local = uv_local_projects(workspace)
+            if not any(
+                preview["bumps"] and manifest.path.parent.resolve() in local
+                for manifest, preview in upcoming
+            ):
+                return results
         with stage_uv_workspace(workspace) as staged:
             edits = []
             for path, preview, result in pending:

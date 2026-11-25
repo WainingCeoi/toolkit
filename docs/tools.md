@@ -58,6 +58,8 @@ commit list to see the commit hashes and files.
 
 Scanning previews uv dependency upgrades. The project’s `uv.lock` is written
 only when you select **Apply** and there are uv dependency upgrades to apply.
+A uv project that refers to an upgraded project through a path source has its
+existing `uv.lock` refreshed as well, even with no upgrades of its own.
 Scanning refreshes npm and pnpm lockfiles. Without a completed scan of the
 folder (possible only through the API or MCP), Apply does not upgrade uv
 dependencies; it only raises their minimum versions to the versions already
