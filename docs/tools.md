@@ -58,7 +58,10 @@ commit list to see the commit hashes and files.
 
 Scanning previews uv dependency upgrades. The project’s `uv.lock` is written
 only when you select **Apply** and there are uv dependency upgrades to apply.
-Scanning refreshes npm and pnpm lockfiles.
+Scanning refreshes npm and pnpm lockfiles. Without a completed scan of the
+folder (possible only through the API or MCP), Apply does not upgrade uv
+dependencies; it only raises their minimum versions to the versions already
+in `uv.lock`.
 
 For npm and pnpm, only entries in `dependencies`, `devDependencies`, and
 `optionalDependencies` written as `1.2.3`, `^1.2.3`, `~1.2.3`, or `>=1.2.3`
@@ -71,7 +74,8 @@ Dependency Upgrader checks exact interpreter pins in `.python-version`,
 `.node-version`, and `.nvmrc`. It proposes the newest available stable patch
 within each pin's current major and minor version. Python patches come from
 uv's available Python versions, and Node.js patches come from the Node.js
-release index. Apply writes the updated version files. Use your project's
+release index. A newer minor release, such as Node.js 22.12 for a 22.11 pin,
+is not proposed. Apply writes the updated version files. Use your project's
 version manager to install or select the new interpreter.
 
 ## WhatsApp Chat Exporter

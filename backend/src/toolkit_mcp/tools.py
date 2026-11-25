@@ -530,6 +530,8 @@ def register_tools(mcp: MCPServer, api: ToolkitClient) -> None:
         subject. Pass scan_job_id to apply a specific reviewed uv preview, or
         omit it to use the most recent completed scan for the folder if available.
         A uv project is written only when it has floor changes to apply.
+        With no completed scan, uv dependencies are not upgraded: their floors
+        are only raised to the versions already in uv.lock, so scan first.
         Poll job_status for changed files and commit SHAs. job_cancel stops
         between file updates and repository commits. Completed changes persist
         after cancellation.
