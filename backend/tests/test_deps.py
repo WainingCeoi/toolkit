@@ -956,6 +956,46 @@ def test_uv_scan_preserves_working_lock_until_confirmed_apply(
     assert lock.read_bytes() == updated_lock
 
 
+def test_apply_writes_uv_projects_linked_by_a_path_source(
+    client, tmp_path, monkeypatch
+):
+    lock = 'version = 1\n\n[[package]]\nname = "uvicorn"\nversion = "0.30.0"\n'
+    newer = lock.replace("0.30.0", "0.31.0")
+    pyproject = (
+        '[project]\nname = "{name}"\nversion = "0.1.0"\n'
+        'dependencies = ["uvicorn>=0.30.0"]\n'
+    )
+    _uv_project(tmp_path / "shared", pyproject.format(name="shared"), lock)
+    _uv_project(
+        tmp_path / "web-api",
+        pyproject.format(name="web-api")
+        + '\n[tool.uv.sources]\nshared = { path = "../shared" }\n',
+        lock,
+    )
+
+    def resolve(folder, *_args):
+        (Path(folder) / "uv.lock").write_text(newer, encoding="utf-8")
+        return True, "Resolved"
+
+    monkeypatch.setattr(depsync, "run_uv_upgrade", resolve)
+    monkeypatch.setattr(depsync, "uv_lock_refresh", resolve)
+
+    job_id = client.post("/api/deps/scan", json={"folder": str(tmp_path)}).json()[
+        "job_id"
+    ]
+    assert _wait(client, job_id)["result"]["total_bumps"] == 2
+    response = client.post(
+        "/api/deps/apply",
+        json={"folder": str(tmp_path), "commit": False, "scan_job_id": job_id},
+    )
+
+    assert response.status_code == 200
+    assert [r["error"] for r in response.json()["results"]] == [None, None]
+    for name in ("shared", "web-api"):
+        assert ">=0.31.0" in (tmp_path / name / "pyproject.toml").read_text("utf-8")
+        assert (tmp_path / name / "uv.lock").read_text("utf-8") == newer
+
+
 def test_apply_rejects_empty_folder(client):
     r = client.post("/api/deps/apply", json={"folder": "", "commit": True})
     assert r.status_code == 400 and r.json()["detail"].startswith("❌")

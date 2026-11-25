@@ -7,7 +7,7 @@ import os
 import shutil
 import tempfile
 import tomllib
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager, suppress
 from glob import escape
 from pathlib import Path
@@ -147,16 +147,29 @@ def _inherited_config(root: Path) -> tuple[Path, bytes] | None:
     return None
 
 
-def uv_workspace_fingerprint(root: Path) -> str:
-    """Identify the current on-disk inputs for a reviewed uv upgrade."""
+def uv_workspace_fingerprint(
+    root: Path, applied: Mapping[str, str | None] | None = None
+) -> str:
+    """Identify the current on-disk inputs for a reviewed uv upgrade.
+
+    ``applied`` maps files this apply has already rewritten to their previous
+    text, so a project depending on them still matches its preview.
+    """
     root = root.resolve()
     _, files = _resolution_inputs(root)
+    previous = {Path(path).resolve(): text for path, text in (applied or {}).items()}
     digest = hashlib.sha256()
     for path in sorted(files):
+        if path in previous:
+            if (text := previous[path]) is None:
+                continue  # Created by this apply, so the preview never saw it.
+            content = hashlib.sha256(text.encode("utf-8")).digest()
+        else:
+            with path.open("rb") as file:
+                content = hashlib.file_digest(file, "sha256").digest()
         digest.update(os.fsencode(path))
         digest.update(b"\0")
-        with path.open("rb") as file:
-            digest.update(hashlib.file_digest(file, "sha256").digest())
+        digest.update(content)
     if inherited := _inherited_config(root):
         path, content = inherited
         digest.update(os.fsencode(path))

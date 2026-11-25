@@ -1167,9 +1167,15 @@ def _write_result(manifest: Manifest) -> dict:
 
 
 def write_reviewed_uv_workspace(
-    workspace: Path, targets: list[tuple[Manifest, dict]]
+    workspace: Path,
+    targets: list[tuple[Manifest, dict]],
+    applied: dict[str, str | None] | None = None,
 ) -> list[dict]:
-    """Relock reviewed changes in a copy before publishing the updated files."""
+    """Relock reviewed changes in a copy before publishing the updated files.
+
+    ``applied`` holds the previous text of files this apply already rewrote in
+    other uv projects; they do not make this project's preview stale.
+    """
     results = [_write_result(manifest) for manifest, _ in targets]
     pending = []
     for (manifest, preview), result in zip(targets, results, strict=True):
@@ -1182,7 +1188,7 @@ def write_reviewed_uv_workspace(
     originals: dict[str, str | None] = {}
     try:
         fingerprint = pending[0][1]["uv_fingerprint"]
-        if uv_workspace_fingerprint(workspace) != fingerprint:
+        if uv_workspace_fingerprint(workspace, applied) != fingerprint:
             raise ValueError(UV_PREVIEW_STALE)
         with stage_uv_workspace(workspace) as staged:
             edits = []
@@ -1208,7 +1214,7 @@ def write_reviewed_uv_workspace(
         snapshots = {
             path: path.read_bytes() if path.is_file() else None for path in changes
         }
-        if uv_workspace_fingerprint(workspace) != fingerprint:
+        if uv_workspace_fingerprint(workspace, applied) != fingerprint:
             raise ValueError(UV_PREVIEW_STALE)
         for path, content in changes.items():
             original = snapshots[path]

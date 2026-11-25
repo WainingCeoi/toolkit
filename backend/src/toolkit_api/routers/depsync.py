@@ -346,7 +346,15 @@ def _apply_manifests(
         if preview is not None and manifest.kind == "uv":
             workspace = manifest.workspace or manifest.path.parent
             if targets := reviewed_uv.pop(workspace, None):
-                results.extend(depsync.write_reviewed_uv_workspace(workspace, targets))
+                # Earlier projects' own writes must not make this preview stale.
+                applied = {
+                    path: text
+                    for result in results
+                    for path, text in result["originals"].items()
+                }
+                results.extend(
+                    depsync.write_reviewed_uv_workspace(workspace, targets, applied)
+                )
         elif manifest.is_runtime:
             results.append(depsync.write_manifest(manifest, releases=releases))
         else:
