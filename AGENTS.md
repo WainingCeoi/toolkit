@@ -40,5 +40,5 @@ Tests exist so code can change with confidence; the suite must not grow into a s
 
 - Work on a task branch. Merge into `main` only with a merge commit (`git merge --no-ff`), never fast-forward or squash.
 - Commit each completed step on its own, with `make test` passing and no unrelated changes.
-- Start each commit subject with `feat:`, `fix:`, `docs:`, `style:`, `refactor:`, `test:`, or `chore:`, chosen by the commit's main purpose, then a short imperative summary. A feature committed with its tests is `feat:`.
+- Start each commit subject with `feat:`, `fix:`, `docs:`, `style:`, `refactor:`, `test:`, or `chore:`, chosen by the commit's main purpose, then a short imperative summary. A scope is allowed, as in `chore(deps):`. A feature committed with its tests is `feat:`.
 - Commit messages have no `Co-Authored-By` lines.

@@ -6,7 +6,6 @@ import io
 import json
 import sqlite3
 from contextlib import closing
-from urllib.parse import unquote
 from zipfile import ZipFile
 
 import pytest
@@ -166,8 +165,8 @@ def _add_media_messages(path, rows):
         db.commit()
 
 
-def _export_zip(client):
-    response = client.post("/api/whatsapp/chats/export", json={"chat_ids": [17]})
+def _export_zip(client, chat_id=17):
+    response = client.post("/api/whatsapp/chats/export", json={"chat_ids": [chat_id]})
     assert response.status_code == 200
     return ZipFile(io.BytesIO(response.content))
 
@@ -183,16 +182,12 @@ def _unpack_chat(archive):
     return folder, {message["row_id"]: message for message in messages}
 
 
-def _export_json(client, chat_id):
-    response = client.get(
-        f"/api/whatsapp/chats/{chat_id}/export", params={"format": "json"}
-    )
-    assert response.status_code == 200
-    disposition = response.headers["content-disposition"]
-    assert disposition.startswith("attachment;")
-    assert f"filename*=UTF-8''{CHAT_NAME}.json" in unquote(disposition)
-    assert response.headers["cache-control"] == "no-store"
-    return response
+def _export_chat(client, chat_id):
+    with _export_zip(client, chat_id) as archive:
+        header, *messages = _read_jsonl(
+            archive, f"WhatsApp_Chats/{CHAT_NAME}/messages.jsonl"
+        )
+    return {**header, "messages": messages}
 
 
 def test_chat_list_only_exposes_selection_metadata(whatsapp_client):
@@ -207,10 +202,8 @@ def test_chat_list_only_exposes_selection_metadata(whatsapp_client):
     ]
 
 
-def test_direct_json_matches_stanza_in_committed_wal(whatsapp_client):
-    response = _export_json(whatsapp_client, 17)
-    assert response.headers["content-type"] == "application/json"
-    exported = response.json()
+def test_direct_export_matches_stanza_in_committed_wal(whatsapp_client):
+    exported = _export_chat(whatsapp_client, 17)
     assert (exported["chat_id"], exported["chat_name"]) == (17, CHAT_NAME)
     messages = exported["messages"]
     assert [message["text"] for message in messages] == ["hi", "11", "引用"]
@@ -232,7 +225,7 @@ def test_direct_json_matches_stanza_in_committed_wal(whatsapp_client):
 
 
 def test_group_export_preserves_missing_ambiguous_and_malformed(whatsapp_client):
-    exported = _export_json(whatsapp_client, 45).json()
+    exported = _export_chat(whatsapp_client, 45)
     assert exported["chat_id"] == 45
     duplicates = exported["messages"][:2]
     assert [message["sender_id"] for message in duplicates] == [
@@ -256,16 +249,18 @@ def test_group_export_preserves_missing_ambiguous_and_malformed(whatsapp_client)
     assert malformed["reply_to"] is None
 
 
-def test_export_rejects_unknown_chat_and_format(whatsapp_client):
-    assert (
-        whatsapp_client.get("/api/whatsapp/chats/999/export?format=json").status_code
-        == 404
-    )
-    for export_format in ("xml", "csv"):
-        response = whatsapp_client.get(
-            "/api/whatsapp/chats/17/export", params={"format": export_format}
+def test_export_survives_a_message_date_outside_the_calendar(client_with_media):
+    client, path = client_with_media
+    with closing(sqlite3.connect(path)) as db:
+        db.execute(
+            """INSERT INTO ZWAMESSAGE (Z_PK, ZSORT, ZTEXT, ZMESSAGEDATE, ZCHATSESSION)
+            VALUES (301, 301, 'bad date', 1e18, 17)"""
         )
-        assert response.status_code == 422
+        db.commit()
+    with _export_zip(client) as archive:
+        _, messages = _unpack_chat(archive)
+    assert messages[301]["sent_at"] is None
+    assert messages[102]["sent_at"] == "2001-01-01T00:02:00+00:00"
 
 
 def test_zip_exports_one_jsonl_for_each_selected_chat(whatsapp_client):
@@ -288,7 +283,7 @@ def test_zip_exports_one_jsonl_for_each_selected_chat(whatsapp_client):
         for chat_id, path in paths.items():
             header, *messages = _read_jsonl(archive, path)
             assert header == {"chat_id": chat_id, "chat_name": CHAT_NAME}
-            assert messages == _export_json(whatsapp_client, chat_id).json()["messages"]
+            assert messages == _export_chat(whatsapp_client, chat_id)["messages"]
 
 
 def test_zip_keeps_chat_folders_distinct_after_sanitizing_names(whatsapp_client):

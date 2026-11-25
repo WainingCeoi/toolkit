@@ -1,6 +1,7 @@
 # AI / MCP access
 
-Toolkit also provides a local stdio MCP server covering twelve tools. Start
+Toolkit also provides a local stdio MCP server covering twelve tools; WhatsApp
+Chat Exporter is available only in the web app. Start
 Toolkit with [`make dev`](getting-started.md), then point MCP at the backend
 address printed in Terminal. The adapter shares backend jobs, browser
 sessions, devices, and scan records with the web app.

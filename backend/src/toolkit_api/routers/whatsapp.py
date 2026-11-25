@@ -7,16 +7,13 @@ from functools import partial
 from pathlib import Path
 from tempfile import TemporaryFile
 from typing import Annotated, Literal
-from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
-from fastapi import Path as PathParam
+from fastapi import APIRouter, Depends, HTTPException, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
 from toolkit_engine import whatsapp
-from toolkit_engine.whatsapp_media import safe_export_name
 
 router = APIRouter(prefix="/whatsapp", tags=["whatsapp"])
 
@@ -90,27 +87,3 @@ def export_chats(selection: ChatExportIn, db_path: DatabasePath) -> Response:
         )
         cleanup.pop_all()
         return response
-
-
-@router.get("/chats/{chat_id}/export")
-def export_chat(
-    chat_id: Annotated[int, PathParam(ge=1, le=2**63 - 1)],
-    export_format: Annotated[Literal["json"], Query(alias="format")],
-    db_path: DatabasePath,
-) -> Response:
-    try:
-        name, content = whatsapp.export_chat(chat_id, db_path=db_path)
-    except whatsapp.WhatsAppChatNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except whatsapp.WhatsAppDatabaseError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-
-    filename = quote(f"{safe_export_name(name)}.{export_format}", safe="")
-    return Response(
-        content=content,
-        media_type="application/json",
-        headers={
-            "Content-Disposition": f"attachment; filename*=UTF-8''{filename}",
-            "Cache-Control": "no-store",
-        },
-    )

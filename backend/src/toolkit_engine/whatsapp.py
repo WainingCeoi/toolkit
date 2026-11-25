@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 import unicodedata
 from collections import Counter
@@ -146,16 +147,20 @@ def _decode_quote(metadata: bytes | None) -> _Quote | None:
     }
 
 
+def _sent_at(value: object) -> str | None:
+    if not isinstance(value, (int, float)):
+        return None
+    try:
+        return datetime.fromtimestamp(value + APPLE_EPOCH, UTC).isoformat()
+    except OverflowError, OSError, ValueError:
+        return None  # One unreadable date must not fail the whole export.
+
+
 def _export_message(row: sqlite3.Row, by_stanza: dict[str, sqlite3.Row | None]) -> dict:
-    sent = row["ZMESSAGEDATE"]
     record = {
         "row_id": row["Z_PK"],
         "message_id": row["ZSTANZAID"],
-        "sent_at": (
-            datetime.fromtimestamp(sent + APPLE_EPOCH, UTC).isoformat()
-            if sent is not None
-            else None
-        ),
+        "sent_at": _sent_at(row["ZMESSAGEDATE"]),
         "from_me": bool(row["ZISFROMME"]),
         "sender_id": row["ZMEMBERJID"] or row["ZFROMJID"],
         "text": row["ZTEXT"],
@@ -244,9 +249,8 @@ def _read_messages(
     query: str,
     chat_id: int,
     db_path: Path,
-    *,
-    archive: ZipFile | None = None,
-    chat_folder: str = "",
+    archive: ZipFile,
+    chat_folder: str,
 ) -> list[dict]:
     rows = db.execute(query, (chat_id,)).fetchall()
     by_stanza: dict[str, sqlite3.Row | None] = {}
@@ -293,14 +297,17 @@ def _chat_metadata(chat: ChatInfo) -> dict[str, int | str]:
     return {"chat_id": chat["id"], "chat_name": chat["name"]}
 
 
-def export_chat(chat_id: int, db_path: Path | None = None) -> tuple[str, str]:
-    """Return the chat name and its synchronized messages as JSON."""
-    db_path = db_path or DATABASE
-    with _read_database(db_path) as db:
-        chat = _read_chat(db, chat_id)
-        messages = _read_messages(db, _message_query(db), chat_id, db_path)
-    data = {**_chat_metadata(chat), "messages": messages}
-    return chat["name"], json.dumps(data, ensure_ascii=False, indent=2) + "\n"
+def _json_safe(value: object) -> object:
+    """Blank values JSON cannot hold, so one odd database cell cannot fail an export."""
+    if isinstance(value, dict):
+        return {key: _json_safe(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, bytes) or (
+        isinstance(value, float) and not math.isfinite(value)
+    ):
+        return None
+    return value
 
 
 def _folder_key(name: str) -> str:
@@ -346,5 +353,5 @@ def write_chat_archive(
                 f"{chat_folder}/messages.jsonl", "w", force_zip64=True
             ) as member:
                 for record in chain((_chat_metadata(chat),), messages):
-                    line = json.dumps(record, ensure_ascii=False) + "\n"
+                    line = json.dumps(_json_safe(record), ensure_ascii=False) + "\n"
                     member.write(line.encode("utf-8"))

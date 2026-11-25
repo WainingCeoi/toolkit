@@ -135,7 +135,7 @@ def _copy_member(
 
 
 def archive_media(
-    archive: ZipFile | None,
+    archive: ZipFile,
     *,
     db_path: Path,
     chat_folder: str,
@@ -155,24 +155,20 @@ def archive_media(
         fields["attachment_status"] = "missing_local"
         if source := _open_media(root, local_path):
             with source:
-                fields["attachment_status"] = "available_locally"
-                if archive is not None:
-                    filename = _member_name(name or "attachment", row_id)
-                    fields["attachment_path"] = _copy_member(
-                        archive, chat_folder, filename, source
-                    )
-                    fields["attachment_status"] = "exported"
+                filename = _member_name(name or "attachment", row_id)
+                fields["attachment_path"] = _copy_member(
+                    archive, chat_folder, filename, source
+                )
+                fields["attachment_status"] = "exported"
 
     if thumbnail_path:
         fields["thumbnail_status"] = "missing_local"
         if source := _open_media(root, thumbnail_path):
             with source:
-                fields["thumbnail_status"] = "available_locally"
-                if archive is not None:
-                    extension = _thumbnail_extension(source, thumbnail_path)
-                    filename = f"thumbnail-{row_id}{extension}"
-                    fields["thumbnail_path"] = _copy_member(
-                        archive, chat_folder, filename, source
-                    )
-                    fields["thumbnail_status"] = "exported"
+                extension = _thumbnail_extension(source, thumbnail_path)
+                filename = f"thumbnail-{row_id}{extension}"
+                fields["thumbnail_path"] = _copy_member(
+                    archive, chat_folder, filename, source
+                )
+                fields["thumbnail_status"] = "exported"
     return fields

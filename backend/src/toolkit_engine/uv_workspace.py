@@ -7,13 +7,25 @@ import os
 import shutil
 import tempfile
 import tomllib
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager, suppress
 from glob import escape
 from pathlib import Path
 
 _PROJECT_CONFIG = {"pyproject.toml", "uv.toml", ".python-version", ".python-versions"}
-_SKIP = {".git", ".venv", ".nox", ".tox", "node_modules", "__pycache__"}
+# Directories uv does not need to resolve a project, some of them large.
+_SKIP = {
+    ".git",
+    ".venv",
+    ".nox",
+    ".tox",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    "htmlcov",
+    "node_modules",
+    "__pycache__",
+}
 
 
 def _uv_settings(path: Path) -> dict | None:
@@ -133,6 +145,13 @@ def _resolution_inputs(root: Path) -> tuple[set[Path], set[Path]]:
     return projects, {path for path in files if path.is_file()}
 
 
+def uv_local_projects(root: Path) -> set[Path]:
+    """The workspace members and the path-source projects their lock describes."""
+    with suppress(OSError, ValueError):
+        return {project.resolve() for project in _resolution_inputs(root.resolve())[0]}
+    return set()
+
+
 def _inherited_config(root: Path) -> tuple[Path, bytes] | None:
     """Account for inherited uv settings independently of parent dependencies."""
     for directory in (root, *root.parents):
@@ -147,16 +166,29 @@ def _inherited_config(root: Path) -> tuple[Path, bytes] | None:
     return None
 
 
-def uv_workspace_fingerprint(root: Path) -> str:
-    """Identify the current on-disk inputs for a reviewed uv upgrade."""
+def uv_workspace_fingerprint(
+    root: Path, applied: Mapping[str, str | None] | None = None
+) -> str:
+    """Identify the current on-disk inputs for a reviewed uv upgrade.
+
+    ``applied`` maps files this apply has already rewritten to their previous
+    text, so a project depending on them still matches its preview.
+    """
     root = root.resolve()
     _, files = _resolution_inputs(root)
+    previous = {Path(path).resolve(): text for path, text in (applied or {}).items()}
     digest = hashlib.sha256()
     for path in sorted(files):
+        if (resolved := path.resolve()) in previous:
+            if (text := previous[resolved]) is None:
+                continue  # Created by this apply, so the preview never saw it.
+            content = hashlib.sha256(text.encode("utf-8")).digest()
+        else:
+            with path.open("rb") as file:
+                content = hashlib.file_digest(file, "sha256").digest()
         digest.update(os.fsencode(path))
         digest.update(b"\0")
-        with path.open("rb") as file:
-            digest.update(hashlib.file_digest(file, "sha256").digest())
+        digest.update(content)
     if inherited := _inherited_config(root):
         path, content = inherited
         digest.update(os.fsencode(path))

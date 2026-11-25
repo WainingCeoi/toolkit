@@ -24,6 +24,7 @@ from .runtime_releases import RuntimeReleases
 from .uv_workspace import (
     find_uv_workspace,
     stage_uv_workspace,
+    uv_local_projects,
     uv_workspace_fingerprint,
 )
 
@@ -1166,37 +1167,72 @@ def _write_result(manifest: Manifest) -> dict:
     }
 
 
+def _reviewed_uv_bumps(path: Path, preview: dict) -> list[Bump]:
+    versions = {
+        canonicalize_name(bump["name"]): bump["new"].removeprefix(">=")
+        for bump in preview["bumps"]
+    }
+    return compute_uv_bumps(path, versions)
+
+
 def write_reviewed_uv_workspace(
-    workspace: Path, targets: list[tuple[Manifest, dict]]
+    workspace: Path,
+    targets: list[tuple[Manifest, dict]],
+    applied: dict[str, str | None],
+    upcoming: list[tuple[Manifest, dict]],
 ) -> list[dict]:
-    """Relock reviewed changes in a copy before publishing the updated files."""
+    """Relock reviewed changes in a copy before publishing the updated files.
+
+    ``applied`` holds the previous text of files this apply already rewrote in
+    other uv projects; they do not make this project's preview stale.
+    ``upcoming`` lists the reviewed uv targets this apply writes later, so the
+    lock already matches projects that reference each other through path sources.
+    """
     results = [_write_result(manifest) for manifest, _ in targets]
     pending = []
+    reviewed = []
     for (manifest, preview), result in zip(targets, results, strict=True):
         result["error"] = preview["error"]
         if preview["bumps"]:
             pending.append((manifest.path, preview, result))
-    if not pending:
+        if not preview["error"]:
+            reviewed.append((manifest.path, preview, result))
+    # With no updates of its own, a project's existing lock is refreshed only
+    # to follow the path sources this apply rewrites.
+    owners = pending or reviewed[:1]
+    if not owners or not (pending or (workspace / "uv.lock").is_file()):
         return results
 
     originals: dict[str, str | None] = {}
     try:
-        fingerprint = pending[0][1]["uv_fingerprint"]
-        if uv_workspace_fingerprint(workspace) != fingerprint:
+        fingerprint = owners[0][1]["uv_fingerprint"]
+        if uv_workspace_fingerprint(workspace, applied) != fingerprint:
             raise ValueError(UV_PREVIEW_STALE)
+        if not pending and uv_workspace_fingerprint(workspace) == fingerprint:
+            local = uv_local_projects(workspace)
+            if not any(
+                preview["bumps"] and manifest.path.parent.resolve() in local
+                for manifest, preview in upcoming
+            ):
+                return results
         with stage_uv_workspace(workspace) as staged:
             edits = []
             for path, preview, result in pending:
                 staged_path = staged / path.relative_to(workspace)
-                versions = {
-                    canonicalize_name(bump["name"]): bump["new"].removeprefix(">=")
-                    for bump in preview["bumps"]
-                }
-                bumps = compute_uv_bumps(staged_path, versions)
+                bumps = _reviewed_uv_bumps(staged_path, preview)
                 if [bump_dict(bump) for bump in bumps] != preview["bumps"]:
                     raise ValueError(UV_PREVIEW_STALE)
                 apply_uv_bumps(staged_path, bumps)
                 edits.append((path, staged_path, result, preview["bumps"]))
+            for manifest, preview in upcoming:
+                relative = os.path.relpath(manifest.path.resolve(), workspace.resolve())
+                staged_path = Path(os.path.normpath(staged / relative))
+                # A later project reports its own problems when it is written.
+                with contextlib.suppress(OSError, ValueError):
+                    if preview["bumps"] and staged_path.is_file():
+                        apply_uv_bumps(
+                            staged_path, _reviewed_uv_bumps(staged_path, preview)
+                        )
             ok, log = uv_lock_refresh(str(staged))
             if not ok:
                 raise ValueError(f"uv lock failed:\n{_tail(log)}")
@@ -1208,7 +1244,7 @@ def write_reviewed_uv_workspace(
         snapshots = {
             path: path.read_bytes() if path.is_file() else None for path in changes
         }
-        if uv_workspace_fingerprint(workspace) != fingerprint:
+        if uv_workspace_fingerprint(workspace, applied) != fingerprint:
             raise ValueError(UV_PREVIEW_STALE)
         for path, content in changes.items():
             original = snapshots[path]
@@ -1225,10 +1261,12 @@ def write_reviewed_uv_workspace(
                 changed=changed,
                 originals={str(file): originals[str(file)] for file in changed},
             )
+        if not edits and originals:
+            owners[0][2].update(changed=[lock], originals=originals)
     except (OSError, ValueError) as exc:
         with contextlib.suppress(OSError):
             restore(originals)
-        for _, _, result in pending:
+        for _, _, result in owners:
             result["error"] = str(exc)
     return results
 

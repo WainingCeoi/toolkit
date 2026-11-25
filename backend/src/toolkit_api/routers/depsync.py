@@ -12,7 +12,11 @@ from pydantic import BaseModel
 
 from toolkit_engine import depsync
 from toolkit_engine.runtime_releases import RuntimeReleases
-from toolkit_engine.uv_workspace import is_uv_workspace, uv_workspace_fingerprint
+from toolkit_engine.uv_workspace import (
+    is_uv_workspace,
+    uv_local_projects,
+    uv_workspace_fingerprint,
+)
 
 from ..deps import JobsDep
 from ..jobs import Job, JobRegistry
@@ -322,7 +326,28 @@ def _reviewed_uv_workspaces(
                 raise _StalePreviewError(depsync.UV_PREVIEW_STALE) from None
         if target.get("uv_fingerprint") != fingerprints[workspace]:
             raise _StalePreviewError(depsync.UV_PREVIEW_STALE)
-    return groups
+
+    # Write path-source projects before the projects whose locks describe them.
+    owners = {
+        manifest.path.parent.resolve(): workspace
+        for workspace, targets in groups.items()
+        for manifest, _ in targets
+    }
+    ordered: dict[Path, list[tuple[depsync.Manifest, dict]]] = {}
+    visiting: set[Path] = set()
+
+    def place(workspace: Path) -> None:
+        if workspace in ordered or workspace in visiting:
+            return
+        visiting.add(workspace)
+        for project in sorted(uv_local_projects(workspace)):
+            if (owner := owners.get(project)) is not None:
+                place(owner)
+        ordered[workspace] = groups[workspace]
+
+    for workspace in groups:
+        place(workspace)
+    return ordered
 
 
 def _apply_manifests(
@@ -337,8 +362,15 @@ def _apply_manifests(
     results = []
     releases = RuntimeReleases()
     reviewed_uv = _reviewed_uv_workspaces(manifests, preview)
-    # Resolve dependencies with the current pins before switching the project versions.
-    for manifest in sorted(manifests, key=lambda target: target.is_runtime):
+    uv_order = {workspace: rank for rank, workspace in enumerate(reviewed_uv)}
+
+    def turn(target: depsync.Manifest) -> tuple[bool, int]:
+        workspace = target.workspace or target.path.parent
+        # Resolve dependencies with the current pins before switching the
+        # project versions, and path-source projects before their dependents.
+        return target.is_runtime, uv_order.get(workspace, 0)
+
+    for manifest in sorted(manifests, key=turn):
         if job is not None:
             if job.cancelled:
                 break
@@ -346,7 +378,18 @@ def _apply_manifests(
         if preview is not None and manifest.kind == "uv":
             workspace = manifest.workspace or manifest.path.parent
             if targets := reviewed_uv.pop(workspace, None):
-                results.extend(depsync.write_reviewed_uv_workspace(workspace, targets))
+                # Earlier projects' own writes must not make this preview stale.
+                applied = {
+                    path: text
+                    for result in results
+                    for path, text in result["originals"].items()
+                }
+                upcoming = [later for group in reviewed_uv.values() for later in group]
+                results.extend(
+                    depsync.write_reviewed_uv_workspace(
+                        workspace, targets, applied, upcoming
+                    )
+                )
         elif manifest.is_runtime:
             results.append(depsync.write_manifest(manifest, releases=releases))
         else:
@@ -396,6 +439,8 @@ def _apply_manifests(
                 result["bumps"] = []
                 result["error"] = f"{commit_error} (rolled back)"
 
+    listed = {manifest.rel: position for position, manifest in enumerate(manifests)}
+    results.sort(key=lambda result: listed[result["rel"]])
     return ApplyOut(
         results=[
             TargetResultOut(
