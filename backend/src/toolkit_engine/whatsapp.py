@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 import unicodedata
 from collections import Counter
@@ -146,16 +147,20 @@ def _decode_quote(metadata: bytes | None) -> _Quote | None:
     }
 
 
+def _sent_at(value: object) -> str | None:
+    if not isinstance(value, (int, float)):
+        return None
+    try:
+        return datetime.fromtimestamp(value + APPLE_EPOCH, UTC).isoformat()
+    except OverflowError, OSError, ValueError:
+        return None  # One unreadable date must not fail the whole export.
+
+
 def _export_message(row: sqlite3.Row, by_stanza: dict[str, sqlite3.Row | None]) -> dict:
-    sent = row["ZMESSAGEDATE"]
     record = {
         "row_id": row["Z_PK"],
         "message_id": row["ZSTANZAID"],
-        "sent_at": (
-            datetime.fromtimestamp(sent + APPLE_EPOCH, UTC).isoformat()
-            if sent is not None
-            else None
-        ),
+        "sent_at": _sent_at(row["ZMESSAGEDATE"]),
         "from_me": bool(row["ZISFROMME"]),
         "sender_id": row["ZMEMBERJID"] or row["ZFROMJID"],
         "text": row["ZTEXT"],
@@ -190,7 +195,13 @@ def _export_message(row: sqlite3.Row, by_stanza: dict[str, sqlite3.Row | None]) 
     message_type = row["ZMESSAGETYPE"]
     if message_type != 8 and isinstance(caption := row["ZTITLE"], str) and caption:
         record["media_caption"] = caption
-    if message_type in (2, 3) and (duration := row["ZMOVIEDURATION"]):
+    duration = row["ZMOVIEDURATION"]
+    if (
+        message_type in (2, 3)
+        and isinstance(duration, (int, float))
+        and duration
+        and math.isfinite(duration)  # JSON has no Infinity or NaN.
+    ):
         record["media_duration_seconds"] = duration
     if message_type == 4 and isinstance(card := row["ZVCARDSTRING"], str) and card:
         record["contact_card"] = {"name": row["ZVCARDNAME"], "vcard": card}

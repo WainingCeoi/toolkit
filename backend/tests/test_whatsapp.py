@@ -165,8 +165,8 @@ def _add_media_messages(path, rows):
         db.commit()
 
 
-def _export_zip(client):
-    response = client.post("/api/whatsapp/chats/export", json={"chat_ids": [17]})
+def _export_zip(client, chat_id=17):
+    response = client.post("/api/whatsapp/chats/export", json={"chat_ids": [chat_id]})
     assert response.status_code == 200
     return ZipFile(io.BytesIO(response.content))
 
@@ -183,9 +183,7 @@ def _unpack_chat(archive):
 
 
 def _export_chat(client, chat_id):
-    response = client.post("/api/whatsapp/chats/export", json={"chat_ids": [chat_id]})
-    assert response.status_code == 200
-    with ZipFile(io.BytesIO(response.content)) as archive:
+    with _export_zip(client, chat_id) as archive:
         header, *messages = _read_jsonl(
             archive, f"WhatsApp_Chats/{CHAT_NAME}/messages.jsonl"
         )
@@ -249,6 +247,20 @@ def test_group_export_preserves_missing_ambiguous_and_malformed(whatsapp_client)
     assert malformed["text"] == "unrecognized metadata"
     assert malformed["metadata_status"] == "unrecognized_format"
     assert malformed["reply_to"] is None
+
+
+def test_export_survives_a_message_date_outside_the_calendar(client_with_media):
+    client, path = client_with_media
+    with closing(sqlite3.connect(path)) as db:
+        db.execute(
+            """INSERT INTO ZWAMESSAGE (Z_PK, ZSORT, ZTEXT, ZMESSAGEDATE, ZCHATSESSION)
+            VALUES (301, 301, 'bad date', 1e18, 17)"""
+        )
+        db.commit()
+    with _export_zip(client) as archive:
+        _, messages = _unpack_chat(archive)
+    assert messages[301]["sent_at"] is None
+    assert messages[102]["sent_at"] == "2001-01-01T00:02:00+00:00"
 
 
 def test_zip_exports_one_jsonl_for_each_selected_chat(whatsapp_client):
