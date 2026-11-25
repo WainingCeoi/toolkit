@@ -13,7 +13,22 @@ from glob import escape
 from pathlib import Path
 
 _PROJECT_CONFIG = {"pyproject.toml", "uv.toml", ".python-version", ".python-versions"}
-_SKIP = {".git", ".venv", ".nox", ".tox", "node_modules", "__pycache__"}
+# Directories uv does not need to resolve a project, some of them large.
+_SKIP = {
+    ".git",
+    ".venv",
+    ".nox",
+    ".tox",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    "node_modules",
+    "__pycache__",
+    "build",
+    "dist",
+    "htmlcov",
+    "target",
+}
 
 
 def _uv_settings(path: Path) -> dict | None:
