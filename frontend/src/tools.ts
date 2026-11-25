@@ -67,7 +67,7 @@ export const TOOL_DETAILS: Record<string, ToolDetail> = {
     group: 'Documents',
     icon: 'download',
     tag: 'ZIP',
-    description: 'Download WhatsApp chats with replies, reactions, and local attachments in one ZIP.',
+    description: 'Download a WhatsApp chat with replies, reactions, and local attachments in a ZIP.',
   },
   'file-gatherer': {
     title: 'File Gatherer',

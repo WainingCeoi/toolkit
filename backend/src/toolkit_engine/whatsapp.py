@@ -5,9 +5,7 @@ from __future__ import annotations
 import json
 import math
 import sqlite3
-import unicodedata
-from collections import Counter
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterator
 from contextlib import closing, contextmanager
 from datetime import UTC, datetime
 from itertools import chain
@@ -23,7 +21,6 @@ DATABASE = (
     Path.home()
     / "Library/Group Containers/group.net.whatsapp.WhatsApp.shared/ChatStorage.sqlite"
 )
-ARCHIVE_NAME = "WhatsApp_Chats"
 APPLE_EPOCH = 978307200
 _DIRECT_DOMAINS = {"s.whatsapp.net", "c.us", "lid", "hosted", "hosted.lid"}
 _ATTACHMENT_TYPES = {1, 2, 3, 8, 9, 11, 15, 60}
@@ -310,48 +307,27 @@ def _json_safe(value: object) -> object:
     return value
 
 
-def _folder_key(name: str) -> str:
-    return unicodedata.normalize("NFC", name).casefold()
-
-
-def _archive_folders(chats: list[ChatInfo]) -> Iterator[str]:
-    names = [safe_export_name(chat["name"]) for chat in chats]
-    counts = Counter(map(_folder_key, names))
-    used = set(counts)
-    for chat, name in zip(chats, names, strict=True):
-        if counts[_folder_key(name)] == 1:
-            yield name
-            continue
-
-        chat_id = chat["id"]
-        folder = safe_export_name(name, f" ({chat_id})")
-        ordinal = 2
-        while _folder_key(folder) in used:
-            folder = safe_export_name(name, f" ({chat_id}-{ordinal})")
-            ordinal += 1
-        used.add(_folder_key(folder))
-        yield folder
-
-
 def write_chat_archive(
-    chat_ids: Iterable[int], destination: BinaryIO, db_path: Path | None = None
-) -> None:
-    """Export the selected chats from one snapshot as JSONL and media files."""
+    chat_id: int, destination: BinaryIO, db_path: Path | None = None
+) -> str:
+    """Export one chat as JSONL and media files, returning the ZIP filename."""
     db_path = db_path or DATABASE
     with (
         _read_database(db_path) as db,
         ZipFile(destination, "w", compression=ZIP_DEFLATED) as archive,
     ):
-        chats = [_read_chat(db, chat_id) for chat_id in dict.fromkeys(chat_ids)]
+        chat = _read_chat(db, chat_id)
+        filename = safe_export_name(f"WhatsApp_{chat['name']}", ".zip")
+        chat_folder = filename.removesuffix(".zip")
+        archive.mkdir(f"{chat_folder}/media")
         query = _message_query(db)
-        for chat, folder in zip(chats, _archive_folders(chats), strict=True):
-            chat_folder = f"{ARCHIVE_NAME}/{folder}"
-            messages = _read_messages(
-                db, query, chat["id"], db_path, archive=archive, chat_folder=chat_folder
-            )
-            with archive.open(
-                f"{chat_folder}/messages.jsonl", "w", force_zip64=True
-            ) as member:
-                for record in chain((_chat_metadata(chat),), messages):
-                    line = json.dumps(_json_safe(record), ensure_ascii=False) + "\n"
-                    member.write(line.encode("utf-8"))
+        messages = _read_messages(
+            db, query, chat_id, db_path, archive=archive, chat_folder=chat_folder
+        )
+        with archive.open(
+            f"{chat_folder}/messages.jsonl", "w", force_zip64=True
+        ) as member:
+            for record in chain((_chat_metadata(chat),), messages):
+                line = json.dumps(_json_safe(record), ensure_ascii=False) + "\n"
+                member.write(line.encode("utf-8"))
+    return filename

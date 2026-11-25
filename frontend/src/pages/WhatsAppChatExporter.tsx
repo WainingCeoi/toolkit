@@ -30,7 +30,7 @@ export default function WhatsAppChatExporter() {
   const [chatLoad, setChatLoad] = useState<ChatLoad>({ status: 'loading' })
   const [search, setSearch] = useState('')
   const [filter, setFilter] = useState<ChatFilter>('all')
-  const [selectedChatIds, setSelectedChatIds] = useState(() => new Set<number>())
+  const [selectedChatId, setSelectedChatId] = useState<number | null>(null)
   const [download, setDownload] = useState<Download>({ status: 'idle' })
   const active = useToolActive()
   const exporting = download.status === 'working'
@@ -51,7 +51,7 @@ export default function WhatsAppChatExporter() {
   }, [active, chatLoad.status])
 
   const chats = chatLoad.status === 'ready' ? chatLoad.chats : []
-  const selectedCount = selectedChatIds.size
+  const selectedChat = chats.find((chat) => chat.id === selectedChatId)
   const nameCounts = new Map<string, number>()
   for (const { name } of chats) nameCounts.set(name, (nameCounts.get(name) ?? 0) + 1)
 
@@ -60,21 +60,16 @@ export default function WhatsAppChatExporter() {
     (filter === 'all' || chat.type === filter) && chat.name.toLowerCase().includes(query),
   )
 
-  function toggleChat(chatId: number, checked: boolean) {
-    setSelectedChatIds((previous) => {
-      const next = new Set(previous)
-      if (checked) next.add(chatId)
-      else next.delete(chatId)
-      return next
-    })
+  function selectChat(chatId: number) {
+    setSelectedChatId(chatId)
     setDownload({ status: 'idle' })
   }
 
-  async function exportChats() {
-    if (selectedCount === 0 || exporting) return
+  async function exportChat() {
+    if (!selectedChat || exporting) return
     setDownload({ status: 'working' })
     try {
-      const { blob, filename } = await api.whatsappExport([...selectedChatIds])
+      const { blob, filename } = await api.whatsappExport(selectedChat.id)
       saveBlob(blob, filename)
       setDownload({ status: 'saved', filename })
     } catch (error) {
@@ -86,7 +81,7 @@ export default function WhatsAppChatExporter() {
     <div>
       <ToolHeader slug="whatsapp" />
       <p className="page-sub">
-        Download messages, replies, and reactions from WhatsApp chats synced to the Toolkit Mac.
+        Download messages, replies, and reactions from a WhatsApp chat synced to the Toolkit Mac.
       </p>
 
       <div className="station">
@@ -135,13 +130,14 @@ export default function WhatsAppChatExporter() {
                 </div>
               </div>
               {matches.length > 0 ? (
-                <div className="whatsapp-chat-list" role="group" aria-label="Choose chats">
+                <div className="whatsapp-chat-list" role="radiogroup" aria-label="Choose a chat">
                   {matches.map((chat) => (
                     <label className="whatsapp-chat" key={chat.id}>
                       <input
-                        type="checkbox"
-                        checked={selectedChatIds.has(chat.id)}
-                        onChange={(event) => toggleChat(chat.id, event.target.checked)}
+                        type="radio"
+                        name="whatsapp-chat"
+                        checked={selectedChatId === chat.id}
+                        onChange={() => selectChat(chat.id)}
                         disabled={exporting}
                       />
                       <span className="grow">
@@ -161,14 +157,14 @@ export default function WhatsAppChatExporter() {
         <section className="panel result-panel" aria-labelledby="whatsapp-download">
           <h2 className="step" id="whatsapp-download"><span>Export</span></h2>
           <div className="action-summary">
-            <strong aria-live="polite">
-              {selectedCount === 0
-                ? 'Select chats to export'
-                : `${selectedCount} ${selectedCount === 1 ? 'chat' : 'chats'} selected`}
+            <strong className="whatsapp-chat-name" aria-live="polite">
+              {selectedChat
+                ? `${selectedChat.name} · ${chatDetails(selectedChat, nameCounts)}`
+                : 'Select a chat to export'}
             </strong>
-            <p>Each chat includes one JSONL file plus locally available attachments and stickers.</p>
+            <p>The ZIP includes a JSONL file and locally available attachments and stickers.</p>
           </div>
-          <Button variant="primary" onClick={exportChats} disabled={selectedCount === 0} loading={exporting}>
+          <Button variant="primary" onClick={exportChat} disabled={!selectedChat} loading={exporting}>
             {!exporting && <Icon name="download" size={16} />}
             {exporting ? 'Exporting…' : 'Export ZIP'}
           </Button>

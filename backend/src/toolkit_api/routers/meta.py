@@ -110,7 +110,7 @@ CATEGORIES = [
                 slug="whatsapp",
                 title="💬 WhatsApp Chat Exporter",
                 description=(
-                    "Download WhatsApp chats synced to this Mac in one ZIP with "
+                    "Download one WhatsApp chat synced to this Mac as a ZIP with "
                     "JSONL, reactions, and local attachments."
                 ),
             ),

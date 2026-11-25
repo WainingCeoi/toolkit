@@ -299,11 +299,11 @@ export const api = {
   docmdHealth: () => request<MarkdownHealth>('/doc-to-markdown/health'),
 
   whatsappChats: () => request<{ chats: WhatsAppChat[] }>('/whatsapp/chats'),
-  whatsappExport: (chatIds: number[]) =>
-    requestBlob('/whatsapp/chats/export', 'WhatsApp_Chats.zip', {
+  whatsappExport: (chatId: number) =>
+    requestBlob('/whatsapp/chats/export', 'WhatsApp.zip', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_ids: chatIds }),
+      body: JSON.stringify({ chat_ids: [chatId] }),
     }),
 
   depsScan: (folder: string) =>

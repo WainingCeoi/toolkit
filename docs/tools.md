@@ -13,7 +13,7 @@
 | Cache Purge | Find cache and junk files, review the results, then delete them. |
 | Photos Library Filter | Create a copy of a Photos library without its caches, preserving originals and edits. |
 | Dependency Upgrader | Review and apply uv, npm, and pnpm package updates and Python and Node.js interpreter patches, with an optional commit. |
-| WhatsApp Chat Exporter | Export selected WhatsApp chats as one ZIP with JSONL, replies, reactions, and local attachments. |
+| WhatsApp Chat Exporter | Export one WhatsApp chat as a ZIP with JSONL, replies, reactions, and local attachments. |
 | Optimized-IP Subscription | Replace server addresses in proxy configurations and generate subscription links. |
 
 File Gatherer moves files, and Cache Purge permanently deletes them. Review the
@@ -83,15 +83,15 @@ version manager to install or select the new interpreter.
 ## WhatsApp Chat Exporter
 
 Open **WhatsApp Chat Exporter** from the home page or sidebar. Search or filter
-the chats synced by the native WhatsApp app on the Mac running Toolkit, check
-the chats you want, then click **Export ZIP** to download `WhatsApp_Chats.zip`.
-Each conversation has a folder under `WhatsApp_Chats/` with one `messages.jsonl`
-file. The first line contains `chat_id` and `chat_name`. Every following line
-contains one message. Reactions are recorded on the message they apply to.
+the chats synced by the native WhatsApp app on the Mac running Toolkit. Select
+one direct or group chat, then click **Export ZIP** to download
+`WhatsApp_<chat name>.zip`. The ZIP contains a single folder with the same name,
+with `messages.jsonl` and `media/` directly inside it. The first line of
+`messages.jsonl` contains `chat_id` and `chat_name`. Every following line contains
+one message. Reactions are recorded on the message they apply to.
 Locally available attachments, stickers, and thumbnails are saved under `media/`.
 `attachment_name` keeps the original document filename when available, and
 `attachment_path` points to the file relative to the conversation folder.
-Files that are absent locally are marked `missing_local`. Folder names use the
-chat names shown in the app, with underscores for characters such as `/` and a
-chat ID added when names collide.
+Files that are absent locally are marked `missing_local`. The ZIP and folder use
+the chat name shown in the app, with underscores for characters such as `/`.
 WhatsApp can stay open during the export.

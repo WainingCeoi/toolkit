@@ -6,6 +6,7 @@ import io
 import json
 import sqlite3
 from contextlib import closing
+from urllib.parse import unquote
 from zipfile import ZipFile
 
 import pytest
@@ -13,6 +14,7 @@ import pytest
 from toolkit_api.routers.whatsapp import get_whatsapp_database_path
 
 CHAT_NAME = "同名会话"
+CHAT_FOLDER = f"WhatsApp_{CHAT_NAME}"
 UNSAFE_NAMES = ("周末🌿/计划", "周末🌿\\计划")
 FIRST_STANZA = "SYNTHETICFIRST1"
 DUPLICATE_STANZA = "SYNTHETICDUPLICATE"
@@ -177,16 +179,13 @@ def _read_jsonl(archive, path):
 
 
 def _unpack_chat(archive):
-    folder = f"WhatsApp_Chats/{CHAT_NAME}"
-    _, *messages = _read_jsonl(archive, f"{folder}/messages.jsonl")
-    return folder, {message["row_id"]: message for message in messages}
+    _, *messages = _read_jsonl(archive, f"{CHAT_FOLDER}/messages.jsonl")
+    return CHAT_FOLDER, {message["row_id"]: message for message in messages}
 
 
 def _export_chat(client, chat_id):
     with _export_zip(client, chat_id) as archive:
-        header, *messages = _read_jsonl(
-            archive, f"WhatsApp_Chats/{CHAT_NAME}/messages.jsonl"
-        )
+        header, *messages = _read_jsonl(archive, f"{CHAT_FOLDER}/messages.jsonl")
     return {**header, "messages": messages}
 
 
@@ -263,45 +262,34 @@ def test_export_survives_a_message_date_outside_the_calendar(client_with_media):
     assert messages[102]["sent_at"] == "2001-01-01T00:02:00+00:00"
 
 
-def test_zip_exports_one_jsonl_for_each_selected_chat(whatsapp_client):
+@pytest.mark.parametrize(
+    "chat_id, chat_name, folder",
+    [
+        (17, CHAT_NAME, CHAT_FOLDER),
+        (61, UNSAFE_NAMES[0], "WhatsApp_周末🌿_计划"),
+        (62, UNSAFE_NAMES[1], "WhatsApp_周末🌿_计划"),
+    ],
+)
+def test_zip_name_matches_its_single_chat_folder(
+    whatsapp_client, chat_id, chat_name, folder
+):
     response = whatsapp_client.post(
-        "/api/whatsapp/chats/export", json={"chat_ids": [45, 17, 45]}
+        "/api/whatsapp/chats/export", json={"chat_ids": [chat_id]}
     )
     assert response.status_code == 200
     assert response.headers["content-type"] == "application/zip"
-    assert response.headers["content-disposition"] == (
-        'attachment; filename="WhatsApp_Chats.zip"'
+    assert unquote(response.headers["content-disposition"]) == (
+        f"attachment; filename*=UTF-8''{folder}.zip"
     )
     assert response.headers["cache-control"] == "no-store"
     with ZipFile(io.BytesIO(response.content)) as archive:
         assert archive.testzip() is None
-        paths = {
-            chat_id: f"WhatsApp_Chats/{CHAT_NAME} ({chat_id})/messages.jsonl"
-            for chat_id in (17, 45)
+        jsonl_path = f"{folder}/messages.jsonl"
+        assert sorted(archive.namelist()) == [f"{folder}/media/", jsonl_path]
+        assert _read_jsonl(archive, jsonl_path)[0] == {
+            "chat_id": chat_id,
+            "chat_name": chat_name,
         }
-        assert sorted(archive.namelist()) == sorted(paths.values())
-        for chat_id, path in paths.items():
-            header, *messages = _read_jsonl(archive, path)
-            assert header == {"chat_id": chat_id, "chat_name": CHAT_NAME}
-            assert messages == _export_chat(whatsapp_client, chat_id)["messages"]
-
-
-def test_zip_keeps_chat_folders_distinct_after_sanitizing_names(whatsapp_client):
-    response = whatsapp_client.post(
-        "/api/whatsapp/chats/export", json={"chat_ids": [61, 62]}
-    )
-    assert response.status_code == 200
-    with ZipFile(io.BytesIO(response.content)) as archive:
-        expected = {
-            f"WhatsApp_Chats/周末🌿_计划 ({chat_id})/messages.jsonl": {
-                "chat_id": chat_id,
-                "chat_name": name,
-            }
-            for chat_id, name in zip((61, 62), UNSAFE_NAMES, strict=True)
-        }
-        assert sorted(archive.namelist()) == sorted(expected)
-        for path, header in expected.items():
-            assert _read_jsonl(archive, path) == [header]
 
 
 def test_zip_links_to_original_document_sticker_and_thumbnail(client_with_media):
@@ -357,7 +345,10 @@ def test_zip_keeps_records_for_missing_and_outside_attachments(client_with_media
 
     with _export_zip(client) as archive:
         folder, messages = _unpack_chat(archive)
-        assert archive.namelist() == [f"{folder}/messages.jsonl"]
+        assert sorted(archive.namelist()) == [
+            f"{folder}/media/",
+            f"{folder}/messages.jsonl",
+        ]
         for row_id in (201, 202, 203):
             message = messages[row_id]
             assert message["text"] == "media message"
@@ -410,8 +401,10 @@ def test_zip_keeps_own_and_participant_reactions_on_target_message(client_with_m
         assert "reactions" not in messages[103]
 
 
-@pytest.mark.parametrize("chat_ids, status_code", [([], 422), ([17, 999], 404)])
-def test_zip_rejects_empty_selection_or_missing_chat(
+@pytest.mark.parametrize(
+    "chat_ids, status_code", [([], 422), ([17, 45], 422), ([17, 17], 422), ([999], 404)]
+)
+def test_zip_rejects_invalid_selection_or_missing_chat(
     whatsapp_client, chat_ids, status_code
 ):
     response = whatsapp_client.post(
