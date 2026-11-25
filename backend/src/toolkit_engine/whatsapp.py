@@ -195,13 +195,7 @@ def _export_message(row: sqlite3.Row, by_stanza: dict[str, sqlite3.Row | None]) 
     message_type = row["ZMESSAGETYPE"]
     if message_type != 8 and isinstance(caption := row["ZTITLE"], str) and caption:
         record["media_caption"] = caption
-    duration = row["ZMOVIEDURATION"]
-    if (
-        message_type in (2, 3)
-        and isinstance(duration, (int, float))
-        and duration
-        and math.isfinite(duration)  # JSON has no Infinity or NaN.
-    ):
+    if message_type in (2, 3) and (duration := row["ZMOVIEDURATION"]):
         record["media_duration_seconds"] = duration
     if message_type == 4 and isinstance(card := row["ZVCARDSTRING"], str) and card:
         record["contact_card"] = {"name": row["ZVCARDNAME"], "vcard": card}
@@ -303,6 +297,19 @@ def _chat_metadata(chat: ChatInfo) -> dict[str, int | str]:
     return {"chat_id": chat["id"], "chat_name": chat["name"]}
 
 
+def _json_safe(value: object) -> object:
+    """Blank values JSON cannot hold, so one odd database cell cannot fail an export."""
+    if isinstance(value, dict):
+        return {key: _json_safe(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, bytes) or (
+        isinstance(value, float) and not math.isfinite(value)
+    ):
+        return None
+    return value
+
+
 def _folder_key(name: str) -> str:
     return unicodedata.normalize("NFC", name).casefold()
 
@@ -346,5 +353,5 @@ def write_chat_archive(
                 f"{chat_folder}/messages.jsonl", "w", force_zip64=True
             ) as member:
                 for record in chain((_chat_metadata(chat),), messages):
-                    line = json.dumps(record, ensure_ascii=False) + "\n"
+                    line = json.dumps(_json_safe(record), ensure_ascii=False) + "\n"
                     member.write(line.encode("utf-8"))
