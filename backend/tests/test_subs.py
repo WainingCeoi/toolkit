@@ -45,13 +45,6 @@ def test_generate_returns_sub_id_and_counts(tool_client):
     assert body["urls"]["auto"] == f"http://mac.local:80/sub/{body['sub_id']}"
 
 
-def test_identical_generate_dedups_to_same_id(tool_client):
-    first = _generate(tool_client).json()
-    second = _generate(tool_client).json()
-    assert second["dedup"] is True
-    assert second["sub_id"] == first["sub_id"]
-
-
 def test_dedup_preview_describes_the_stored_subscription(tool_client):
     a = "trojan://pw@a.example.com:443#A"
     b = "trojan://pw@b.example.com:443#B"

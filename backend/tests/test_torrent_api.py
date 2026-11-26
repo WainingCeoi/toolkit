@@ -75,14 +75,11 @@ def send(client, infohash, selected=(1,)):
 
 
 # --- STATUS ---
-def test_status_reports_the_bitcomet_server(torrent_client):
+def test_status_reports_the_bitcomet_server(torrent_client, fake):
     body = torrent_client.get("/api/torrent/status").json()
     assert body["running"] is True
     assert body["server"] == SERVER_NAME
-
-
-def test_status_hands_back_bitcomets_own_url(torrent_client, fake):
-    assert torrent_client.get("/api/torrent/status").json()["url"] == fake.url
+    assert body["url"] == fake.url
 
 
 def test_status_reports_an_unreachable_bitcomet_without_failing(

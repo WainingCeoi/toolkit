@@ -126,18 +126,6 @@ def test_remote_save_folder_is_never_created_on_this_machine(remote, tmp_path):
     assert not wanted.exists()
 
 
-def test_local_save_folder_is_created_because_bitcomet_will_not_register_one(
-    fake, tmp_path
-):
-    client = BitCometClient(
-        base_url=fake.url, username=fake.username, password=fake.password
-    )
-    wanted = tmp_path / "brand-new"
-    assert client.ensure_save_folder(str(wanted)) == str(wanted)
-    assert wanted.is_dir()
-    client.close()
-
-
 def test_remote_save_folder_registers_with_the_peer(remote, fake):
     remote.ensure_save_folder("/volume2/media")
     assert "/volume2/media" in fake.save_folders

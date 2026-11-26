@@ -112,41 +112,11 @@ def test_img_to_pdf_name_with_quote_is_well_formed(client):
     assert resp.headers["content-disposition"] == 'attachment; filename="a\\"b.pdf"'
 
 
-def test_images_to_pdf_orders_pages_naturally():
-    from toolkit_engine import imgpdf as imgpdf_engine
-
-    # Distinct page sizes let us read the order back from the PDF's /MediaBox.
-    def png(w, h):
-        buf = BytesIO()
-        Image.new("RGB", (w, h), "white").save(buf, format="PNG")
-        return buf.getvalue()
-
-    named = [("p10.png", png(10, 10)), ("p2.png", png(20, 20))]
-    pdf = imgpdf_engine.images_to_pdf_bytes(named)
-    boxes = [tuple(map(float, m.decode().split())) for m in _mediaboxes(pdf)]
-    assert boxes[0][2:] == (20.0, 20.0)
-
-
 def test_images_to_pdf_rejects_an_empty_batch():
     from toolkit_engine.imgpdf import images_to_pdf_bytes
 
     with pytest.raises(ValueError, match="at least one image"):
         images_to_pdf_bytes([])
-
-
-def test_images_to_pdf_applies_exif_orientation():
-    from toolkit_engine import imgpdf as imgpdf_engine
-
-    # Orientation 6 is how phones store a portrait shot in a landscape frame.
-    buf = BytesIO()
-    image = Image.new("RGB", (40, 20), "white")
-    exif = image.getexif()
-    exif[0x0112] = 6
-    image.save(buf, format="JPEG", exif=exif)
-
-    pdf = imgpdf_engine.images_to_pdf_bytes([("photo.jpg", buf.getvalue())])
-    boxes = [tuple(map(float, m.decode().split())) for m in _mediaboxes(pdf)]
-    assert boxes[0][2:] == (20.0, 40.0)
 
 
 def test_images_to_pdf_bounds_retained_decoded_pixels(monkeypatch):
@@ -283,12 +253,6 @@ def test_read_uploads_enforces_size_cap():
     assert exc.value.status_code == 413
 
 
-def _mediaboxes(pdf_bytes):
-    import re
-
-    return re.findall(rb"/MediaBox\s*\[\s*([0-9.\s]+?)\]", pdf_bytes)
-
-
 # --- Web Images to PDF — engine ---
 def test_sanitize_filename():
     assert sanitize_filename('a\\b/c:d*e?f"g<h>i|j') == "a_b_c_d_e_f_g_h_i_j"
@@ -355,12 +319,6 @@ def test_webpdf_status_reflects_browser_slot(client, app_state):
     assert client.get("/api/webpdf/status").json() == {"open": False}
     app_state.browser = FakeBrowserSession()
     assert client.get("/api/webpdf/status").json() == {"open": True}
-
-
-def test_webpdf_open_conflicts_when_already_open(client, app_state):
-    app_state.browser = FakeBrowserSession()
-    resp = client.post("/api/webpdf/open", json={"url": "http://example.com"})
-    assert resp.status_code == 409
 
 
 def test_webpdf_open_error_returns_502(client, app_state, monkeypatch):

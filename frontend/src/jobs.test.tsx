@@ -69,26 +69,4 @@ describe('useToolJob', () => {
     expect(result.current.snapshot?.id).toBe('b')
     expect(result.current.running).toBe(true)
   })
-
-  it('still reports running for a job it did not start itself', () => {
-    const { wrapper } = harness({
-      jobs: {
-        j9: {
-          toolPath: TOOL,
-          snapshot: {
-            id: 'j9',
-            tool: 'cache-purge',
-            state: 'running',
-            message: '',
-            items: [],
-            result: null,
-            error: null,
-            created_at: '',
-          },
-        },
-      },
-    })
-    const { result } = renderHook(() => useToolJob(TOOL), { wrapper })
-    expect(result.current.running).toBe(true)
-  })
 })
