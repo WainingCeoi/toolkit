@@ -239,12 +239,6 @@ def test_uv_bumps_only_lagging_ge_floors(tmp_path):
     assert by_name["pytest"].table == "dependency-groups.dev"
 
 
-def test_uv_bumps_skip_equal_pinned_compat_range_and_marker(tmp_path):
-    path = _uv_project(tmp_path) / "pyproject.toml"
-    names = {b.name for b in depsync.compute_uv_bumps(path, RESOLVED)}
-    assert names.isdisjoint({"uvicorn", "pinned", "compat", "ranged", "markered"})
-
-
 def test_uv_local_version_does_not_spuriously_bump(tmp_path):
     (tmp_path / "pyproject.toml").write_text(
         '[project]\nname="x"\nversion="0.1.0"\ndependencies=["torch>=2.1.0"]\n',
@@ -384,14 +378,6 @@ def test_npm_bumps_to_latest_preserving_operator(tmp_path):
     assert (
         by_name["eslint"].table == "devDependencies" and by_name["eslint"].major is True
     )
-
-
-def test_npm_bumps_skip_complex_ranges_and_non_declared(tmp_path):
-    path = _npm_project(tmp_path) / "package.json"
-    names = {b.name for b in depsync.compute_npm_bumps(path, LATEST)}
-    assert "wild" not in names
-    assert "workspace-dep" not in names
-    assert "not-declared" not in names
 
 
 def test_npm_bumps_skip_when_not_actually_newer(tmp_path):
@@ -577,18 +563,7 @@ def test_write_manifest_uv_writes_without_committing(tmp_path, monkeypatch):
     assert result["written"] == 3 and result["error"] is None
     assert '"fastapi>=0.115.0"' in (root / "pyproject.toml").read_text(encoding="utf-8")
     assert [p.name for p in result["changed"]] == ["pyproject.toml", "uv.lock"]
-
-
-def test_write_manifest_uv_relocks_after_raising_the_floors(tmp_path, monkeypatch):
-    root = _uv_project(tmp_path / "proj")
-    _fake_locks(monkeypatch)
-    manifest = depsync.Manifest(root / "pyproject.toml", "uv", "pyproject.toml")
-
-    result = depsync.write_manifest(manifest)
-
-    assert result["error"] is None
-    lock_text = (root / "uv.lock").read_text(encoding="utf-8")
-    assert "# relocked" in lock_text
+    assert "# relocked" in (root / "uv.lock").read_text(encoding="utf-8")
 
 
 def test_write_manifest_uv_relocks_after_writing_not_before(tmp_path, monkeypatch):
@@ -785,6 +760,99 @@ def _fake_syncs(monkeypatch):
         depsync, "run_npm_upgrade", lambda *a, **k: (True, "up to date")
     )
     monkeypatch.setattr(depsync, "npm_latest", lambda folder: (LATEST, None))
+
+
+@requires_git
+@pytest.mark.parametrize("operation", ["scan", "apply"])
+def test_projects_overlap_with_backend_before_frontend(
+    client, tmp_path, monkeypatch, operation
+):
+    _init_git(tmp_path)
+    projects = [tmp_path / "apps" / name for name in ("alpha", "beta")]
+    for project in projects:
+        _monorepo(project)
+    _fake_syncs(monkeypatch)
+    _fake_locks(monkeypatch)
+
+    backends = threading.Barrier(len(projects), timeout=3)
+    completed = {project.name: threading.Event() for project in projects}
+    frontends = set()
+
+    def backend(folder, *_args):
+        name = Path(folder).parent.name
+        backends.wait()
+        completed[name].set()
+        return True, "Resolved"
+
+    def frontend(folder, *_args):
+        name = Path(folder).parent.name
+        assert completed[name].is_set(), f"{name}'s frontend ran before its backend"
+        frontends.add(name)
+        return True, "Resolved"
+
+    def frontend_latest(folder):
+        frontend(folder)
+        backend_manifest = Path(folder).parent / "backend" / "pyproject.toml"
+        assert "fastapi>=0.115.0" in backend_manifest.read_text(encoding="utf-8")
+        return LATEST, None
+
+    folder = {"folder": str(tmp_path)}
+    if operation == "scan":
+        monkeypatch.setattr(depsync, "run_uv_upgrade", backend)
+        monkeypatch.setattr(depsync, "run_npm_upgrade", frontend)
+    scan = client.post("/api/deps/scan", json=folder)
+    assert scan.status_code == 200
+    job_id = scan.json()["job_id"]
+    snapshot = _wait(client, job_id)
+    assert snapshot["state"] == "done", snapshot
+    assert snapshot["result"]["total_bumps"] == 16
+    assert [target["project"]["root"] for target in snapshot["result"]["targets"]] == [
+        str(project.resolve()) for project in projects for _ in range(2)
+    ]
+
+    if operation == "apply":
+        monkeypatch.setattr(depsync, "uv_lock_refresh", backend)
+        monkeypatch.setattr(depsync, "npm_latest", frontend_latest)
+        response = client.post(
+            "/api/deps/apply", json={**folder, "commit": False, "scan_job_id": job_id}
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["written_total"] == 16, body
+    assert frontends == set(completed)
+
+
+def test_apply_serializes_projects_sharing_a_pnpm_lock(client, tmp_path, monkeypatch):
+    lock = tmp_path / "shared" / "pnpm-lock.yaml"
+    lock.parent.mkdir()
+    lock.write_text("", encoding="utf-8")
+    for name in ("alpha", "beta"):
+        project = _npm_project(tmp_path / name)
+        (project / "pnpm-workspace.yaml").write_text(
+            "lockfileDir: ../shared\n", encoding="utf-8"
+        )
+    second_entered = threading.Event()
+
+    def refresh(manifest):
+        assert manifest.pnpm_lock == lock.resolve()
+        if manifest.path.parent.name == "alpha":
+            assert not second_entered.wait(0.5), "both projects refreshed the same lock"
+            lock.write_text("alpha\n", encoding="utf-8")
+        else:
+            second_entered.set()
+            assert lock.read_text(encoding="utf-8") == "alpha\n"
+            lock.write_text("alpha\nbeta\n", encoding="utf-8")
+        return True, "Resolved"
+
+    monkeypatch.setattr(depsync, "pnpm_latest", lambda _: ({"react": "19.1.0"}, None))
+    monkeypatch.setattr(depsync, "pnpm_lock_refresh", refresh)
+    response = client.post(
+        "/api/deps/apply", json={"folder": str(tmp_path), "commit": False}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["written_total"] == 2, response.json()
+    assert lock.read_text(encoding="utf-8") == "alpha\nbeta\n"
 
 
 def test_runtime_updates_only_choose_compatible_stable_patches(

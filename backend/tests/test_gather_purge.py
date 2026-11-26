@@ -258,27 +258,6 @@ def test_purge_scan_and_delete_end_to_end(client, tmp_path):
     assert again.status_code == 409
 
 
-def test_purge_delete_only_removes_what_the_scan_recorded(client, tmp_path):
-    folder = tmp_path / "cache"
-    folder.mkdir()
-    (folder / "a.log").write_text("junk")
-    outside = tmp_path / "secret.txt"
-    outside.write_text("do not delete me")
-
-    scan = client.post(
-        "/api/purge/scan",
-        json={"folder": str(folder), "patterns_raw": "*.log"},
-    ).json()
-    assert [Path(f).name for f in scan["files"]] == ["a.log"]
-
-    resp = client.post("/api/purge/delete", json={"scan_id": scan["scan_id"]})
-    assert resp.status_code == 200
-    snap = wait_for_job(client, resp.json()["job_id"])
-    assert snap["state"] == "done"
-    assert outside.exists()
-    assert not (folder / "a.log").exists()
-
-
 def test_purge_delete_refuses_an_unknown_or_expired_scan(client):
     resp = client.post("/api/purge/delete", json={"scan_id": "deadbeefcafe"})
     assert resp.status_code == 409
@@ -364,7 +343,8 @@ def test_purge_delete_cancel_keeps_partial_report(
 def test_purge_delete_ignores_a_client_supplied_file_list(client, tmp_path):
     folder = tmp_path / "cache"
     folder.mkdir()
-    (folder / "a.log").write_text("junk")
+    scanned = folder / "a.log"
+    scanned.write_text("junk")
     outside = tmp_path / "secret.txt"
     outside.write_text("do not delete me")
 
@@ -372,14 +352,17 @@ def test_purge_delete_ignores_a_client_supplied_file_list(client, tmp_path):
         "/api/purge/scan",
         json={"folder": str(folder), "patterns_raw": "*.log"},
     ).json()
+    assert [Path(f).name for f in scan["files"]] == [scanned.name]
 
     resp = client.post(
         "/api/purge/delete",
         json={"scan_id": scan["scan_id"], "folder": "/", "files": [str(outside)]},
     )
     assert resp.status_code == 200
-    wait_for_job(client, resp.json()["job_id"])
+    snap = wait_for_job(client, resp.json()["job_id"])
+    assert snap["state"] == "done"
     assert outside.exists()
+    assert not scanned.exists()
 
 
 def test_purge_delete_reports_per_file_failures(client, tmp_path, monkeypatch):

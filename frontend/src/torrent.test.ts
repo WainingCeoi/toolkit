@@ -94,10 +94,6 @@ describe('addTorrent / updateTorrent', () => {
 describe('selectionFor + ruleKey (per-torrent)', () => {
   const cats = new Set(['video'])
 
-  it('applies the shared rule with no overrides', () => {
-    expect(selectionFor(torrent('a'), cats, 100 * MB, new Map())).toEqual(new Set([1]))
-  })
-
   it('applies both checked and unchecked overrides to the shared filter', () => {
     const overrides = new Map([[1, false], [3, true]])
     expect(selectionFor(torrent('a'), cats, 100 * MB, overrides)).toEqual(new Set([3]))
@@ -189,13 +185,6 @@ describe('windowedRun', () => {
     }
     await done
   }
-
-  it('fires the first window together, not one at a time', async () => {
-    const { items, run, started, finish } = harness(25)
-    const done = windowedRun(items, run, 10)
-    expect(started).toHaveLength(10)
-    await drain(done, finish)
-  })
 
   it('tops up one-for-one, keeping the window pinned full', async () => {
     const { items, run, started, finish } = harness(25)

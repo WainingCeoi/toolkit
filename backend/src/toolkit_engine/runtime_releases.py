@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import threading
 from functools import cached_property
 from pathlib import Path
 
@@ -16,6 +17,9 @@ _LOOKUP_TIMEOUT = 15
 
 class RuntimeReleases:
     """Release lookups for one scan or apply operation."""
+
+    def __init__(self) -> None:
+        self._node_lock = threading.Lock()
 
     def python(self, folder: Path, series: str) -> tuple[list[str], str | None]:
         """Read the locally available uv downloads catalog for this CPython series."""
@@ -66,9 +70,14 @@ class RuntimeReleases:
             return [], f"❌ uv did not return standard CPython {series} releases."
         return versions, None
 
-    @cached_property
+    @property
     def node(self) -> tuple[list[str], str | None]:
         """Read the Node.js distribution index once, without its version prefixes."""
+        with self._node_lock:
+            return self._node
+
+    @cached_property
+    def _node(self) -> tuple[list[str], str | None]:
         try:
             response = requests.get(_NODE_RELEASES, timeout=_LOOKUP_TIMEOUT)
             response.raise_for_status()

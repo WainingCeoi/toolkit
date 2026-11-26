@@ -23,7 +23,7 @@ def _finished(client, job_id):
     raise AssertionError("Job did not finish")
 
 
-def _manifests(tmp_path, monkeypatch, count=2):
+def _manifests(tmp_path, monkeypatch, count=2, *, same_project=False):
     manifests = []
     for index in range(count):
         path = tmp_path / f"project{index}" / "pyproject.toml"
@@ -31,7 +31,9 @@ def _manifests(tmp_path, monkeypatch, count=2):
         path.write_text("original", encoding="utf-8")
         manifests.append(depsync.Manifest(path, "uv", str(path.relative_to(tmp_path))))
     monkeypatch.setattr(depsync, "find_manifests", lambda _: (manifests, None))
-    monkeypatch.setattr(depsync, "git_root", lambda folder: folder)
+    monkeypatch.setattr(
+        depsync, "git_root", lambda folder: str(tmp_path) if same_project else folder
+    )
     return manifests
 
 
@@ -96,7 +98,7 @@ def test_async_apply_uses_shared_registry_and_returns_existing_result(
 def test_async_apply_cancel_waits_for_write_then_skips_remaining_and_commit(
     client, tmp_path, monkeypatch
 ):
-    manifests = _manifests(tmp_path, monkeypatch)
+    manifests = _manifests(tmp_path, monkeypatch, same_project=True)
     entered, release = threading.Event(), threading.Event()
     calls = []
 

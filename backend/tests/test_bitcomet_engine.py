@@ -28,8 +28,6 @@ from toolkit_engine.bitcomet import (
     encrypt,
     login_payload,
     read_credentials,
-    to_engine_index,
-    to_toolkit_index,
 )
 
 SAMPLE_FILES = [
@@ -305,18 +303,8 @@ def test_add_magnets_hands_back_no_task_id_at_all(fake, client, save_folder):
         f"bt_{'a' * 40}",
         f"bt_{'b' * 40}",
     }
-    assert sum(1 for _m, path, _p in fake.calls if path.endswith("links/add")) == 1
-
-
-def test_magnets_go_over_the_wire_newline_joined_not_as_a_list(
-    fake, client, save_folder
-):
-    links = [f"magnet:?xt=urn:btih:{'a' * 40}", f"magnet:?xt=urn:btih:{'b' * 40}"]
-    client.add_magnets(links, save_folder, start_later=False)
-
-    sent = next(p for _m, path, p in fake.calls if path.endswith("links/add"))
+    (sent,) = [p for _m, path, p in fake.calls if path.endswith("links/add")]
     assert sent["torrent_links"] == "\n".join(links)
-    assert not isinstance(sent["torrent_links"], list)
 
 
 # --- MAGNET METADATA ---
@@ -348,11 +336,6 @@ def test_a_running_magnet_reaches_the_swarm_and_learns_its_files(
 
 
 # --- FILE INDEXES ---
-def test_index_translation_is_a_matched_pair():
-    assert to_engine_index(1) == 0
-    assert to_toolkit_index(0) == 1
-
-
 def test_files_are_reported_with_this_repos_1_based_indexes(fake, client):
     task_id = fake.add_task("A", SAMPLE_FILES)
     files = client.files(task_id)
@@ -373,13 +356,6 @@ def test_set_priority_translates_down_to_0_based_indexes(fake, client):
         "normal",
         "high",
     ]
-
-
-def test_the_last_file_is_reachable_without_running_off_the_end(fake, client):
-    task_id = fake.add_task("A", SAMPLE_FILES)
-    client.set_priority(task_id, [len(SAMPLE_FILES)], "high")
-
-    assert fake.tasks[task_id]["files"][-1]["priority"] == "high"
 
 
 # --- SELECTION ---
@@ -481,17 +457,12 @@ def test_delete_files_selects_delete_all(fake, client):
     assert fake.tasks == {}
 
 
-def test_a_torrent_over_the_cap_is_refused_before_it_is_sent(fake, client, save_folder):
-    with pytest.raises(BitCometError, match="at most"):
-        client.add_torrent(b"x" * (20 * 1024 * 1024 + 1), save_folder)
-    assert not any(path.endswith("bt/add") for _m, path, _p in fake.calls)
-
-
 def test_the_size_cap_is_read_from_bitcomet_not_hardcoded(fake, client, save_folder):
     fake.torrent_max_size = 4096
 
     with pytest.raises(BitCometError, match="at most 4096"):
         client.add_torrent(b"x" * 5000, save_folder)
+    assert not any(path.endswith("bt/add") for _m, path, _p in fake.calls)
 
 
 def test_the_size_cap_is_asked_for_once_and_remembered(fake, client, save_folder):

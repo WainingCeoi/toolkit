@@ -268,6 +268,52 @@ def _lock_path(folder: str, name: str) -> Path:
     return here / name
 
 
+def _candidate_lock_paths(folder: Path, name: str, manifest_name: str) -> set[Path]:
+    lock = folder / name
+    locks = {lock}
+    if lock.is_file():
+        return locks
+    with contextlib.suppress(OSError):
+        if root := git_root(str(folder)):
+            top = Path(root).resolve()
+            for parent in folder.parents:
+                if not parent.is_relative_to(top):
+                    break
+                lock = parent / name
+                if lock.is_file():
+                    locks.add(lock)
+                    break
+                # This lock may be created by another target during the batch.
+                if (parent / manifest_name).is_file():
+                    locks.add(lock)
+    return locks
+
+
+def manifest_lock_paths(manifest: Manifest, *, legacy_uv: bool = False) -> set[Path]:
+    """Lockfiles a manifest operation may touch, including inherited locks."""
+    folder = manifest.path.parent
+    if manifest.kind == "uv":
+        workspace = manifest.workspace or folder
+        locks = {workspace / "uv.lock"}
+        if legacy_uv:
+            locks.update(_candidate_lock_paths(folder, "uv.lock", "pyproject.toml"))
+        return locks
+    if manifest.kind == "pnpm":
+        return {_pnpm_lock_path(manifest)}
+    if manifest.kind == "npm":
+        name = "package-lock.json"
+        locks = _candidate_lock_paths(folder, name, "package.json")
+        for parent in folder.parents:
+            # npm can write the workspace's lock from a member's directory,
+            # even in an untracked workspace or before the lock exists.
+            with contextlib.suppress(OSError, ValueError):
+                package = json.loads((parent / "package.json").read_text())
+                if isinstance(package, dict) and package.get("workspaces"):
+                    locks.add(parent / name)
+        return locks
+    return set()
+
+
 # --- Subprocess streaming (uv lock / npm install) ---
 
 
