@@ -83,22 +83,13 @@ describe('api helpers', () => {
     vi.unstubAllGlobals()
   })
 
-  it('keeps escaped quotes in a Content-Disposition filename', async () => {
-    const blobResponse = (dispo: string) =>
-      new Response(new Blob(['%PDF']), {
-        status: 200,
-        headers: { 'content-type': 'application/pdf', 'content-disposition': dispo },
-      })
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(blobResponse('attachment; filename="say \\"hi\\".pdf"'))
-      .mockResolvedValueOnce(blobResponse('attachment; filename="plain.pdf"'))
-      .mockResolvedValueOnce(blobResponse('attachment; filename=plain.pdf'))
+  it('uses the quoted filename for a subscription download', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response('proxies: []', {
+      headers: { 'content-disposition': 'attachment; filename="subscription-clash.yaml"' },
+    }))
     vi.stubGlobal('fetch', fetchMock)
 
-    expect((await api.imgToPdf(new FormData())).filename).toBe('say "hi".pdf')
-    expect((await api.imgToPdf(new FormData())).filename).toBe('plain.pdf')
-    expect((await api.imgToPdf(new FormData())).filename).toBe('plain.pdf')
+    expect((await api.subsDownload('abc', 'clash')).filename).toBe('subscription-clash.yaml')
     vi.unstubAllGlobals()
   })
 

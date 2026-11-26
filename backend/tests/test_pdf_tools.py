@@ -1,18 +1,16 @@
-"""Image to PDF + Web Images to PDF: engines and routers."""
+"""Web Images to PDF and shared upload limits."""
 
 from __future__ import annotations
 
 import base64
-import json
-import subprocess
-import sys
 import threading
 import time
 from io import BytesIO
 from types import SimpleNamespace
 
 import pytest
-from PIL import Image, PdfParser
+from PIL import Image
+from pillow_heif import from_pillow
 
 from toolkit_api.routers import webpdf
 from toolkit_engine.webpdf import (
@@ -34,8 +32,8 @@ def _png_bytes(color="red"):
     return buf.getvalue()
 
 
-def _data_uri(png):
-    return "data:image/png;base64," + base64.b64encode(png).decode()
+def _data_uri(image, subtype="png"):
+    return f"data:image/{subtype};base64," + base64.b64encode(image).decode()
 
 
 class FakeBrowserSession:
@@ -56,187 +54,6 @@ class FakeBrowserSession:
         self.quit_called = True
 
     shutdown = quit
-
-
-# --- Image to PDF ---
-def test_img_to_pdf_end_to_end(client):
-    files = [
-        ("files", ("b.png", _png_bytes("red"), "image/png")),
-        ("files", ("a.png", _png_bytes("blue"), "image/png")),
-    ]
-    resp = client.post("/api/img-to-pdf", data={"name": "scan"}, files=files)
-    assert resp.status_code == 200
-    assert resp.content.startswith(b"%PDF")
-    assert resp.headers["content-type"] == "application/pdf"
-    assert 'filename="scan.pdf"' in resp.headers["content-disposition"]
-
-
-def test_img_to_pdf_keeps_explicit_pdf_extension(client):
-    files = [("files", ("a.png", _png_bytes(), "image/png"))]
-    resp = client.post("/api/img-to-pdf", data={"name": " docs.PDF "}, files=files)
-    assert resp.status_code == 200
-    assert 'filename="docs.PDF"' in resp.headers["content-disposition"]
-
-
-def test_img_to_pdf_blank_name_is_400(client):
-    files = [("files", ("a.png", _png_bytes(), "image/png"))]
-    resp = client.post("/api/img-to-pdf", data={"name": "   "}, files=files)
-    assert resp.status_code == 400
-    assert resp.json()["detail"] == "❌ Please enter a PDF file name."
-
-
-def test_img_to_pdf_no_files_is_400(client):
-    resp = client.post("/api/img-to-pdf", data={"name": "scan"})
-    assert resp.status_code == 400
-    assert resp.json()["detail"] == "❌ Please select at least one image first."
-
-
-def test_img_to_pdf_non_ascii_name_uses_rfc5987(client):
-    from urllib.parse import quote
-
-    files = [("files", ("a.png", _png_bytes(), "image/png"))]
-    resp = client.post("/api/img-to-pdf", data={"name": "扫描文档"}, files=files)
-    assert resp.status_code == 200
-    assert resp.content.startswith(b"%PDF")
-    assert resp.headers["content-type"] == "application/pdf"
-    disposition = resp.headers["content-disposition"]
-    assert "filename*=utf-8''" in disposition
-    assert quote("扫描文档.pdf") in disposition
-
-
-def test_img_to_pdf_name_with_quote_is_well_formed(client):
-    files = [("files", ("a.png", _png_bytes(), "image/png"))]
-    resp = client.post("/api/img-to-pdf", data={"name": 'a"b'}, files=files)
-    assert resp.status_code == 200
-    assert resp.content.startswith(b"%PDF")
-    assert resp.headers["content-disposition"] == 'attachment; filename="a\\"b.pdf"'
-
-
-def test_images_to_pdf_rejects_an_empty_batch():
-    from toolkit_engine.imgpdf import images_to_pdf_bytes
-
-    with pytest.raises(ValueError, match="at least one image"):
-        images_to_pdf_bytes([])
-
-
-def test_images_to_pdf_bounds_retained_decoded_pixels(monkeypatch):
-    from toolkit_engine import imgpdf as imgpdf_engine
-
-    converted = []
-    peak_pixels = 0
-    budget = 32
-    monkeypatch.setattr(imgpdf_engine, "MAX_BATCH_PIXELS", budget)
-    original_convert = Image.Image.convert
-
-    def remains_open(image):
-        try:
-            image.getpixel((0, 0))
-        except ValueError:
-            return False
-        return True
-
-    def count_open_pages(self, *args, **kwargs):
-        nonlocal peak_pixels
-        image = original_convert(self, *args, **kwargs)
-        converted.append(image)
-        pixels = sum(
-            page.width * page.height for page in converted if remains_open(page)
-        )
-        peak_pixels = max(peak_pixels, pixels)
-        return image
-
-    monkeypatch.setattr(Image.Image, "convert", count_open_pages)
-    try:
-        pdf = imgpdf_engine.images_to_pdf_bytes(
-            [(f"page-{i}.png", _png_bytes()) for i in range(4)]
-        )
-        with PdfParser.PdfParser(buf=pdf) as document:
-            assert len(document.pages) == 4
-        assert peak_pixels <= budget
-    finally:
-        for page in converted:
-            page.close()
-
-
-def test_images_to_pdf_rendering_preserves_page_order_orientation_and_rgb(monkeypatch):
-    from toolkit_engine import imgpdf as imgpdf_engine
-
-    # Force an append boundary; the second page may exceed a batch budget by itself.
-    monkeypatch.setattr(imgpdf_engine, "MAX_BATCH_PIXELS", 6000)
-
-    portrait = BytesIO()
-    with Image.new("RGB", (80, 40), "blue") as image:
-        exif = image.getexif()
-        exif[0x0112] = 6
-        image.save(portrait, format="JPEG", exif=exif)
-    translucent = BytesIO()
-    with Image.new("RGBA", (96, 64), (255, 0, 0, 128)) as image:
-        image.save(translucent, format="PNG")
-
-    pdf = imgpdf_engine.images_to_pdf_bytes(
-        [("p10.png", translucent.getvalue()), ("p2.jpg", portrait.getvalue())]
-    )
-    # Isolate the native renderer from pytest's warning filters / Python teardown.
-    rendered = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            "import json, sys, warnings\n"
-            "with warnings.catch_warnings():\n"
-            "    warnings.simplefilter('ignore')\n"
-            "    import pymupdf\n"
-            "with pymupdf.open(stream=sys.stdin.buffer.read(), "
-            "filetype='pdf') as doc:\n"
-            "    pages = []\n"
-            "    for page in doc:\n"
-            "        pix = page.get_pixmap()\n"
-            "        pages.append([[page.rect.width, page.rect.height], "
-            "pix.pixel(pix.width // 2, pix.height // 2)])\n"
-            "    print(json.dumps(pages))\n",
-        ],
-        input=pdf,
-        capture_output=True,
-        check=True,
-    )
-    pages = json.loads(rendered.stdout)
-    assert len(pages) == 2
-    for (size, pixel), expected_size, rgb in zip(
-        pages, [[40, 80], [96, 64]], [(0, 0, 255), (255, 0, 0)], strict=True
-    ):
-        assert size == expected_size
-        # Preserve Pillow's existing RGB conversion, including dropped alpha.
-        assert all(
-            abs(actual - wanted) < 5 for actual, wanted in zip(pixel, rgb, strict=True)
-        )
-
-
-def test_images_to_pdf_transposes_without_an_extra_pixel_copy(monkeypatch):
-    from toolkit_engine import imgpdf as imgpdf_engine
-
-    copies = 0
-    original_copy = Image.Image.copy
-
-    def counting_copy(self):
-        nonlocal copies
-        copies += 1
-        return original_copy(self)
-
-    monkeypatch.setattr(Image.Image, "copy", counting_copy)
-    buf = BytesIO()
-    Image.new("RGB", (40, 20), "white").save(buf, format="JPEG")
-    imgpdf_engine.images_to_pdf_bytes([("photo.jpg", buf.getvalue())])
-    # Only .convert("RGB") may copy; an unrotated image must not be copied twice.
-    assert copies == 1
-
-
-def test_images_to_pdf_rejects_decompression_bomb(monkeypatch):
-    from toolkit_engine import imgpdf as imgpdf_engine
-
-    monkeypatch.setattr(imgpdf_engine, "MAX_PIXELS", 100)
-    big = BytesIO()
-    Image.new("RGB", (20, 20), "white").save(big, format="PNG")
-    with pytest.raises(ValueError, match="too large"):
-        imgpdf_engine.images_to_pdf_bytes([("big.png", big.getvalue())])
 
 
 def test_read_uploads_enforces_size_cap():
@@ -269,18 +86,21 @@ def test_sanitize_filename_caps_long_titles():
 
 
 def test_scrape_images_from_source_data_uris():
+    with BytesIO() as encoded, Image.new("RGB", (16, 16), "blue") as image:
+        from_pillow(image).save(encoded)
+        heic = _data_uri(encoded.getvalue(), "heic")
     html = (
         "<html><head><title>My Comic: Vol 1</title></head><body>"
         f'<img class="bi" src="{_data_uri(_png_bytes("red"))}">'
+        f'<img class="bi" src="{heic}">'
         "</body></html>"
     )
     pdf_name, images, skipped = scrape_images_from_source(
         parse_page(html), "http://example.com"
     )
     assert pdf_name == "My Comic_ Vol 1.pdf"
-    assert len(images) == 1
     assert skipped == 0
-    assert images[0].size == (4, 4)
+    assert [image.size for image in images] == [(4, 4), (16, 16)]
 
 
 def test_scrape_images_selector_and_skip_counting():

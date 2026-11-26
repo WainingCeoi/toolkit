@@ -113,40 +113,29 @@ async def test_connection_and_timeout(error):
 
 
 @pytest.mark.anyio
-async def test_upload_and_atomic_download(tmp_path):
-    source = tmp_path / "图.png"
-    source.write_bytes(b"image fixture")
-    output = tmp_path / "result.pdf"
+async def test_atomic_download(tmp_path):
+    output = tmp_path / "result.bin"
     requests = []
 
-    async def respond(request):
-        requests.append((request, await request.aread()))
-        return httpx.Response(
-            200, content=b"%PDF-output", headers={"content-type": "application/pdf"}
-        )
+    def respond(request):
+        requests.append(request)
+        content = b"original artifact" if len(requests) == 1 else b"updated artifact"
+        return httpx.Response(200, content=content)
 
     api = adapter(respond)
     try:
-        result = await api.upload(
-            "/img-to-pdf",
-            [source.as_uri()],
-            {"name": "图", "flag": False},
-            output_path=str(output),
-        )
-        assert output.read_bytes() == b"%PDF-output"
-        assert result["bytes"] == 11 and len(result["sha256"]) == 64
+        result = await api.download("/artifacts/a", str(output))
+        assert output.read_bytes() == b"original artifact"
+        assert result["bytes"] == len(b"original artifact")
+        assert len(result["sha256"]) == 64
         assert result["file_uri"] == output.as_uri()
-        request, body = requests[0]
-        assert "multipart/form-data" in request.headers["content-type"]
-        assert b'name="files"' in body and b"image fixture" in body
-        assert b"false" in body and "图.png".encode() in body
         with pytest.raises(ToolError, match="Output exists"):
-            await api.upload("/img-to-pdf", [str(source)], output_path=str(output))
-        assert (
-            len(requests) == 1
-        )  # preflight prevents conversion before overwrite error
+            await api.download("/artifacts/a", str(output))
+        assert len(requests) == 1
+        assert output.read_bytes() == b"original artifact"
         await api.download("/artifacts/a", str(output), overwrite=True)
         assert len(requests) == 2
+        assert output.read_bytes() == b"updated artifact"
         assert not list(tmp_path.glob(".toolkit-*"))
     finally:
         await api.close()
@@ -321,23 +310,6 @@ def test_adapter_has_no_business_imports():
             assert not any(
                 n.startswith(("toolkit_api", "toolkit_engine", "subgen")) for n in names
             ), path
-
-
-@pytest.mark.anyio
-@pytest.mark.parametrize("mime", ["text/html", "application/json", "text/plain"])
-async def test_wrong_address_cannot_be_saved_as_pdf(tmp_path, mime):
-    source = tmp_path / "image.png"
-    source.write_bytes(b"image")
-    dest = tmp_path / "output.pdf"
-    api = adapter(
-        lambda r: httpx.Response(200, content=b"wrong", headers={"content-type": mime})
-    )
-    try:
-        with pytest.raises(ToolError):
-            await api.upload("/img-to-pdf", [str(source)], output_path=str(dest))
-        assert not dest.exists()
-    finally:
-        await api.close()
 
 
 @pytest.mark.anyio

@@ -246,10 +246,7 @@ class ToolkitClient:
                 expected_media_type="image/png" if path.endswith("/qr.png") else None,
             )
 
-    async def upload(
-        self, path, paths, data=None, field="files", output_path=None, overwrite=False
-    ):
-        destination = self._destination(output_path, overwrite) if output_path else None
+    async def upload(self, path, paths, data=None, field="files"):
         with ExitStack() as stack:
             files, total = [], 0
             for reference in paths:
@@ -284,13 +281,4 @@ class ToolkitClient:
             async with self._response(
                 "POST", path, files=files or None, data=form
             ) as response:
-                if destination is not None:
-                    return await self._save(
-                        response,
-                        destination,
-                        overwrite,
-                        expected_media_type="application/pdf"
-                        if path == "/img-to-pdf"
-                        else None,
-                    )
                 return await self._decode(response)

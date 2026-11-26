@@ -1,6 +1,6 @@
 # Toolkit
 
-Toolkit brings thirteen media, file, and document utilities into one app.
+Toolkit brings twelve media, file, and document utilities into one app.
 It runs on your Mac and opens in your browser.
 
 **Requires macOS.** Some tools use macOS folder pickers or control apps installed

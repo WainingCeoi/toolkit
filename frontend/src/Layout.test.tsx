@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { createMemoryRouter, RouterProvider } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import Layout from './Layout'
@@ -8,19 +8,24 @@ import { useToolBusy } from './toolHost'
 
 vi.mock('./pages', () => ({
   PAGES: {
-    'image-to-pdf': function PreviewPage() {
-      const [name, setName] = useState('')
+    'web-images-to-pdf': function CapturePage() {
+      const [url, setUrl] = useState('')
       const [busy, setBusy] = useState(false)
       useToolBusy(busy)
-      return <div><label>Output name<input value={name} onChange={e => setName(e.target.value)} /></label><button onClick={() => setBusy(!busy)}>{busy ? 'Finish preview' : 'Begin preview'}</button></div>
+      return (
+        <div>
+          <label>Page URL<input value={url} onChange={e => setUrl(e.target.value)} /></label>
+          <button onClick={() => setBusy(!busy)}>{busy ? 'Finish capture' : 'Begin capture'}</button>
+        </div>
+      )
     },
     'cache-purge': function CleanupPage() { return <h1>Cleanup test</h1> },
   },
-  isToolSlug: (slug: string) => ['image-to-pdf', 'cache-purge'].includes(slug),
+  isToolSlug: (slug: string) => ['web-images-to-pdf', 'cache-purge'].includes(slug),
 }))
 
 const manifest = [{ name: 'Files & Tools', tools: [
-  { slug: 'image-to-pdf', title: '🖼️ Image to PDF', description: 'Combine images into a PDF.' },
+  { slug: 'web-images-to-pdf', title: '🌐 Web Images to PDF', description: 'Capture images from a web page.' },
   { slug: 'cache-purge', title: '🧹 Cache Purge', description: 'Find and remove junk files.' },
 ] }]
 
@@ -36,7 +41,7 @@ beforeEach(() => {
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 
-function mount(path = '/tools/image-to-pdf', overrides: Partial<JobsContextValue> = {}) {
+function mount(path = '/tools/web-images-to-pdf', overrides: Partial<JobsContextValue> = {}) {
   const value: JobsContextValue = { jobs: {}, track: async () => null, dismiss: vi.fn(), ...overrides }
   const router = createMemoryRouter([{ path: '*', element: <Layout /> }], { initialEntries: [path] })
   render(<JobsContext.Provider value={value}><RouterProvider router={router} /></JobsContext.Provider>)
@@ -47,30 +52,32 @@ describe('workspace navigation', () => {
   it('preserves tool input when switching tabs and chooses a neighbour after close', async () => {
     const { router } = mount()
     await screen.findByRole('link', { name: 'Cache Purge' })
-    fireEvent.change(screen.getByLabelText('Output name'), { target: { value: 'meeting notes' } })
+    const url = 'https://example.test/page'
+    fireEvent.change(screen.getByLabelText('Page URL'), { target: { value: url } })
     fireEvent.click(screen.getByRole('link', { name: 'Cache Purge' }))
     await screen.findByRole('heading', { name: 'Cleanup test' })
     fireEvent.click(screen.getByRole('navigation', { name: 'Open tools' }).querySelector('a')!)
-    expect((screen.getByLabelText('Output name') as HTMLInputElement).value).toBe('meeting notes')
-    fireEvent.click(screen.getByRole('button', { name: 'Close Image to PDF' }))
+    expect((screen.getByLabelText('Page URL') as HTMLInputElement).value).toBe(url)
+    fireEvent.click(screen.getByRole('button', { name: 'Close Web Images to PDF' }))
     await waitFor(() => expect(router.state.location.pathname).toBe('/tools/cache-purge'))
-    expect(screen.queryByLabelText('Output name')).toBeNull()
+    expect(screen.queryByLabelText('Page URL')).toBeNull()
   })
 
-  it('holds a tab open while a synchronous conversion is busy', async () => {
+  it('holds a tab open while a capture is busy', async () => {
     mount()
-    fireEvent.click(await screen.findByRole('button', { name: 'Begin preview' }))
-    expect((screen.getByRole('button', { name: 'Close Image to PDF' }) as HTMLButtonElement).disabled).toBe(true)
-    fireEvent.click(screen.getByRole('button', { name: 'Finish preview' }))
-    expect((screen.getByRole('button', { name: 'Close Image to PDF' }) as HTMLButtonElement).disabled).toBe(false)
+    fireEvent.click(await screen.findByRole('button', { name: 'Begin capture' }))
+    expect((screen.getByRole('button', { name: 'Close Web Images to PDF' }) as HTMLButtonElement).disabled).toBe(true)
+    fireEvent.click(screen.getByRole('button', { name: 'Finish capture' }))
+    expect((screen.getByRole('button', { name: 'Close Web Images to PDF' }) as HTMLButtonElement).disabled).toBe(false)
   })
 
   it('searches descriptions and opens the result from the keyboard', async () => {
     const { router } = mount('/')
-    await screen.findByRole('link', { name: 'Cache Purge' })
+    const navigation = within(screen.getByRole('navigation', { name: 'Tool navigation' }))
+    await navigation.findByRole('link', { name: 'Web Images to PDF' })
     const search = screen.getByLabelText('Find a tool')
     fireEvent.change(search, { target: { value: 'junk' } })
-    expect(screen.queryByRole('link', { name: 'Image to PDF' })).toBeNull()
+    expect(navigation.queryByRole('link', { name: 'Web Images to PDF' })).toBeNull()
     fireEvent.keyDown(search, { key: 'Enter' })
     await waitFor(() => expect(router.state.location.pathname).toBe('/tools/cache-purge'))
   })

@@ -7,7 +7,6 @@
 | Torrent Downloader | Review a torrent's files, select what to keep, and send it to BitComet. |
 | Web Images to PDF | Capture images from a web page into one PDF. |
 | File Gatherer | Move files of selected types from nested folders into one folder. |
-| Image to PDF | Combine images, including iPhone HEIC photos, into one PDF. |
 | Doc to PDF | Convert Word documents to PDFs, accepting tracked changes and removing comments. |
 | Doc to Markdown | Convert PDFs, Office documents, and images into Markdown text. |
 | Cache Purge | Find cache and junk files, review the results, then delete them. |

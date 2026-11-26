@@ -90,7 +90,7 @@ def create_server(settings: Settings | None = None, *, api=None) -> MCPServer:
 
         Does not undo moved/deleted files, output writes, lock updates or commits.
         Some subprocesses terminate; other workers stop between items. A cancelling
-        response is not proof the worker stopped. Synchronous image/web capture and
+        response is not proof the worker stopped. Synchronous web image capture and
         BitComet downloads after send are outside this job cancellation API.
         """
         return await client.request("POST", f"/jobs/{client.segment(job_id)}/cancel")

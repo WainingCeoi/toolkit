@@ -264,7 +264,6 @@ CASES = [
 
 FILE_TOOLS = {
     "torrent_resolve",
-    "image_to_pdf",
     "doc_to_pdf_start",
     "doc_to_markdown_start",
     "subscription_download",
@@ -339,7 +338,6 @@ def test_every_file_http_mapping(name, tmp_path):
     requests = []
     args = {"files": [source.as_uri()]}
     route = {
-        "image_to_pdf": "/img-to-pdf",
         "doc_to_pdf_start": "/doc-to-pdf",
         "doc_to_markdown_start": "/doc-to-markdown",
         "torrent_resolve": "/torrent/resolve",
@@ -347,7 +345,6 @@ def test_every_file_http_mapping(name, tmp_path):
         "subscription_qr_download": "/subs/sub_1/qr.png",
     }[name]
     binary = name in {
-        "image_to_pdf",
         "subscription_download",
         "subscription_qr_download",
     }
@@ -357,8 +354,6 @@ def test_every_file_http_mapping(name, tmp_path):
         args = {"sub_id": "sub_1", "output_path": str(output)}
         if name == "subscription_download":
             args["target"] = "surge"
-    elif name == "image_to_pdf":
-        args.update(output_path=str(output), name="chosen.pdf")
     elif name == "doc_to_markdown_start":
         args.update(tier="basic", ocr_mode="ocr", image_analysis=False)
 
@@ -366,7 +361,6 @@ def test_every_file_http_mapping(name, tmp_path):
         requests.append(request)
         if binary:
             content_type = {
-                "image_to_pdf": "application/pdf",
                 "subscription_download": "text/plain",
                 "subscription_qr_download": "image/png",
             }[name]
@@ -413,7 +407,6 @@ def test_every_file_http_mapping(name, tmp_path):
             if not part.get_filename()
         }
         expected = {
-            "image_to_pdf": {"name": "chosen.pdf"},
             "torrent_resolve": {"save_dir": "/remote/downloads"},
             "doc_to_pdf_start": {},
             "doc_to_markdown_start": {
@@ -464,7 +457,6 @@ def test_complete_tool_inventory_and_side_effect_annotations():
             "purge_scan",
             "dependencies_scan",
             "photos_dry_run",
-            "image_to_pdf",
         ):
             assert tools[name].annotations.read_only_hint is False
         for name in (
