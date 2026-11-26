@@ -81,11 +81,8 @@ function filenameFromDisposition(res: Response, fallback: string): string {
   const dispo = res.headers.get('content-disposition') || ''
   const star = /filename\*=utf-8''([^;]+)/i.exec(dispo)
   if (star) return decodeURIComponent(star[1])
-  // The quoted form may contain backslash-escaped quotes, so it cannot stop at the first `"`.
-  const quoted = /filename="((?:[^"\\]|\\.)*)"/i.exec(dispo)
-  if (quoted) return quoted[1].replace(/\\(.)/g, '$1')
-  const plain = /filename=([^;]+)/i.exec(dispo)
-  return plain ? plain[1].trim() : fallback
+  const quoted = /filename="([^"]+)"/i.exec(dispo)
+  return quoted?.[1] ?? fallback
 }
 
 async function blobError(res: Response): Promise<Error> {
@@ -283,8 +280,6 @@ export const api = {
     request<JobStarted>('/photofilter/dry-run', { method: 'POST', body: payload }),
   photofilterRun: (payload: PhotoFilterPayload) =>
     request<JobStarted>('/photofilter/run', { method: 'POST', body: payload }),
-
-  imgToPdf: (formData: FormData) => requestBlob('/img-to-pdf', 'download', { method: 'POST', body: formData }),
 
   webpdfOpen: (url: string) =>
     request<WebPdfStatus>('/webpdf/open', { method: 'POST', body: { url } }),

@@ -371,30 +371,6 @@ def register_tools(mcp: MCPServer, api: ToolkitClient) -> None:
             },
         )
 
-    @mcp.tool(annotations=annotations(destructive=True))
-    async def image_to_pdf(
-        files: list[str],
-        output_path: str,
-        name: str = "images.pdf",
-        overwrite: bool = False,
-    ) -> dict[str, Any]:
-        """Upload MCP-host image paths/file URIs; save one PDF locally.
-
-        Pages use natural filename order (2 before 10), not supplied list order.
-        Supports backend image formats including HEIC. output_path must name an
-        absolute MCP-host destination file; parent directory must already exist.
-        Existing output is refused unless overwrite=true. Returns path, byte
-        count, media type and digest, never PDF bytes. Synchronous: no job ID or
-        backend cancellation; a timeout does not mean conversion stopped.
-        """
-        return await api.upload(
-            "/img-to-pdf",
-            files,
-            data={"name": name},
-            output_path=output_path,
-            overwrite=overwrite,
-        )
-
     @mcp.tool(annotations=annotations())
     async def doc_to_pdf_start(files: list[str]) -> dict[str, Any]:
         """Upload MCP-host .docx paths/file URIs; start conversion, return job_id.

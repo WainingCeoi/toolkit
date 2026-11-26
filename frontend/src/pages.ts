@@ -6,7 +6,6 @@ export const PAGES = {
   'torrent-downloader': lazy(() => import('./pages/TorrentDownloader')),
   'web-images-to-pdf': lazy(() => import('./pages/WebImagesToPdf')),
   'file-gatherer': lazy(() => import('./pages/FileGatherer')),
-  'image-to-pdf': lazy(() => import('./pages/ImageToPdf')),
   'doc-to-pdf': lazy(() => import('./pages/DocToPdf')),
   'doc-to-markdown': lazy(() => import('./pages/DocToMarkdown')),
   whatsapp: lazy(() => import('./pages/WhatsAppChatExporter')),

@@ -41,13 +41,6 @@ export const TOOL_DETAILS: Record<string, ToolDetail> = {
     tag: 'Chrome capture',
     description: 'Turn the images on a web page into one bookmarked PDF.',
   },
-  'image-to-pdf': {
-    title: 'Image to PDF',
-    group: 'Documents',
-    icon: 'image',
-    tag: 'PNG · JPG · HEIC',
-    description: 'Bring your images together in a single, ready-to-share PDF.',
-  },
   'doc-to-pdf': {
     title: 'Doc to PDF',
     group: 'Documents',

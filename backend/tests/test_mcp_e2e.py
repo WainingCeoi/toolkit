@@ -113,8 +113,7 @@ def inspect_pdf(path):
             " warnings.simplefilter('ignore')\n"
             " import pymupdf\n"
             "with pymupdf.open(sys.argv[1]) as doc:\n"
-            " print(json.dumps([{'size': [p.rect.width,p.rect.height], "
-            "'text':p.get_text()} for p in doc]))\n",
+            " print(json.dumps([p.get_text() for p in doc]))\n",
             str(path),
         ],
         check=True,
@@ -124,58 +123,13 @@ def inspect_pdf(path):
     return json.loads(result.stdout)
 
 
-def test_stdio_discovery_image_pdf_and_errors(tcp_api, tmp_path):
-    first = tmp_path / "page2.png"
-    second = tmp_path / "page10.png"
-    Image.new("RGB", (20, 30), "red").save(first)
-    Image.new("RGB", (40, 50), "blue").save(second)
-    output = tmp_path / "combined.pdf"
-
+def test_stdio_discovery_and_errors(tcp_api):
     async def exercise():
         async with stdio_client(tcp_api) as client:
             tools = (await client.list_tools()).tools
             names = {tool.name for tool in tools}
             assert len(names) >= 40
-            assert {"image_to_pdf", "magnet_dedupe", "job_status"} <= names
-            result = await call(
-                client,
-                "image_to_pdf",
-                files=[second.as_uri(), str(first)],
-                name="combined.pdf",
-                output_path=str(output),
-            )
-            assert result["path"] == str(output)
-            assert output.read_bytes().startswith(b"%PDF")
-            assert [p["size"] for p in inspect_pdf(output)] == [
-                [20.0, 30.0],
-                [40.0, 50.0],
-            ]
-            before = output.read_bytes()
-            refused = await client.call_tool(
-                "image_to_pdf",
-                {"files": [str(first)], "output_path": str(output)},
-            )
-            assert refused.is_error
-            assert output.read_bytes() == before
-            await call(
-                client,
-                "image_to_pdf",
-                files=[str(first)],
-                output_path=str(output),
-                overwrite=True,
-            )
-            assert len(inspect_pdf(output)) == 1
-            invalid_image = tmp_path / "broken.png"
-            invalid_image.write_text("not an image")
-            failed = await client.call_tool(
-                "image_to_pdf",
-                {
-                    "files": [str(invalid_image)],
-                    "output_path": str(tmp_path / "failed.pdf"),
-                },
-            )
-            assert failed.is_error
-            assert not (tmp_path / "failed.pdf").exists()
+            assert {"magnet_dedupe", "job_status"} <= names
             absent = await client.call_tool("job_status", {"job_id": "unknown"})
             assert absent.is_error
             deduped = await call(client, "magnet_dedupe", links=["a", "a", "b"])
@@ -368,7 +322,7 @@ def test_stdio_real_libreoffice_document_to_pdf(tcp_api, tmp_path):
                 assert len(pdfs) == 1
                 pdf_path = tmp_path / "converted.pdf"
                 pdf_path.write_bytes(archive.read(pdfs[0]))
-            assert "8427" in "".join(page["text"] for page in inspect_pdf(pdf_path))
+            assert "8427" in "".join(inspect_pdf(pdf_path))
 
     asyncio.run(exercise())
 

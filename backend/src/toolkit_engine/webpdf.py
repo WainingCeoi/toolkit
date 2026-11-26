@@ -15,6 +15,9 @@ from urllib.parse import urljoin
 import requests
 from bs4 import BeautifulSoup
 from PIL import Image
+from pillow_heif import register_heif_opener
+
+register_heif_opener()
 
 
 def _import_fitz():

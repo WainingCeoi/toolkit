@@ -62,11 +62,6 @@ CATEGORIES = [
                 ),
             ),
             ToolOut(
-                slug="image-to-pdf",
-                title="🖼️ Image to PDF",
-                description="Combine selected images into a single downloadable PDF.",
-            ),
-            ToolOut(
                 slug="doc-to-pdf",
                 title="📄 Doc to PDF",
                 description=(

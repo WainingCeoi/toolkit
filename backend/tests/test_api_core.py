@@ -24,14 +24,14 @@ from toolkit_api.main import create_app
 from toolkit_engine import docmd
 
 
-def test_tools_manifest_has_thirteen_tools_in_three_categories(client):
+def test_tools_manifest_has_twelve_tools_in_three_categories(client):
     categories = client.get("/api/tools").json()
     assert [c["name"] for c in categories] == [
         "🎬 Media",
         "🗂️ Files & Tools",
         "🌐 Network",
     ]
-    assert sum(len(c["tools"]) for c in categories) == 13
+    assert sum(len(c["tools"]) for c in categories) == 12
     assert any(t["slug"] == "whatsapp" for c in categories for t in c["tools"])
 
 
@@ -42,7 +42,7 @@ def test_disabled_tools_are_hidden_from_the_manifest(client, monkeypatch):
     assert "doc-to-markdown" not in slugs
     assert "remux" not in slugs
     assert "cache-purge" in slugs
-    assert sum(len(c["tools"]) for c in categories) == 11
+    assert sum(len(c["tools"]) for c in categories) == 10
 
 
 def test_disabling_a_whole_category_drops_the_category(client, monkeypatch):
@@ -55,7 +55,7 @@ def test_disabling_a_whole_category_drops_the_category(client, monkeypatch):
 def test_unset_disabled_tools_lists_everything(client, monkeypatch):
     monkeypatch.delenv("TOOLKIT_DISABLED_TOOLS", raising=False)
     categories = client.get("/api/tools").json()
-    assert sum(len(c["tools"]) for c in categories) == 13
+    assert sum(len(c["tools"]) for c in categories) == 12
 
 
 def test_health_reports_dependency_booleans(client):
@@ -178,7 +178,6 @@ def test_all_api_routers_are_wired(app_state):
         "/api/purge/delete",
         "/api/photofilter/dry-run",
         "/api/photofilter/run",
-        "/api/img-to-pdf",
         "/api/webpdf/open",
         "/api/webpdf/status",
         "/api/webpdf/capture",
