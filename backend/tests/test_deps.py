@@ -787,6 +787,99 @@ def _fake_syncs(monkeypatch):
     monkeypatch.setattr(depsync, "npm_latest", lambda folder: (LATEST, None))
 
 
+@requires_git
+@pytest.mark.parametrize("operation", ["scan", "apply"])
+def test_projects_overlap_with_backend_before_frontend(
+    client, tmp_path, monkeypatch, operation
+):
+    _init_git(tmp_path)
+    projects = [tmp_path / "apps" / name for name in ("alpha", "beta")]
+    for project in projects:
+        _monorepo(project)
+    _fake_syncs(monkeypatch)
+    _fake_locks(monkeypatch)
+
+    backends = threading.Barrier(len(projects), timeout=3)
+    completed = {project.name: threading.Event() for project in projects}
+    frontends = set()
+
+    def backend(folder, *_args):
+        name = Path(folder).parent.name
+        backends.wait()
+        completed[name].set()
+        return True, "Resolved"
+
+    def frontend(folder, *_args):
+        name = Path(folder).parent.name
+        assert completed[name].is_set(), f"{name}'s frontend ran before its backend"
+        frontends.add(name)
+        return True, "Resolved"
+
+    def frontend_latest(folder):
+        frontend(folder)
+        backend_manifest = Path(folder).parent / "backend" / "pyproject.toml"
+        assert "fastapi>=0.115.0" in backend_manifest.read_text(encoding="utf-8")
+        return LATEST, None
+
+    folder = {"folder": str(tmp_path)}
+    if operation == "scan":
+        monkeypatch.setattr(depsync, "run_uv_upgrade", backend)
+        monkeypatch.setattr(depsync, "run_npm_upgrade", frontend)
+    scan = client.post("/api/deps/scan", json=folder)
+    assert scan.status_code == 200
+    job_id = scan.json()["job_id"]
+    snapshot = _wait(client, job_id)
+    assert snapshot["state"] == "done", snapshot
+    assert snapshot["result"]["total_bumps"] == 16
+    assert [target["project"]["root"] for target in snapshot["result"]["targets"]] == [
+        str(project.resolve()) for project in projects for _ in range(2)
+    ]
+
+    if operation == "apply":
+        monkeypatch.setattr(depsync, "uv_lock_refresh", backend)
+        monkeypatch.setattr(depsync, "npm_latest", frontend_latest)
+        response = client.post(
+            "/api/deps/apply", json={**folder, "commit": False, "scan_job_id": job_id}
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["written_total"] == 16, body
+    assert frontends == set(completed)
+
+
+def test_apply_serializes_projects_sharing_a_pnpm_lock(client, tmp_path, monkeypatch):
+    lock = tmp_path / "shared" / "pnpm-lock.yaml"
+    lock.parent.mkdir()
+    lock.write_text("", encoding="utf-8")
+    for name in ("alpha", "beta"):
+        project = _npm_project(tmp_path / name)
+        (project / "pnpm-workspace.yaml").write_text(
+            "lockfileDir: ../shared\n", encoding="utf-8"
+        )
+    second_entered = threading.Event()
+
+    def refresh(manifest):
+        assert manifest.pnpm_lock == lock.resolve()
+        if manifest.path.parent.name == "alpha":
+            assert not second_entered.wait(0.5), "both projects refreshed the same lock"
+            lock.write_text("alpha\n", encoding="utf-8")
+        else:
+            second_entered.set()
+            assert lock.read_text(encoding="utf-8") == "alpha\n"
+            lock.write_text("alpha\nbeta\n", encoding="utf-8")
+        return True, "Resolved"
+
+    monkeypatch.setattr(depsync, "pnpm_latest", lambda _: ({"react": "19.1.0"}, None))
+    monkeypatch.setattr(depsync, "pnpm_lock_refresh", refresh)
+    response = client.post(
+        "/api/deps/apply", json={"folder": str(tmp_path), "commit": False}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["written_total"] == 2, response.json()
+    assert lock.read_text(encoding="utf-8") == "alpha\nbeta\n"
+
+
 def test_runtime_updates_only_choose_compatible_stable_patches(
     client, tmp_path, monkeypatch
 ):

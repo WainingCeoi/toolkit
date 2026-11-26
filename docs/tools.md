@@ -52,6 +52,14 @@ Groups with proposed updates or scan errors open by default. Expand an
 up-to-date project to see the checked files grouped by directory. **Apply**
 uses the proposed updates from the whole scan.
 
+When the selected folder contains multiple projects, scanning and applying
+process up to four independent projects at a time. A `backend/` and `frontend/`
+pair counts as one project, including inside a shared Git repository. Each
+project keeps its usual order, including updating dependencies before changing
+interpreter pins. Projects that share a workspace or lockfile run in sequence,
+as do projects linked through uv path sources when applying. Optional Git
+commits run in order after the updates finish.
+
 After applying, the result shows actual version changes by project and file.
 Open the notices to see any updates that failed or were skipped, and the
 commit list to see the commit hashes and files.
