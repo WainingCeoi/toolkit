@@ -46,8 +46,11 @@ _CHAT_COLUMNS = "Z_PK, ZPARTNERNAME, ZCONTACTJID"
 _MESSAGE_QUERY = """
     SELECT m.Z_PK, m.ZSTANZAID, m.ZMESSAGEDATE, m.ZTEXT, m.ZMESSAGETYPE,
            m.ZISFROMME, m.ZFROMJID, m.ZPARENTMESSAGE, g.ZMEMBERJID, i.ZMETADATA,
+           c.ZCONTACTJID, c.ZPARTNERNAME,
+           {member_name} AS ZMEMBERNAME, {profile_name} AS ZPROFILENAME,
            {media_fields}, {receipt_field} AS ZRECEIPTINFO
     FROM ZWAMESSAGE m
+    JOIN ZWACHATSESSION c ON c.Z_PK = m.ZCHATSESSION
     LEFT JOIN ZWAMEDIAITEM i ON i.Z_PK = m.ZMEDIAITEM
     LEFT JOIN ZWAGROUPMEMBER g ON g.Z_PK = m.ZGROUPMEMBER
     {receipt_join}
@@ -153,13 +156,39 @@ def _sent_at(value: object) -> str | None:
         return None  # One unreadable date must not fail the whole export.
 
 
+def _sender_name(row: sqlite3.Row, sender_id: object, from_me: bool) -> str | None:
+    if from_me:
+        return "Me"
+    if not isinstance(sender_id, str):
+        return None
+    user, _, domain = sender_id.rpartition("@")
+    if not user or domain.lower() not in _DIRECT_DOMAINS:
+        return None
+
+    direct_name = row["ZPARTNERNAME"] if sender_id == row["ZCONTACTJID"] else None
+    member_name = row["ZMEMBERNAME"] if sender_id == row["ZMEMBERJID"] else None
+    for value in (direct_name, member_name, row["ZPROFILENAME"]):
+        if isinstance(value, bytes):
+            try:
+                value = value.decode("utf-8")
+            except UnicodeDecodeError:
+                continue
+        if isinstance(value, str) and (name := value.strip()):
+            if name not in (sender_id, user):
+                return name
+    return None
+
+
 def _export_message(row: sqlite3.Row, by_stanza: dict[str, sqlite3.Row | None]) -> dict:
+    from_me = bool(row["ZISFROMME"])
+    sender_id = row["ZMEMBERJID"] or row["ZFROMJID"]
     record = {
         "row_id": row["Z_PK"],
         "message_id": row["ZSTANZAID"],
         "sent_at": _sent_at(row["ZMESSAGEDATE"]),
-        "from_me": bool(row["ZISFROMME"]),
-        "sender_id": row["ZMEMBERJID"] or row["ZFROMJID"],
+        "from_me": from_me,
+        "sender_id": sender_id,
+        "sender_name": _sender_name(row, sender_id, from_me),
         "text": row["ZTEXT"],
         "message_type": row["ZMESSAGETYPE"],
         "reply_to": None,
@@ -230,7 +259,23 @@ def _message_query(db: sqlite3.Connection) -> str:
     )
     has_receipts = "ZRECEIPTINFO" in columns("ZWAMESSAGEINFO")
     has_receipts = has_receipts and "ZMESSAGEINFO" in columns("ZWAMESSAGE")
+    # Decode optional names separately so malformed text cannot stop the export.
+    member_name = "NULL"
+    if "ZCONTACTNAME" in columns("ZWAGROUPMEMBER"):
+        member_name = """CASE WHEN typeof(g.ZCONTACTNAME) = 'text'
+                         THEN CAST(g.ZCONTACTNAME AS BLOB) END"""
+    profile_name = "NULL"
+    if {"ZJID", "ZPUSHNAME"} <= columns("ZWAPROFILEPUSHNAME"):
+        profile_name = """(
+            SELECT CAST(MIN(TRIM(p.ZPUSHNAME)) AS BLOB)
+            FROM ZWAPROFILEPUSHNAME p
+            WHERE p.ZJID = COALESCE(NULLIF(g.ZMEMBERJID, ''), m.ZFROMJID)
+              AND typeof(p.ZPUSHNAME) = 'text' AND TRIM(p.ZPUSHNAME) <> ''
+            HAVING COUNT(DISTINCT TRIM(p.ZPUSHNAME)) = 1
+        )"""
     return _MESSAGE_QUERY.format(
+        member_name=member_name,
+        profile_name=profile_name,
         media_fields=media_fields,
         receipt_field="info.ZRECEIPTINFO" if has_receipts else "NULL",
         receipt_join=(

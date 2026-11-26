@@ -209,9 +209,12 @@ def test_direct_export_matches_stanza_in_committed_wal(whatsapp_client):
     assert messages[0]["message_id"] == FIRST_STANZA
     assert messages[0]["sent_at"] == "2001-01-01T00:02:00+00:00"
     assert messages[0]["sender_id"] == DIRECT_SENDER
+    assert messages[0]["sender_name"] == CHAT_NAME
     assert messages[0]["message_type"] == 0
     assert messages[0]["from_me"] is False
     assert messages[1]["from_me"] is True
+    assert messages[1]["sender_id"] is None
+    assert messages[1]["sender_name"] == "Me"
     assert messages[1]["reply_to"] is None
     assert messages[2]["reply_to"] == {
         "message_id": FIRST_STANZA,
@@ -246,6 +249,40 @@ def test_group_export_preserves_missing_ambiguous_and_malformed(whatsapp_client)
     assert malformed["text"] == "unrecognized metadata"
     assert malformed["metadata_status"] == "unrecognized_format"
     assert malformed["reply_to"] is None
+
+
+def test_group_export_attributes_names_to_the_exact_sender(client_with_media):
+    client, path = client_with_media
+    with closing(sqlite3.connect(path)) as db:
+        db.executescript("""
+            ALTER TABLE ZWAGROUPMEMBER ADD COLUMN ZCONTACTNAME TEXT;
+            CREATE TABLE ZWAPROFILEPUSHNAME (ZJID TEXT, ZPUSHNAME TEXT);
+            UPDATE ZWAGROUPMEMBER SET ZMEMBERJID = '100002@lid' WHERE Z_PK = 1;
+            UPDATE ZWAGROUPMEMBER SET ZCONTACTNAME = 'Local name' WHERE Z_PK = 2;
+            INSERT INTO ZWAGROUPMEMBER VALUES
+                (3, '100004@lid', CAST(X'FF' AS TEXT)), (4, '', 'Unrelated member');
+            INSERT INTO ZWAPROFILEPUSHNAME VALUES
+                ('100002@lid', ' 笔名 '), ('100002@lid', '笔名'),
+                ('100002@s.whatsapp.net', 'Different account'),
+                ('100003@s.whatsapp.net', 'Alternate name'),
+                ('100004@lid', 'Old name'), ('100004@lid', 'New name'),
+                ('100@g.us', 'Group name');
+            UPDATE ZWAMESSAGE SET ZGROUPMEMBER = 3 WHERE Z_PK = 106;
+            UPDATE ZWAMESSAGE SET ZGROUPMEMBER = 4, ZFROMJID = '100002@lid'
+                WHERE Z_PK = 107;
+            UPDATE ZWAMESSAGE SET ZGROUPMEMBER = NULL WHERE Z_PK = 108;
+            """)
+
+    assert [
+        (message["row_id"], message["sender_id"], message["sender_name"])
+        for message in _export_chat(client, 45)["messages"]
+    ] == [
+        (104, "100002@lid", "笔名"),
+        (105, OTHER_MEMBER, "Local name"),
+        (106, "100004@lid", None),
+        (107, "100002@lid", "笔名"),
+        (108, "100@g.us", None),
+    ]
 
 
 def test_export_survives_a_message_date_outside_the_calendar(client_with_media):

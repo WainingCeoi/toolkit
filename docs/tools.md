@@ -88,7 +88,12 @@ one direct or group chat, then click **Export ZIP** to download
 `WhatsApp_<chat name>.zip`. The ZIP contains a single folder with the same name,
 with `messages.jsonl` and `media/` directly inside it. The first line of
 `messages.jsonl` contains `chat_id` and `chat_name`. Every following line contains
-one message. Reactions are recorded on the message they apply to.
+one message with `sender_id` and `sender_name`. Your own messages use `Me` as
+`sender_name`. For incoming messages, the exporter uses the local name of the
+direct chat or group member when available, then tries the sender's WhatsApp
+profile name by matching `sender_id`. If no name is found, including for group
+system messages without a sender, `sender_name` is `null`.
+Reactions are recorded on the message they apply to.
 Locally available attachments, stickers, and thumbnails are saved under `media/`.
 `attachment_name` keeps the original document filename when available, and
 `attachment_path` points to the file relative to the conversation folder.
