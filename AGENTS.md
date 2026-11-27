@@ -17,11 +17,20 @@
 
 Tests exist so code can change with confidence; the suite must not grow into a second codebase. A test earns its place when it names a failure that would hurt and that I would otherwise miss: wrong results, data loss, leaked access, duplicate execution. Breakage I would notice on first use needs no test. When unsure, leave it out.
 
-- Test observable behavior at the cheapest layer that catches the failure. Frontend tests cover interaction and state, not rendering.
-- Reuse the existing fixtures and helpers. Tests use temporary data and never reach real user data or external services.
+Writing tests:
+
+- Test observable behavior, not internals, at the cheapest layer that catches the failure. A refactor that keeps behavior should leave the tests passing. Frontend tests cover interaction and state, not rendering.
+- Run our own code for real and fake only what lies outside the app. Tests use temporary data and never reach real user data or external services.
+- Assert on the outcome closely enough that the test fails when the result is wrong.
+- Keep one test per behavior. Look for an existing test before writing a new one, and when behavior changes, update or delete the old tests instead of adding new ones beside them.
+- Reuse the existing fixtures and helpers.
+
+These are defaults, not bans. A test that has to depart from one says why in the plan below.
+
+Adding tests:
+
 - A bug fix gets one regression test that fails without the fix.
 - For anything else, implement first, then list the tests you plan to add, change, or delete, one line each naming the failure it guards, and wait for my go-ahead. A simple feature usually needs 1–3.
-- When behavior changes, update or delete the old tests instead of adding new ones beside them.
 - For feature work, report `feature +X lines, tests +Y lines`. If Y exceeds 1.5 × X, trim duplicated setup or say why.
 
 ## Documentation
